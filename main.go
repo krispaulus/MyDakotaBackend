@@ -1,0 +1,155 @@
+package main
+
+import (
+	"dakotagroup/business-insight-be/db"
+	"dakotagroup/business-insight-be/handler"
+	"dakotagroup/business-insight-be/middleware"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+)
+
+func infoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status": "running", "message": "Dakota Business Insight API is Live"}`)
+}
+
+// Buat fungsi Logger sederhana
+
+func main() {
+	handler.InitGlobalLogger()
+	// Di main.go atau router.g
+	// 1. Load Environment Variables
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, menggunakan system env")
+	}
+
+	// 2. Inisialisasi Database
+	if err := db.ConnectAll(); err != nil {
+		log.Fatalf("❌ Gagal connect ke database: %v", err)
+	}
+	fmt.Println("✅ Database Dakota Group (DBS, DLB, DLI) Berhasil Inisialisasi!")
+
+	// 3. Setup Server Gin
+	// Secara default Gin sudah punya Logger dan Recovery middleware
+	r := gin.Default()
+	r.Use(middleware.CORSMiddleware())
+	r.Use(middleware.ActivityLogger())
+
+	// 5. Routing API
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status":  "running",
+			"message": "Dakota Business Insight API is Live",
+		})
+	})
+
+	r.Static("/uploads", "./uploads")
+
+	// Grouping API
+	api := r.Group("/api")
+	api.Use(middleware.ActivityLogger())
+	{
+
+		api.POST("/login", handler.LoginHandler)
+		api.POST("/request-otp", handler.RequestOTPHandler)
+		api.POST("/verify-otp", handler.VerifyAndSaveEmailHandler)
+		api.GET("/health", handler.HealthHandler)
+		api.POST("/users/add", handler.CreateUser)
+		api.GET("/users/check/:username", handler.CheckUsername)
+		api.GET("/btt/generate-custid-umum", handler.GenerateCustIDUmumHandler)
+		api.GET("/sp/list", handler.GetSuratPengantarFetch)
+		api.POST("/sp/add", handler.CreateSuratPengantar)
+
+		// Rute ini dikembalikan ke dalam group authorized agar token JWT divalidasi
+		// dan middleware dapat melakukan c.Set("user_data", claims)
+
+		// Group ini butuh token JWT
+		authorized := api.Group("/")
+		authorized.Use(middleware.AuthMiddleware()) // Pastikan import path-nya benar
+		{
+			authorized.POST("/logout", handler.Logout)
+			authorized.GET("/users", handler.GetAllWebLogins)
+			authorized.POST("/users/update-access", handler.HandleUpdateAccess)
+			authorized.GET("/users/access/:username", handler.GetUserAccess)
+			authorized.GET("/agens", handler.GetAgens)
+			authorized.GET("/kodepos", handler.GetKodePos)
+			authorized.GET("/profile", handler.GetProfile)
+			authorized.PUT("/profile/update", handler.UpdateProfile)
+			authorized.POST("/profile/change-password", handler.ChangePassword)
+			authorized.PUT("/users/update", handler.UpdateWebLogin)
+			authorized.DELETE("/users/:username", handler.DeleteUser)
+			authorized.POST("/settings/web-user-access", handler.SaveWebUserAccess)
+			authorized.GET("/tarif/reguler", handler.GetTarifReguler)
+			authorized.GET("/tarif/ekonomis", handler.GetTarifEkonomis)
+			authorized.GET("/tarif/unit", handler.GetTarifUnit)
+			authorized.POST("/customer/create", handler.CreateCustomerHandler)
+			authorized.POST("/customer/update", handler.UpdateCustomerHandler)
+			authorized.POST("/customer/delete", handler.DeleteCustomerHandler)
+			authorized.GET("/customer/search-kota", handler.SearchKotaHandler)
+			authorized.GET("/btt/search-customer", handler.SearchCustomerHandler)
+			authorized.POST("/btt/add", handler.CreateBTT)
+			authorized.GET("/closing-agen/list", handler.GetClosingAgenList)
+			authorized.POST("/closing-agen/process", handler.ProcessTambahClosingHarian)
+
+			// --- GRUP ENDPOINT OPERASIONAL BTT DAKOTA ---
+			authorized.GET("/marketing/btt", handler.GetBTT)
+			authorized.GET("/btt/kecamatan", handler.GetKecamatanByKota)
+			authorized.GET("/btt/check-lock", handler.CheckLockBTT)
+			authorized.GET("/btt/search-area", handler.SearchAreaByKecamatan)
+			authorized.GET("/btt/generate-custid", handler.GenerateCustIDHandler)
+
+			// Step 1: Otak hitung tarif volume vs berat asli
+			authorized.POST("/btt/calculate-tarif", handler.CalculateTarifHandler)
+
+			// Step 2: Benteng proteksi server (Nomor telp, batas COD, limit kredit plafon)
+			authorized.POST("/btt/validate", handler.ValidateBTTHandler)
+			authorized.GET("/btt/check-closing-gate", handler.CheckStatusClosingKemarin)
+		}
+	}
+
+	// 6. Jalankan Server
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	fmt.Printf("🚀 Server Dakota Business Insight running on %s\n", port)
+
+	// r.Run akan nge-block di sini
+	if err := r.Run(":" + port); err != nil {
+		log.Fatalf("❌ Server gagal jalan: %v", err)
+	}
+}
+
+func ProfileHandler(c *gin.Context) {
+	// Sederhananya dulu buat ngetes:
+	c.JSON(200, gin.H{
+		"status": "success",
+		"data": gin.H{
+			"username":  "KRIS",
+			"real_name": "Kriswanto Priyo",
+		},
+	})
+}
+
+func CorsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+
+		// 🌟 KUNCI EMAS PREFLIGHT BYPASS
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}

@@ -1,0 +1,15 @@
+# Mengamankan file konfigurasi rahasia database & JWT token
+.env
+
+# Mengamankan file biner hasil build Golang (agar github gak berat)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Mengamankan folder cache vendor bawaan Go (opsional)
+vendor/.env
+*.exe
+bin/

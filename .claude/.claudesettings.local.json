@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod:*)",
+      "Bash(go build:*)",
+      "Bash(powershell.exe -Command \"Get-NetTCPConnection -LocalPort 8080 | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_-Force }\")",
+      "Bash(powershell.exe -Command \"netstat -ano | findstr '':8080''\")",
+      "Bash(powershell.exe -Command \"Stop-Process -Id 46428 -Force\")",
+      "Bash(go get:*)"
+    ]
+  }
+}
