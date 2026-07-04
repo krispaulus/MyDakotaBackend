@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func GetMasterCustomerList(c *gin.Context) {
@@ -26,18 +27,88 @@ func GetMasterCustomerList(c *gin.Context) {
 		return
 	}
 
-	// 🚀 TANGKAP PARAMETER AGEN ID YANG DIKIRIM FRONTEND
+	// 🧠 AMBIL DATA ROLE AKSES DARI JWT TOKEN (SESSION CONTEXT)
+	roleUser := ""
+	tokenAgenID := ""
+	if claimsVal, exists := c.Get("user_data"); exists {
+		if claims, ok := claimsVal.(jwt.MapClaims); ok {
+			if r, ok := claims["user_type"].(string); ok {
+				roleUser = r
+			}
+			if a, ok := claims["agent_code"].(string); ok {
+				tokenAgenID = a
+			}
+		}
+	}
+
+	if roleUser == "" {
+		roleUser = c.Query("role_akses")
+	}
+
+	cleanRole := strings.ToUpper(strings.TrimSpace(roleUser))
+
+	// 🛡️ TENTUKAN APAKAH USER ADALAH ADMIN/SUPERADMIN/HOLDING/PUSAT
+	isAdmin := cleanRole == "SUPERADMIN" || cleanRole == "SUPERDBS" || cleanRole == "HOLDING" || cleanRole == "S" || strings.Contains(cleanRole, "PUSAT")
+
+	// 🚀 TANGKAP PARAMETER AGEN ID YANG DIKIRIM FRONTEND ATAU TOKEN
 	agenID := c.Query("agen_id")
+	if !isAdmin {
+		if tokenAgenID != "" {
+			agenID = tokenAgenID
+		}
+	}
 
-	query := database.Table("public.mkt_m_customer").
-		Select("cust_id, cust_name, cust_alamat1, cust_telp1, cust_kotaid")
+	query := database.Table("public.mkt_m_customer")
 
-	// 🛡️ BARRICADE SECURE LOCK: Jika parameter agen_id dikirim dan bukan akun Holding Pusat,
-	// maka saring data secara ketat murni berdasarkan agen_id tersebut!
-	if agenID != "" && agenID != "ALL" && !strings.Contains(strings.ToUpper(agenID), "PUSAT") {
-		// Asumsi di tabel customer lu ada field relasi agen (misal cust_agenid atau inisial cust_id-nya)
-		// Kita bandingkan secara aman menggunakan CAST string
-		query = query.Where("CAST(cust_agenid AS VARCHAR) = CAST(? AS VARCHAR)", agenID)
+	cleanAgen := strings.ToUpper(strings.TrimSpace(agenID))
+
+	// =========================================================================
+	// 🟢 AUTOMATIC ENTERPRISE COMPASS: Deteksi Saringan Lintas Nusantara Murni
+	// =========================================================================
+	isPusatOrAll := cleanAgen == "ALL" || cleanAgen == "UND" || cleanAgen == "DEF" || cleanAgen == "" ||
+		strings.Contains(cleanAgen, "PUSAT") || cleanAgen == "000" || cleanAgen == "PUS" || cleanAgen == "PST001"
+
+	if isAdmin && isPusatOrAll {
+		// 👑 JIKA DROP DOWN PUSAT/ALL -> JEBOL SAKTI: TAMPILKAN SELURUH DATA NASIONAL INDONESIA
+		fmt.Println("👑 [Access Granted] Akun Eksekutif memuat seluruh data Master Customer berskala Nasional.")
+	} else {
+		// 🔒 JIKA USER (AGEN / ADMIN) MEMILIH WILAYAH OPERASIONAL SPESIFIK TERTENTU
+		var realPrefix string
+
+		// Bersihkan kata jika membawa teks panjang (e.g., "PURWOREJO AGEN" -> "PURWOREJO")
+		searchKeyword := cleanAgen
+		if strings.Contains(searchKeyword, " ") {
+			searchKeyword = strings.Split(searchKeyword, " ")[0]
+		}
+		wildcardParam := "%" + searchKeyword + "%"
+
+		// 🎯 RELASI SAKTI NUSANTARA: Ambil 3 huruf terdepan dari kolom agen_id atau agen_cabangid yang COCOK!
+		errFind := database.Table("public.glb_m_agen").
+			Select("LEFT(agen_id, 3)").
+			Where("agen_id LIKE ? OR agen_kode LIKE ? OR agen_nama ILIKE ? OR agen_cabangid LIKE ?", cleanAgen+"%", cleanAgen+"%", wildcardParam, cleanAgen+"%").
+			Limit(1).
+			Row().Scan(&realPrefix)
+
+		if errFind == nil && realPrefix != "" {
+			realPrefix = strings.ToUpper(strings.TrimSpace(realPrefix))
+			fmt.Printf("🔍 [Compass Success] Dropdown '%s' sukses dikonversi ke Inisial DB murni: '%s'\n", cleanAgen, realPrefix)
+			cleanAgen = realPrefix
+		} else {
+			// 🛡️ ANTI-HALUSINASI SAKTI: Jika relasi data tidak ditemukan, kosongkan total!
+			// Jangan menebak-nebak data wilayah lain agar user tidak bingung.
+			fmt.Printf("⚠️ [Compass Empty] Inisial tidak ditemukan untuk alias '%s'. Mengosongkan query saringan.\n", cleanAgen)
+			cleanAgen = "DATA_TIDAK_DITEMUKAN_SISTEM"
+		}
+
+		// Jalankan saringan murni berdasarkan kode inisial yang valid
+		query = query.Where("cust_id LIKE ?", cleanAgen+"%")
+		fmt.Printf("🔒 [Tenant Filtered] Menyaring master customer murni untuk Hak Wilayah Cabang: '%s%%'\n", cleanAgen)
+	}
+
+	// Filter keyword search jika frontend mengirimkannya
+	searchKeyword := strings.TrimSpace(c.Query("search"))
+	if searchKeyword != "" {
+		query = query.Where("cust_name ILIKE ? OR cust_id LIKE ?", "%"+searchKeyword+"%", "%"+searchKeyword+"%")
 	}
 
 	var results []map[string]interface{}
@@ -46,7 +117,10 @@ func GetMasterCustomerList(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, results)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   results,
+	})
 }
 
 func CreateCustomerHandler(c *gin.Context) {
@@ -214,70 +288,85 @@ type CustomerModel struct {
 }
 
 func SearchCustomerHandler(c *gin.Context) {
-	// 1. Ambil Tenant PT ID dari JWT token
+	// 1. Ambil PT ID dari context token JWT lu
 	ptID, exists := c.Get("pt_id")
 	if !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "PT ID tidak ditemukan"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
 		return
 	}
+
+	// 🧠 KUNCI SAKTI: Tangkap role akses & agen_id dari query parameter atau context token JWT
+	// (Pastikan di middleware login lu sudah menyuntikkan data role ke context, atau bisa ambil param query)
+	roleUser := c.Query("role_akses")
+	if roleUser == "" {
+		// Fallback jika tidak dikirim via parameter, coba intip dari context session token
+		if r, ok := c.Get("role_akses"); ok {
+			roleUser = fmt.Sprintf("%v", r)
+		}
+	}
+
+	agenID := c.Query("agen_id")
+	searchKeyword := strings.TrimSpace(c.Query("search"))
 
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Koneksi database tenant gagal"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
 		return
 	}
 
-	// 2. Ambil parameter kata kunci keyword dari URL (?search=...)
-	keyword := c.Query("search")
-	keyword = strings.TrimSpace(strings.ToUpper(keyword))
+	// Buat query builder dasar ke tabel mkt_m_customer
+	query := database.Table("public.mkt_m_customer")
 
-	// 3. Buat Struct Penampung yang SINKRON 100% dengan nama kolom di Postgres lu, bro!
+	// =========================================================================
+	// 🛡️ ALGORITMA FILTER MULTI-TENANT ROLES (ANTI-BOCORET DATA)
+	// =========================================================================
+	// Ubah teks role ke uppercase untuk menghindari miss match case sensitive
+	cleanRole := strings.ToUpper(strings.TrimSpace(roleUser))
+
+	if cleanRole == "SUPERADMIN" || cleanRole == "SUPERDBS" || cleanRole == "HOLDING" {
+		// 🟢 KASTA SUPERADMIN: Jangan potong query, biarkan lolos melihat data nasional se-Indonesia!
+		fmt.Println("👑 [Access Granted] Akun Superadmin mendeteksi penarikan data customer berskala Nasional.")
+	} else {
+		// 🔴 KASTA AGEN LOKET OPERASIONAL: Kunci mati query murni berdasarkan 3 digit awalan CUST ID mereka!
+		if agenID != "" {
+			// Sesuai rumus ID lu (Contoh: GOR01062600001), 3 huruf awal adalah kode agen (GOR)
+			// Kita filter menggunakan Operator LIKE 'GOR%'
+			query = query.Where("cust_id LIKE ?", agenID+"%")
+			fmt.Printf("🔒 [Tenant Locked] Membatasi master customer murni untuk hak Agen ID: '%s'\n", agenID)
+		}
+	}
+
+	// Filter pencarian teks jika user mengetik di kotak pencarian keyword
+	if searchKeyword != "" {
+		query = query.Where("cust_name ILIKE ? OR cust_id LIKE ?", "%"+searchKeyword+"%", "%"+searchKeyword+"%")
+	}
+
 	type CustomerRes struct {
-		CustID            string  `json:"cust_id" gorm:"column:cust_id"`
-		CustName          string  `json:"cust_name" gorm:"column:cust_name"`
-		CustAlamat1       string  `json:"cust_alamat1" gorm:"column:cust_alamat1"`
-		CustAlamat2       string  `json:"cust_alamat2" gorm:"column:cust_alamat2"`
-		CustTelp1         string  `json:"cust_telp1" gorm:"column:cust_telp1"`
-		CustKotaID        string  `json:"cust_kotaid" gorm:"column:cust_kotaid"`
-		CustTelp2         string  `json:"cust_telp2" gorm:"column:cust_telp2"`
-		CustEmail         string  `json:"cust_email" gorm:"column:cust_email"`
-		CustNPWP          string  `json:"cust_npwp" gorm:"column:cust_npwp"`
-		CustJenisUsaha    string  `json:"cust_jenisusaha" gorm:"column:cust_jenisusaha"`
-		CustContactPerson string  `json:"cust_contactperson" gorm:"column:cust_contactperson"`
-		CustKreditLimit   float64 `json:"cust_kreditlimit" gorm:"column:cust_kreditlimit"`
-		CustKreditHari    int     `json:"cust_kredithari" gorm:"column:cust_kredithari"`
+		CustID      string `json:"cust_id" gorm:"column:cust_id"`
+		CustName    string `json:"cust_name" gorm:"column:cust_name"`
+		CustAlamat1 string `json:"cust_alamat1" gorm:"column:cust_alamat1"`
+		CustTelp1   string `json:"cust_telp1" gorm:"column:cust_telp1"`
+		CustKotaID  string `json:"cust_kotaid" gorm:"column:cust_kotaid"`
+		CustNama    string `gorm:"column:cust_nama"` // Fallback alias database lamamu
 	}
+	var results []CustomerRes
 
-	var listCustomer []CustomerRes
-
-	// 4. JALANKAN LOGIKA QUERY SAKTI ANTI-KOSONG
-	query := database.Table("public.mkt_m_customer").Select(
-		"cust_id, cust_name, cust_alamat1, cust_alamat2, cust_kotaid, " +
-			"cust_telp1, cust_telp2, cust_email, cust_npwp, cust_jenisusaha, " +
-			"cust_contactperson, cust_kreditlimit, cust_kredithari",
-	)
-
-	// Jika user mengetik keyword pencarian, filter berdasarkan ID atau Nama
-	if keyword != "" {
-		query = query.Where("cust_id LIKE ? OR cust_name LIKE ?", "%"+keyword+"%", "%"+keyword+"%")
-	}
-
-	// Ambil data terbaru dan batasi maksimal 100 baris agar performance gesit menjedarrr
-	err := query.Order("cust_id DESC").Limit(100).Scan(&listCustomer).Error
+	err := query.Limit(100).Find(&results).Error
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal fetch data: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
 	}
 
-	// Amankan jika datanya nil, paksa jadi array kosong murni []
-	if listCustomer == nil {
-		listCustomer = []CustomerRes{}
+	// Sinkronisasi penamaan properti alias objek map DB lama lu
+	for i := 0; i < len(results); i++ {
+		if results[i].CustName == "" && results[i].CustNama != "" {
+			results[i].CustName = results[i].CustNama
+		}
 	}
 
-	// 5. Kembalikan response sukses ke React
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
-		"data":   listCustomer,
+		"data":   results,
 	})
 }
 

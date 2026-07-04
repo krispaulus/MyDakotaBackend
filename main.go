@@ -54,7 +54,6 @@ func main() {
 	api := r.Group("/api")
 	api.Use(middleware.ActivityLogger())
 	{
-
 		api.POST("/login", handler.LoginHandler)
 		api.POST("/request-otp", handler.RequestOTPHandler)
 		api.POST("/verify-otp", handler.VerifyAndSaveEmailHandler)
@@ -65,18 +64,33 @@ func main() {
 		api.GET("/sp/list", handler.GetSuratPengantarFetch)
 		api.POST("/sp/add", handler.CreateSuratPengantar)
 
-		// Rute ini dikembalikan ke dalam group authorized agar token JWT divalidasi
-		// dan middleware dapat melakukan c.Set("user_data", claims)
-
 		// Group ini butuh token JWT
 		authorized := api.Group("/")
-		authorized.Use(middleware.AuthMiddleware()) // Pastikan import path-nya benar
+		authorized.Use(middleware.AuthMiddleware())
 		{
 			authorized.POST("/logout", handler.Logout)
 			authorized.GET("/users", handler.GetAllWebLogins)
 			authorized.POST("/users/update-access", handler.HandleUpdateAccess)
 			authorized.GET("/users/access/:username", handler.GetUserAccess)
+
 			authorized.GET("/agens", handler.GetAgens)
+			authorized.GET("/agens/detail/:id", handler.GetAgenDetailByID)
+			authorized.POST("/agens", handler.CreateAgen)
+			authorized.PUT("/agens/:id", handler.UpdateAgen)
+			authorized.DELETE("/agens/:id", handler.DeleteAgen)
+
+			authorized.GET("/area-loper", handler.GetAreaLopers)
+			authorized.POST("/area-loper", handler.CreateAreaLoper)
+			authorized.PUT("/area-loper/:id", handler.UpdateAreaLoper)
+			authorized.GET("/area-loper/unregistered", handler.GetWilayahBelumTerdaftar)
+			authorized.GET("/area-loper/terpilih/:kode", handler.GetAreaLoperTerpilihByAgen)
+			authorized.GET("/area-loper/suggest-wilayah", handler.SearchMasterWilayah)
+			authorized.POST("/area-loper/assign-wilayah", handler.AssignWilayahKeAgen)
+			authorized.POST("/area-loper/assign-wilayah-massal", handler.AssignWilayahMassalKeAgen)
+			authorized.POST("/area-loper/batch-update", handler.ProcessBatchAreaLoper)
+			authorized.DELETE("/area-loper/remove-wilayah-massal", handler.RemoveWilayahMassalDariAgen)
+			authorized.PUT("/area-loper/update-single-atribut", handler.UpdateSingleAreaLoperAtribut)
+
 			authorized.GET("/kodepos", handler.GetKodePos)
 			authorized.GET("/profile", handler.GetProfile)
 			authorized.PUT("/profile/update", handler.UpdateProfile)
@@ -87,10 +101,13 @@ func main() {
 			authorized.GET("/tarif/reguler", handler.GetTarifReguler)
 			authorized.GET("/tarif/ekonomis", handler.GetTarifEkonomis)
 			authorized.GET("/tarif/unit", handler.GetTarifUnit)
+
 			authorized.POST("/customer/create", handler.CreateCustomerHandler)
 			authorized.POST("/customer/update", handler.UpdateCustomerHandler)
 			authorized.POST("/customer/delete", handler.DeleteCustomerHandler)
 			authorized.GET("/customer/search-kota", handler.SearchKotaHandler)
+			authorized.GET("/customer", handler.GetMasterCustomerList)
+
 			authorized.GET("/btt/search-customer", handler.SearchCustomerHandler)
 			authorized.POST("/btt/add", handler.CreateBTT)
 			authorized.GET("/closing-agen/list", handler.GetClosingAgenList)
@@ -101,6 +118,11 @@ func main() {
 			authorized.GET("/btt/kecamatan", handler.GetKecamatanByKota)
 			authorized.GET("/btt/check-lock", handler.CheckLockBTT)
 			authorized.GET("/btt/search-area", handler.SearchAreaByKecamatan)
+
+			authorized.GET("/btt/search-geo", handler.SearchMasterGeoBtt)
+
+			authorized.GET("/btt/get-kelurahan", handler.GetKelurahanByKecamatan)
+
 			authorized.GET("/btt/generate-custid", handler.GenerateCustIDHandler)
 
 			// Step 1: Otak hitung tarif volume vs berat asli
@@ -109,6 +131,25 @@ func main() {
 			// Step 2: Benteng proteksi server (Nomor telp, batas COD, limit kredit plafon)
 			authorized.POST("/btt/validate", handler.ValidateBTTHandler)
 			authorized.GET("/btt/check-closing-gate", handler.CheckStatusClosingKemarin)
+
+			// =========================================================================
+			authorized.GET("/operasional/fleet-drivers", handler.GetFleetAndDrivers)
+			authorized.GET("/operasional/pool-btt", handler.GetPoolBTT)
+			authorized.POST("/operasional/sp-naik", handler.CreateSPNaikHandler)
+
+			// =========================================================================
+			authorized.GET("/operasional/sp-turun/preview", handler.GetDetailSPNaik)
+			authorized.POST("/operasional/sp-turun/initial", handler.SaveInitialSPTurun)
+			authorized.POST("/operasional/sp-turun/autosave", handler.AutoSaveRowSPTurun)
+			authorized.GET("/operasional/sp-turun/history", handler.GetHistorySPTurun)
+
+			authorized.GET("/operasional/loper/history", handler.GetHistoryLoper)
+			authorized.GET("/operasional/kembali-btt/history", handler.GetHistoryKembaliBTT)
+			authorized.GET("/operasional/kembali-btt/monitor-belum-kembali", handler.GetBTTBelumKembali)
+			authorized.GET("/operasional/kembali-btt/monitor-outstanding-bdb", handler.GetReturOutstandingBDB)
+			authorized.GET("/operasional/sp-terima/print-detail/:id", handler.GetPrintSPDetail)
+			authorized.GET("/marketing/bdb/list", handler.GetBDBListHandler)
+			authorized.GET("/marketing/monitoring-btt", handler.GetMonitoringBTT)
 		}
 	}
 
@@ -127,7 +168,6 @@ func main() {
 }
 
 func ProfileHandler(c *gin.Context) {
-	// Sederhananya dulu buat ngetes:
 	c.JSON(200, gin.H{
 		"status": "success",
 		"data": gin.H{

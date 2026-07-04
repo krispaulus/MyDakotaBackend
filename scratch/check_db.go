@@ -21,24 +21,15 @@ func main() {
 
 	database := db.GetDB()
 
-	// Update record yang bttt_aktifyn nya masih NULL atau kosong
-	fmt.Println("--- UPDATING NULL/EMPTY bttt_aktifyn to 'Y' ---")
-	result := database.Exec("UPDATE public.mkt_t_econote SET bttt_aktifyn = 'Y' WHERE bttt_aktifyn IS NULL OR bttt_aktifyn = ''")
-	if result.Error != nil {
-		fmt.Printf("Gagal update database: %v\n", result.Error)
-	} else {
-		fmt.Printf("Berhasil update %d baris data!\n", result.RowsAffected)
+	// Query glb_m_agen
+	fmt.Println("--- SELECT FROM glb_m_agen ---")
+	var agens []map[string]interface{}
+	err := database.Table("public.glb_m_agen").Where("agen_nama ILIKE ?", "%gorontalo%").Find(&agens).Error
+	if err != nil {
+		log.Fatalf("Gagal query glb_m_agen: %v", err)
 	}
 
-	// Verifikasi record AGOR001062600009
-	fmt.Println("\n--- VERIFIKASI RECORD AGOR001062600009 ---")
-	var econoteRow map[string]interface{}
-	err := database.Raw("SELECT bttt_id, bttt_aktifyn, bttt_spyn, bttt_asalagenid FROM public.mkt_t_econote WHERE bttt_id = ?", "AGOR001062600009").Scan(&econoteRow).Error
-	if err != nil {
-		fmt.Printf("Gagal fetch record: %v\n", err)
-	} else {
-		for k, v := range econoteRow {
-			fmt.Printf("%s: %v (%T)\n", k, v, v)
-		}
+	for _, a := range agens {
+		fmt.Printf("ID: %v, Kode: %v, Nama: %v, CabangID: %v\n", a["agen_id"], a["agen_kode"], a["agen_nama"], a["agen_cabangid"])
 	}
 }

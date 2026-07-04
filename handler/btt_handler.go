@@ -4,6 +4,7 @@ import (
 	"dakotagroup/business-insight-be/db"
 	"dakotagroup/business-insight-be/models"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -22,14 +23,25 @@ func GetBTT(c *gin.Context) {
 		return
 	}
 
+	// 🟢 BARU: Tangkap parameter filter agen_id dari URL request React (?agen_id=839)
+	agenID := c.Query("agen_id")
+
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
 		return
 	}
 
-	// Pakai Select() biar query lebih enteng, cuma ambil kolom yang dibutuhin di struct
-	err := database.Order("bttt_tanggal desc").Limit(100).Find(&data).Error
+	// Buat Query Builder dasar GORM
+	query := database.Order("bttt_tanggal desc").Limit(100)
+
+	// 🟢 BARU: Jika parameter agen_id dikirim dari React, lakukan penyaringan ketat di query Postgres
+	if agenID != "" {
+		// Filter baris berdasarkan bttt_asalagenid asli database Dakota lu
+		query = query.Where("bttt_asalagenid = ?", agenID)
+	}
+
+	err := query.Find(&data).Error
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
 		return
@@ -1028,4 +1040,103 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "allowed", "message": "Akses loket disetujui"})
+}
+
+// SearchMasterGeoBtt memproses pencarian bebas dari kolom apa saja untuk operasional loket BTT (SINKRON NUSANTARA)
+func SearchMasterGeoBtt(c *gin.Context) {
+	keyword := strings.TrimSpace(c.Query("q"))
+
+	// 🟢 UBAH DI SINI: Cukup ketik minimal 1 huruf, backend langsung izinkan query ke Postgres!
+	if len(keyword) < 1 {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []interface{}{}})
+		return
+	}
+
+	ptID, exists := c.Get("pt_id")
+	if !exists {
+		ptID = "A"
+	}
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		database = db.DB
+	}
+
+	var results []map[string]interface{}
+
+	// 🚀 SQL EXPLICIT: Nama kolom diselaraskan dengan metadata desakelurahan & kecamatandistrik asli DB lu!
+	queryRaw := `
+		SELECT 
+			kodepos as id,
+			COALESCE(propinsi, '') as propinsi,
+			COALESCE(kotakabupaten, '') as kabupaten,
+			COALESCE(kecamatandistrik, '') as kecamatan,
+			COALESCE(desakelurahan, '') as kelurahan,
+			COALESCE(kodepos, '') as kodepos
+		FROM public.glb_m_kodepos
+		WHERE 
+			public.glb_m_kodepos.kecamatandistrik ILIKE ? OR
+			public.glb_m_kodepos.kotakabupaten ILIKE ? OR
+			public.glb_m_kodepos.propinsi ILIKE ? OR
+			public.glb_m_kodepos.desakelurahan ILIKE ? OR
+			kodepos LIKE ?
+		ORDER BY kecamatandistrik ASC, desakelurahan ASC
+		LIMIT 20`
+
+	likeKeyword := "%" + keyword + "%"
+
+	log.Printf("🔍 [Backend search-geo] Menjalankan SQL ILIKE Postgres untuk keyword: '%s'", likeKeyword)
+
+	if err := database.Raw(queryRaw, likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword).Scan(&results).Error; err != nil {
+		log.Printf("❌ [Backend search-geo] GAGAL LIVE SEARCH BTT GEO: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mencari data wilayah"})
+		return
+	}
+
+	log.Printf("🎯 [Backend search-geo] SUKSES! Ditemukan %d baris wilayah di glb_m_kodepos", len(results))
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   results,
+	})
+}
+
+// GetKelurahanByKecamatan menarik daftar kelurahan & kodepos murni berdasarkan kecamatan terpilih (Gambar 2)
+func GetKelurahanByKecamatan(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists {
+		ptID = "A"
+	}
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		database = db.DB
+	}
+
+	kecamatan := c.Query("kecamatan")
+	if kecamatan == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Parameter kecamatan wajib diisi"})
+		return
+	}
+
+	type KelurahanRes struct {
+		Kelurahan string `json:"kelurahan" gorm:"column:desakelurahan"`
+		Kodepos   string `json:"kodepos" gorm:"column:kodepos"`
+	}
+	var listKelurahan []KelurahanRes
+
+	// Ambil data kelurahan & kodepos asli dari tabel public.glb_m_kodepos
+	err := database.Table("public.glb_m_kodepos").
+		Select("desakelurahan, kodepos").
+		Where("kecamatandistrik = ?", kecamatan).
+		Order("desakelurahan ASC").
+		Find(&listKelurahan).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   listKelurahan,
+	})
 }
