@@ -161,6 +161,9 @@ func main() {
 
 	fmt.Printf("🚀 Server Dakota Business Insight running on %s\n", port)
 
+	fmt.Printf("🚀 Server Golang Dakota Cargo Menyala di Port: %s\n", port)
+	r.Run(":" + port)
+
 	// r.Run akan nge-block di sini
 	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("❌ Server gagal jalan: %v", err)

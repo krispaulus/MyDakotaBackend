@@ -36,9 +36,14 @@ func GetBTT(c *gin.Context) {
 	query := database.Order("bttt_tanggal desc").Limit(100)
 
 	// 🟢 BARU: Jika parameter agen_id dikirim dari React, lakukan penyaringan ketat di query Postgres
-	if agenID != "" {
-		// Filter baris berdasarkan bttt_asalagenid asli database Dakota lu
-		query = query.Where("bttt_asalagenid = ?", agenID)
+	if agenID != "" && agenID != "undefined" && agenID != "null" {
+		if _, err := strconv.Atoi(agenID); err == nil {
+			// Lolos sensor: agenID terbukti angka murni (e.g. 839, 515), aman masuk ke kolom integer Postgres!
+			query = query.Where("bttt_asalagenid = ?", agenID)
+		} else {
+			// Jika agenID berupa teks nama (e.g. "PUSAT DAKOTA"), otomatis dilewati (bypass) tanpa bikin SQL crash!
+			log.Printf("🏢 [Nusantara Guard] Parameter agen_id kustom/non-numeric terdeteksi [%s]. Filter WHERE di-bypass murni.", agenID)
+		}
 	}
 
 	err := query.Find(&data).Error
