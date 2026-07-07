@@ -93,10 +93,14 @@ func GetMasterCustomerList(c *gin.Context) {
 			realPrefix = strings.ToUpper(strings.TrimSpace(realPrefix))
 			fmt.Printf("🔍 [Compass Success] Dropdown '%s' sukses dikonversi ke Inisial DB murni: '%s'\n", cleanAgen, realPrefix)
 			cleanAgen = realPrefix
+
+			query = query.Where("cust_id LIKE ?", cleanAgen+"%")
+			fmt.Printf("🔒 [Tenant Filtered] Menyaring master customer murni untuk Hak Wilayah Cabang: '%s%%'\n", cleanAgen)
 		} else {
 			// 🛡️ ANTI-HALUSINASI SAKTI: Jika relasi data tidak ditemukan, kosongkan total!
 			// Jangan menebak-nebak data wilayah lain agar user tidak bingung.
 			fmt.Printf("⚠️ [Compass Empty] Inisial tidak ditemukan untuk alias '%s'. Mengosongkan query saringan.\n", cleanAgen)
+			query = query.Where("cust_id = 'DATA_TIDAK_DITEMUKAN_SISTEM'")
 			cleanAgen = "DATA_TIDAK_DITEMUKAN_SISTEM"
 		}
 

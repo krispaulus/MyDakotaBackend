@@ -183,3 +183,31 @@ func GetDetailAgen(c *gin.Context) {
 		"data":   agen,
 	})
 }
+
+func GetDetailAgenByName(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	namaSearch := c.Param("nama")
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database failed"})
+		return
+	}
+
+	var agen models.GlbMAgen // Sesuaikan dengan struct glb_m_agen lu bray
+
+	// 👑 EKSEKUSI QUERY PERSIS SEPERTI GAMBAR PGADMIN LU BRAY (ANTI-TRIM & ANTI-HARDCODE):
+	err := database.Table("public.glb_m_agen").
+		Where("agen_nama ILIKE ?", "%"+namaSearch+"%").
+		First(&agen).Error
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Agen tidak ditemukan di Database"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   agen, // Di dalamnya ada kolom agen_id murni ("GOR002")!
+	})
+}
