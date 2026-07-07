@@ -78,6 +78,7 @@ func main() {
 			authorized.POST("/agens", handler.CreateAgen)
 			authorized.PUT("/agens/:id", handler.UpdateAgen)
 			authorized.DELETE("/agens/:id", handler.DeleteAgen)
+			authorized.GET("/agens/detail-name/:nama", handler.GetDetailAgenByName)
 
 			authorized.GET("/area-loper", handler.GetAreaLopers)
 			authorized.POST("/area-loper", handler.CreateAreaLoper)
