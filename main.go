@@ -161,7 +161,6 @@ func main() {
 			authorized.GET("/marketing/uncovered-areas", handler.GetUncoveredAreas)
 			authorized.POST("/marketing/uncovered-areas/process", handler.ProcessUncoveredArea)
 
-			// 👑 BENTENG BARU MODUL DEVICE & ABSENSI KARYAWAN (SUNTIKKAN DI SINI!):
 			authorized.GET("/hrd/device-karyawan", handler.GetDeviceKaryawanList)
 			authorized.PUT("/hrd/device-karyawan/:nip", handler.UpdateDeviceKaryawan)
 			authorized.POST("/hrd/device-karyawan/whatsapp-import", handler.ImportDeviceViaWhatsApp)
@@ -198,7 +197,14 @@ func ProfileHandler(c *gin.Context) {
 
 func CorsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		// Membaca origin dari browser secara dinamis agar localhost maupun IP 22.25 lolos semua
+		origin := c.Request.Header.Get("Origin")
+		if origin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
