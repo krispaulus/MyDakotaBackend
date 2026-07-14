@@ -37,7 +37,8 @@ func main() {
 	// 3. Setup Server Gin
 	// Secara default Gin sudah punya Logger dan Recovery middleware
 	r := gin.Default()
-	r.Use(middleware.CORSMiddleware())
+	//r.Use(middleware.CORSMiddleware())
+	r.Use(CorsMiddleware())
 	r.Use(middleware.ActivityLogger())
 
 	// 5. Routing API
@@ -52,7 +53,7 @@ func main() {
 
 	// Grouping API
 	api := r.Group("/api")
-	api.Use(middleware.ActivityLogger())
+	//api.Use(middleware.ActivityLogger())
 	{
 		api.POST("/login", handler.LoginHandler)
 		api.POST("/request-otp", handler.RequestOTPHandler)
@@ -63,6 +64,7 @@ func main() {
 		api.GET("/btt/generate-custid-umum", handler.GenerateCustIDUmumHandler)
 		api.GET("/sp/list", handler.GetSuratPengantarFetch)
 		api.POST("/sp/add", handler.CreateSuratPengantar)
+		//api.GET("/marketing/kembali-sj", handler.GetKembaliSJList)
 
 		// Group ini butuh token JWT
 		authorized := api.Group("/")
@@ -151,6 +153,20 @@ func main() {
 			authorized.GET("/operasional/sp-terima/print-detail/:id", handler.GetPrintSPDetail)
 			authorized.GET("/marketing/bdb/list", handler.GetBDBListHandler)
 			authorized.GET("/marketing/monitoring-btt", handler.GetMonitoringBTT)
+			authorized.GET("/marketing/kembali-sj", handler.GetKembaliSJList)
+			authorized.GET("/marketing/proses-packing", handler.GetProsesPackingList)
+			authorized.POST("/marketing/proses-packing/add", handler.SimpanProsesPacking)
+			authorized.GET("/marketing/btt-outstanding-packing", handler.GetBttOutstandingPacking)
+
+			authorized.GET("/marketing/uncovered-areas", handler.GetUncoveredAreas)
+			authorized.POST("/marketing/uncovered-areas/process", handler.ProcessUncoveredArea)
+
+			// 👑 BENTENG BARU MODUL DEVICE & ABSENSI KARYAWAN (SUNTIKKAN DI SINI!):
+			authorized.GET("/hrd/device-karyawan", handler.GetDeviceKaryawanList)
+			authorized.PUT("/hrd/device-karyawan/:nip", handler.UpdateDeviceKaryawan)
+			authorized.POST("/hrd/device-karyawan/whatsapp-import", handler.ImportDeviceViaWhatsApp)
+			authorized.GET("/hrd/raw-absensi", handler.GetRawAbsensiList)
+
 		}
 	}
 
@@ -161,9 +177,8 @@ func main() {
 	}
 
 	fmt.Printf("🚀 Server Dakota Business Insight running on %s\n", port)
-
 	fmt.Printf("🚀 Server Golang Dakota Cargo Menyala di Port: %s\n", port)
-	r.Run(":" + port)
+	//r.Run(":" + port)
 
 	// r.Run akan nge-block di sini
 	if err := r.Run(":" + port); err != nil {
