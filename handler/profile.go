@@ -15,7 +15,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// GET /api/profile
 func GetProfile(c *gin.Context) {
 	claimsVal, exists := c.Get("user_data")
 	if !exists {
@@ -42,17 +41,16 @@ func GetProfile(c *gin.Context) {
 		return
 	}
 
-	var user map[string]interface{}
-	if err := activeDB.Table("weblogin").Where("LOWER(username) = LOWER(?)", username).Take(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User tidak ditemukan"})
+	// 🟩 DITARIK BERSIH MENGGUNAKAN STRUCT AGAR KEBAL TYPO DAN PERBEDAAN DRIVER POSTGRES
+	var dbUser WebLogin
+	if err := activeDB.Table("weblogin").Where("LOWER(username) = LOWER(?)", username).First(&dbUser).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User tidak ditemukan di database corporate"})
 		return
 	}
 
-	// 2. AMBIL DAFTAR KODE CABANG (LOGIKA OPTIMASI KODE)
+	// 2. AMBIL DAFTAR KODE CABANG MENGGUNAKAN VALUE DARI STRUCT dbUser
 	var cabangs []string
-	allCabangYN, _ := user["all_cabangyn"].(string)
-
-	if allCabangYN == "Y" {
+	if strings.ToUpper(dbUser.All_cabangYN) == "Y" {
 		// Jika Super Admin (Y), ambil semua kode cabang aktif dari glb_m_agen
 		err := activeDB.Table("glb_m_agen").
 			Where("agen_aktifyn = ?", "Y").
@@ -71,17 +69,45 @@ func GetProfile(c *gin.Context) {
 		}
 	}
 
-	user["cabangs"] = cabangs
-	// 🌟 KUNCI SAKTI: Berikan key tambahan agar Frontend langsung tahu dia Superadmin
-	user["role_akses"] = user["usertype"]
-	user["division"] = user["kode_cabang"] // Mengirimkan "PUSAT DAKOTA"
+	// 💥 RITUAL DUA SISI MENGGUNAKAN DATA STRUCT GORM YANG PASTI TERISI UNTUK MENYUAP FRONTEND REACT LU!
+	c.JSON(http.StatusOK, gin.H{
+		"username":      dbUser.Username,
+		"realname":      dbUser.RealName,
+		"real_name":     dbUser.RealName,
+		"RealName":      dbUser.RealName, // SANGAT PENTING UNTUK HALAMAN /account REACT LU
+		"mobilenumber":  dbUser.MobileNumber,
+		"mobile_number": dbUser.MobileNumber,
+		"MobileNumber":  dbUser.MobileNumber, // SANGAT PENTING UNTUK HALAMAN /account REACT LU
+		"nickname":      dbUser.NickName,
+		"nick_name":     dbUser.NickName,
+		"NickName":      dbUser.NickName, // SANGAT PENTING UNTUK HALAMAN /account REACT LU
+		"email":         dbUser.Email,
+		"Email":         dbUser.Email,
+		"profileimage":  dbUser.ProfileImage,
+		"profile_image": dbUser.ProfileImage,
+		"ProfileImage":  dbUser.ProfileImage, // SANGAT PENTING UNTUK HALAMAN /account REACT LU
+		"cabangs":       cabangs,
+		"usertype":      dbUser.UserType, // Menyediakan flag hak akses cadangan
+		"role_akses":    dbUser.UserType, // KUNCI EMAS: Kembalikan ke dbUser.UserType agar menu sidebar lu jebol keluar lagi bray!
+		"division":      dbUser.KodeCabang,
 
-	delete(user, "password")
-
-	c.JSON(http.StatusOK, user)
+		// 🟩 BUNGKUS JUGA DI DALAM KEY "data" PASCALCASE BIAR MATCH 100% SAMA STATE FRONTEND LU BRAY!
+		"data": gin.H{
+			"Username":     dbUser.Username,
+			"RealName":     dbUser.RealName,
+			"NickName":     dbUser.NickName,
+			"MobileNumber": dbUser.MobileNumber,
+			"Email":        dbUser.Email,
+			"ProfileImage": dbUser.ProfileImage,
+			"gender":       dbUser.Gender,
+			"kode_cabang":  dbUser.KodeCabang,
+			"usertype":     dbUser.UserType,
+			"cabangs":      cabangs,
+		},
+	})
 }
 
-// PUT /api/profile/update
+// PUT /api/profile/update - 100% CLEAN & ERROR-FREE EDITION
 func UpdateProfile(c *gin.Context) {
 	usernameVal, _ := c.Get("username")
 	ptid, _ := c.Get("pt_id")
@@ -122,12 +148,24 @@ func UpdateProfile(c *gin.Context) {
 		finalKodeCabangTabelUtama = kodeCabangRaw
 	}
 
+	var genderInt int = 1 // default laki-laki
+	if gender != "" {
+		if gender == "1" || gender == "Laki-Laki" || gender == "Laki-laki" {
+			genderInt = 1
+		} else if gender == "2" || gender == "Perempuan" {
+			genderInt = 2
+		} else {
+			// fallback jika berupa string angka murni dari select option
+			fmt.Sscanf(gender, "%d", &genderInt)
+		}
+	}
+
 	updateFields := map[string]interface{}{
 		"realname":     realName,
 		"nickname":     nickName,
 		"mobilenumber": mobileNumber,
-		"gender":       gender,
-		"kode_cabang":  finalKodeCabangTabelUtama, // 🌟 Menggunakan hasil saringan bersih anti-sampah!
+		"gender":       genderInt, // 🟩 Gunakan genderInt yang sudah dikonversi
+		"kode_cabang":  finalKodeCabangTabelUtama,
 	}
 
 	// 2. Logika Upload File
@@ -175,32 +213,7 @@ func UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	if kodeCabangRaw != "" {
-		cabangArray := strings.Split(kodeCabangRaw, ",")
-		for _, cabang := range cabangArray {
-			cleanCabang := strings.TrimSpace(cabang)
-			if cleanCabang != "" {
-				// 🌟 FORMULA SAKTI: Hanya kirim username dan kode_cabang sesuai struktur asli pgAdmin lu!
-				newCabang := map[string]interface{}{
-					"username":    usernameString,
-					"kode_cabang": cleanCabang,
-				}
-				if errIns := tx.Table("weblogin_cabang").Create(newCabang).Error; errIns != nil {
-					tx.Rollback()
-					log.Printf("❌ ERROR SAAT INSERT DETAIL CABANG BARU: %v", errIns)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan detail akses cabang"})
-					return
-				}
-			}
-		}
-	}
-
-	log.Printf("📢 [DATABASE INFO] Baris weblogin terupdate: %d", result.RowsAffected)
-
-	tx.Table("weblogin_cabang").Where("username ILIKE ?", usernameString).Delete(&map[string]interface{}{})
-
-	// 3. ATURAN AKSES KETAT HANYA UNTUK USER BIASA (all_cabangyn = 'N' dan usertype = 'U')
-	if currentUser.AllCabangYN == "N" && currentUser.UserType == "U" && kodeCabangRaw != "" {
+	if currentUser.AllCabangYN == "N" && currentUser.UserType != "S" && kodeCabangRaw != "" {
 		cabangArray := strings.Split(kodeCabangRaw, ",")
 		for _, cabang := range cabangArray {
 			cleanCabang := strings.TrimSpace(cabang)
@@ -219,18 +232,42 @@ func UpdateProfile(c *gin.Context) {
 		}
 		log.Printf("💡 [CABANG] Berhasil menyimpan detail akses cabang vertikal untuk user biasa.")
 	} else {
-		// Jika Superadmin, biarkan weblogin_cabang kosong melompong aman tentosa!
+		// Jika Superadmin, bypass total pengisian detail agar tabel weblogin_cabang bersih dari ribuan baris sampah!
 		log.Printf("💡 [ANTI-SAMPAH SAKTI] User %s adalah Superadmin/AllCabang Y. Proses insert detail di-bypass total!", usernameString)
 	}
 
-	tx.Commit()
+	// Commit seluruh perubahan data ke database corporate
+	if errCommit := tx.Commit().Error; errCommit != nil {
+		log.Printf("❌ ERROR TRANSACTION COMMIT: %v", errCommit)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal commit transaksi data"})
+		return
+	}
 
-	// Ambil data terbaru secara bersih untuk dikirim balik ke frontend React
-	var updatedUser map[string]interface{}
-	activeDB.Table("weblogin").Where("username ILIKE ?", usernameString).Take(&updatedUser)
-	delete(updatedUser, "password")
+	log.Printf("✨ [SUCCESS] Seluruh data profil user %s berhasil diupdate total!", usernameString)
 
-	c.JSON(http.StatusOK, gin.H{"message": "Profile updated!", "data": updatedUser})
+	// 🟩 AMBIL DATA TERBARU SECARA BERSIH DENGAN STRUCT UNTUK FRONTEND
+	var freshUser WebLogin
+	if errFetch := activeDB.Table("weblogin").Where("username ILIKE ?", usernameString).First(&freshUser).Error; errFetch == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Profile updated!",
+			"data": gin.H{
+				"Username":      freshUser.Username,
+				"RealName":      freshUser.RealName,
+				"NickName":      freshUser.NickName,
+				"MobileNumber":  freshUser.MobileNumber,
+				"Email":         freshUser.Email,
+				"profileimage":  freshUser.ProfileImage,
+				"profile_image": freshUser.ProfileImage,
+				"ProfileImage":  freshUser.ProfileImage,
+				"gender":        freshUser.Gender,
+				"kode_cabang":   freshUser.KodeCabang,
+				"usertype":      freshUser.UserType,
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully bray!"})
 }
 
 // POST /api/profile/change-password

@@ -74,6 +74,8 @@ func main() {
 			authorized.GET("/users", handler.GetAllWebLogins)
 			authorized.POST("/users/update-access", handler.HandleUpdateAccess)
 			authorized.GET("/users/access/:username", handler.GetUserAccess)
+			authorized.POST("/user-dli/create", handler.CreateUserDLI)
+			authorized.GET("/user-dli/list", handler.GetUserDLIList)
 
 			authorized.GET("/agens", handler.GetAgens)
 			authorized.GET("/agens/detail/:id", handler.GetAgenDetailByID)
@@ -94,7 +96,11 @@ func main() {
 			authorized.DELETE("/area-loper/remove-wilayah-massal", handler.RemoveWilayahMassalDariAgen)
 			authorized.PUT("/area-loper/update-single-atribut", handler.UpdateSingleAreaLoperAtribut)
 
-			authorized.GET("/kodepos", handler.GetKodePos)
+			authorized.GET("/master/kodepos", handler.GetKodePos)
+			authorized.POST("/master/kodepos", handler.CreateKodePos)
+			authorized.PUT("/master/kodepos/:id", handler.UpdateKodePos)
+			authorized.DELETE("/master/kodepos/:id", handler.DeleteKodePos)
+
 			authorized.GET("/profile", handler.GetProfile)
 			authorized.PUT("/profile/update", handler.UpdateProfile)
 			authorized.POST("/profile/change-password", handler.ChangePassword)
@@ -166,6 +172,83 @@ func main() {
 			authorized.POST("/hrd/device-karyawan/whatsapp-import", handler.ImportDeviceViaWhatsApp)
 			authorized.GET("/hrd/raw-absensi", handler.GetRawAbsensiList)
 
+			authorized.GET("/master/kendaraan", handler.GetMasterKendaraanList)
+			authorized.GET("/master/kendaraan/expired-service", handler.GetExpiredServiceKendaraan)
+
+			authorized.POST("/master/kendaraan", handler.CreateKendaraan)
+			authorized.PUT("/master/kendaraan/:id", handler.UpdateKendaraan)
+			authorized.POST("/master/kendaraan/masuk-service", handler.RegisterTrukService)
+
+			authorized.GET("/master/sewa-kendaraan", handler.GetSewaKendaraanList)
+			authorized.POST("/master/sewa-kendaraan", handler.CreateSewaKendaraan)
+			authorized.PUT("/master/sewa-kendaraan/:id", handler.UpdateSewaKendaraan)
+			authorized.DELETE("/master/sewa-kendaraan/:id", handler.DeleteSewaKendaraan)
+
+			authorized.GET("/master/korwil", handler.GetKorwilList)
+			authorized.POST("/master/korwil", handler.CreateKorwil)
+			authorized.PUT("/master/korwil/:id", handler.UpdateKorwil)
+			authorized.GET("/master/korwil/detail/:id", handler.GetKorwilDetail)
+			authorized.POST("/master/korwil/detail", handler.AddAgenToKorwil)
+			authorized.DELETE("/master/korwil/detail", handler.RemoveAgenFromKorwil)
+
+			authorized.GET("/master/sopir", handler.GetSupirList)
+			authorized.POST("/master/sopir", handler.CreateSupir)
+			authorized.PUT("/master/sopir/:id", handler.UpdateSupir)
+			authorized.DELETE("/master/sopir/:id", handler.DeleteSupir)
+
+			authorized.GET("/master/trayek", handler.GetTrayekList)
+			authorized.POST("/master/trayek", handler.CreateTrayek)
+			authorized.PUT("/master/trayek/:id", handler.UpdateTrayek)
+			authorized.GET("/master/trayek/detail/rute/:id", handler.GetTrayekDetailRute)
+			authorized.GET("/master/trayek/detail/bplk/:id", handler.GetTrayekDetailBplk)
+			authorized.GET("/master/trayek/detail/voucher/:id", handler.GetTrayekDetailVoucher)
+			authorized.POST("/master/trayek/save-full", handler.SaveTrayekFull)
+
+			authorized.GET("/master/tarif-carter", handler.GetTarifCarterIndex)
+			authorized.GET("/master/tarif-carter/detail", handler.GetTarifCarterDetail)
+			authorized.PUT("/master/tarif-carter/inline-update", handler.UpdateInlineCarter)
+			authorized.DELETE("/master/tarif-carter/item/:id", handler.DeleteTarifCarterItem)
+			authorized.POST("/master/tarif-carter/mass-add", handler.AddMassCarter)
+			authorized.GET("/master/active-agen-list", handler.GetActiveAgenList)
+
+			authorized.GET("/operasional/loper-list", handler.GetLoperList)
+			authorized.POST("/operasional/loper", handler.CreateLoper)
+			authorized.GET("/operasional/ambil-list", handler.GetAmbilList)
+			authorized.POST("/operasional/ambil-create", handler.CreateAmbil)
+			authorized.GET("/operasional/ambilretur-list", handler.GetAmbilList)
+			authorized.POST("/operasional/ambilretur-create", handler.CreateAmbilRetur)
+
+			authorized.GET("/master/econote/list", handler.GetEconoteList)
+			authorized.GET("/master/econote/detail/:id", handler.GetEconoteDetail)
+			authorized.PUT("/master/econote/update", handler.UpdateEconote)
+			authorized.DELETE("/master/econote/delete/:id", handler.DeleteEconote)
+
+			configGroup := authorized.Group("/config")
+			{
+				configGroup.GET("/params", handler.GetParams)
+				configGroup.POST("/params", handler.CreateParam)
+				configGroup.PUT("/params", handler.UpdateParam)
+				configGroup.DELETE("/params/:id", handler.DeleteParam)
+			}
+
+			// 🚀 MASTER TARIF TRANSIT (HARGA PERWILAYAH)
+			authorized.GET("/master/tarif-transit/list", handler.GetTarifTransitList)
+			authorized.GET("/master/tarif-transit/provinsi", handler.GetProvinsiOptions)
+			authorized.GET("/master/tarif-transit/kota-by-provinsi", handler.GetKotaByProvinsi)
+			authorized.POST("/master/tarif-transit/add", handler.CreateTarifTransit)
+			authorized.PUT("/master/tarif-transit/update/:id", handler.UpdateTarifTransit)
+			authorized.DELETE("/master/tarif-transit/delete/:id", handler.DeleteTarifTransit)
+
+			// 🚀 HRD - MONITORING LOKASI KARYAWAN
+			authorized.GET("/hrd/monitoring-lokasi/list", handler.GetMonitoringLokasiList)
+			authorized.GET("/hrd/monitoring-lokasi/history-gps", handler.GetHistoryGPSKaryawan)
+			authorized.POST("/hrd/monitoring-lokasi/update", handler.PostUpdateLokasiKaryawan)
+
+			// 🚚 MASTER DAFTAR KENDARAAN
+			authorized.GET("/master/perawatan-kendaraan/list", handler.GetDaftarKendaraanList)
+			authorized.POST("/master/perawatan-kendaraan/add", handler.CreateKendaraanBaru)
+			authorized.PUT("/master/perawatan-kendaraan/update/:id", handler.UpdateKendaraanBaru)
+			authorized.DELETE("/master/perawatan-kendaraan/delete/:id", handler.DeleteKendaraanBaru)
 		}
 	}
 

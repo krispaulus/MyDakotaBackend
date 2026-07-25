@@ -23,7 +23,7 @@ func GetBTT(c *gin.Context) {
 		return
 	}
 
-	// 🟢 BARU: Tangkap parameter filter agen_id dari URL request React (?agen_id=839)
+	// 🟢 Tangkap parameter filter agen_id dari URL request React (?agen_id=839)
 	agenID := c.Query("agen_id")
 
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
@@ -35,7 +35,7 @@ func GetBTT(c *gin.Context) {
 	// Buat Query Builder dasar GORM
 	query := database.Order("bttt_tanggal desc").Limit(100)
 
-	// 🟢 BARU: Jika parameter agen_id dikirim dari React, lakukan penyaringan ketat di query Postgres
+	// 🟢 Jika parameter agen_id dikirim dari React, lakukan penyaringan ketat di query Postgres
 	if agenID != "" && agenID != "undefined" && agenID != "null" {
 		if _, err := strconv.Atoi(agenID); err == nil {
 			// Lolos sensor: agenID terbukti angka murni (e.g. 839, 515), aman masuk ke kolom integer Postgres!
@@ -63,10 +63,23 @@ func CheckLockBTT(c *gin.Context) {
 		return
 	}
 
-	// Ambil Agen ID dari parameter query atau bisa dipindah ke c.Get("agen_id") jika ada di token
-	agenID := c.Query("agen_id")
+	// Ambil Agen ID dari parameter query
+	agenID := strings.TrimSpace(c.Query("agen_id"))
 	if agenID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Parameter agen_id wajib diisi, bro!"})
+		return
+	}
+
+	// =========================================================================
+	// 🛑 LAPISAN 0: PROTEKSI PUSAT DAKOTA (HOLDING)
+	// =========================================================================
+	upperAgen := strings.ToUpper(agenID)
+	if agenID == "1" || upperAgen == "PUSAT DAKOTA" || strings.Contains(upperAgen, "PUSAT") || strings.Contains(upperAgen, "HOLDING") {
+		c.JSON(http.StatusOK, gin.H{
+			"is_locked": true,
+			"layer":     0,
+			"reason":    "Pusat Dakota (Holding) tidak diizinkan untuk membuat Bukti Tanda Terima (BTT)! Silakan ganti lokasi loket ke Agen / Cabang Operasional.",
+		})
 		return
 	}
 
@@ -81,10 +94,26 @@ func CheckLockBTT(c *gin.Context) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	now := time.Now().In(loc)
 
+	// Cek juga ke tabel master glb_m_agen jika agen_id berupa ID/Kode angka
+	var agenNama string
+	database.Table("public.glb_m_agen").
+		Select("agen_nama").
+		Where("glb_agenid = ? OR agen_kode = ?", agenID, agenID).
+		Scan(&agenNama)
+
+	upperNamaDb := strings.ToUpper(agenNama)
+	if strings.Contains(upperNamaDb, "PUSAT") || strings.Contains(upperNamaDb, "HOLDING") {
+		c.JSON(http.StatusOK, gin.H{
+			"is_locked": true,
+			"layer":     0,
+			"reason":    "Pusat Dakota (Holding) tidak diizinkan untuk membuat Bukti Tanda Terima (BTT)! Silakan ganti lokasi loket ke Agen / Cabang Operasional.",
+		})
+		return
+	}
+
 	// ==========================================
 	// LAPISAN 1: Lock Jam Operasional Global
 	// ==========================================
-	// Contoh: Aturan Dakota pusat membatasi input e-Conote/BTT maksimal jam 22:00 malam
 	if now.Hour() >= 22 {
 		c.JSON(http.StatusOK, gin.H{
 			"is_locked": true,
@@ -120,7 +149,6 @@ func CheckLockBTT(c *gin.Context) {
 	// ==========================================
 	// LAPISAN 3: Proteksi Limit Kredit & Sisa Bayar Invoice
 	// ==========================================
-	// Mencari tahu apakah ada invoice nunggak yang belum lunas
 	var totalSisaBayar float64
 	err = database.Table("public.art_t_invoiceh").
 		Select("COALESCE(SUM(artih_sisabayar), 0)").
@@ -132,7 +160,6 @@ func CheckLockBTT(c *gin.Context) {
 		return
 	}
 
-	// Contoh rule bisnis: Kalau total sisa tagihan/piutang agen > Rp 50.000.000, kunci otomatis
 	if totalSisaBayar > 50000000 {
 		c.JSON(http.StatusOK, gin.H{
 			"is_locked": true,
@@ -146,7 +173,7 @@ func CheckLockBTT(c *gin.Context) {
 	// LAPISAN 4: Proteksi Periode Closing Buku
 	// ==========================================
 	var isClosed int
-	currentPeriode := now.Format("200602") // Format: YYYYMM (Contoh: 202605)
+	currentPeriode := now.Format("200602") // Format: YYYYMM
 
 	err = database.Table("public.glb_m_closing").
 		Select("COUNT(1)").
@@ -174,34 +201,27 @@ func CheckLockBTT(c *gin.Context) {
 
 // CalculateTarif menghitung berat chargeable dan mencari tarif terbaik dari database
 func CalculateTarif(c *gin.Context) {
-	// 1. Ambil PT ID dari token JWT
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
 		return
 	}
 
-	// 2. Bind JSON Request dari React
 	var req models.TarifRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Input data tidak valid: " + err.Error()})
 		return
 	}
 
-	// 3. Resolve database sesuai PT
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
 		return
 	}
 
-	// =========================================================================
-	// 🧠 ALGORITMA UTAMA: DETEKSI KOTA OPERASIONAL ASLI DARI DATA AGEN SECARA OTOMATIS (FIX CLEAN)
-	// =========================================================================
 	var dbAgen models.GlbMAgen
-	inputAsalRaw := strings.TrimSpace(req.AsalKota) // Menerima kode angka murni dari React, contoh: "515"
+	inputAsalRaw := strings.TrimSpace(req.AsalKota)
 
-	// 📑 TAHAP 1: Cari agen_kotaid (Contoh: "BLK") di glb_m_agen berdasarkan agen_kode = '515'
 	errAgen := database.Table("public.glb_m_agen").
 		Select("agen_kotaid").
 		Where("TRIM(agen_kode) = TRIM(?)", inputAsalRaw).
@@ -209,7 +229,6 @@ func CalculateTarif(c *gin.Context) {
 
 	var namaKotaLengkap string
 
-	// 📑 TAHAP 2: Jika Agen ketemu, cari kota_nama (Contoh: "BLITAR KOTA") di glb_m_kota berdasarkan kota_id = 'BLK'
 	if errAgen == nil && dbAgen.AgenKotaID != "" {
 		database.Table("public.glb_m_kota").
 			Select("kota_nama").
@@ -219,57 +238,43 @@ func CalculateTarif(c *gin.Context) {
 
 	var kotaAsalMaster string
 
-	// 📑 TAHAP 3: Bersihkan kata penanda " KOTA" / " KAB" dan selaraskan ke tabel master mkt_m_harga se-Indonesia
 	if namaKotaLengkap != "" {
 		cleanCityName := strings.ToUpper(strings.TrimSpace(namaKotaLengkap))
-		// Bersihkan embel-embel teks belakang agar match dengan master pricing (Contoh: "BLITAR KOTA" -> "BLITAR")
 		cleanCityName = strings.ReplaceAll(cleanCityName, " KOTA", "")
 		cleanCityName = strings.ReplaceAll(cleanCityName, " KABUPATEN", "")
 		cleanCityName = strings.ReplaceAll(cleanCityName, " KAB.", "")
 		cleanCityName = strings.TrimSpace(cleanCityName)
 
-		// Verifikasi kecocokan parsial ke asalkota master mkt_m_harga
-		queryVerify := `SELECT TOP 1 UPPER(TRIM(asalkota)) FROM public.mkt_m_harga WHERE asalkota LIKE '%' + ? + '%'`
-		database.Raw(queryVerify, cleanCityName).Scan(&kotaAsalMaster)
+		// 🌟 FIX POSTGRESQL SYNTAX: Ubah SELECT TOP 1 menjadi LIMIT 1
+		queryVerify := `SELECT UPPER(TRIM(asalkota)) FROM public.mkt_m_harga WHERE asalkota ILIKE ? LIMIT 1`
+		database.Raw(queryVerify, "%"+cleanCityName+"%").Scan(&kotaAsalMaster)
 	}
 
-	// 📑 TAHAP 4: Kunci hasil konversi otomatis ke dalam variabel pencari master tarif kargo
 	if kotaAsalMaster != "" {
 		req.AsalKota = kotaAsalMaster
 		fmt.Printf("🎯 [RELATIONAL RESOLVE SUCCESS] Agen Kode '%s' -> ID Kota: '%s' -> Terpetakan ke Master Pricing: '%s'\n", inputAsalRaw, dbAgen.AgenKotaID, req.AsalKota)
 	} else {
-		// Fallback darurat terakhir jika data agen baru benar-benar belum selesai diinput tim finance pusat
 		req.AsalKota = strings.ToUpper(inputAsalRaw)
 		fmt.Printf("⚠️ [RELATIONAL RESOLVE FAILED] Gagal menerjemahkan Kode Agen '%s'. Menggunakan data mentah.\n", inputAsalRaw)
 	}
 
-	// =========================================================================
-	// 🛠️ SEKARANG REQ.ASALKOTA SUDAH BERHASIL BERUBAH MENJADI STRING KOTA VALID ("BLITAR")!
-	//    GO LU SEKARANG BISA QUERY AMBIL DATA BARIS SEPERTI BIASA, BRO!
-	// =========================================================================
 	var regulerRow map[string]interface{}
 	var ekonomisRow map[string]interface{}
 
-	// Ambil data baris murni Darat Reguler (Tabel: public.mkt_m_harga) menggunakan req.AsalKota yang sudah valid!
 	database.Table("public.mkt_m_harga").
 		Where("asalkota = ? AND tujuan_kecamatan LIKE ? AND aktifyn = 'Y'", req.AsalKota, "%"+req.TujuanKec+"%").
 		First(&regulerRow)
 
-	// Jika skema di databasemu menggunakan penamaan tabel master_tarif_reguler, sesuaikan filter bindingnya:
 	if regulerRow == nil {
 		database.Table("master_tarif_reguler").
 			Where("UPPER(asal_kota) = ? AND UPPER(tujuan_kecamatan) = ?", req.AsalKota, req.TujuanKec).
 			First(&regulerRow)
 	}
 
-	// Ambil data baris murni Darat Ekonomis (Tabel: public.mkt_m_hargaekonomis)
 	database.Table("public.mkt_m_hargaekonomis").
 		Where("asalkota = ? AND tujuan_kecamatan LIKE ? AND flag_ds = 'N'", req.AsalKota, "%"+req.TujuanKec+"%").
 		First(&ekonomisRow)
 
-	// =========================================================================
-	// 📐 PROSES LOGIKA HITUNG TARIF UTAMA (BERAT VOLUME & CHARGEABLE)
-	// =========================================================================
 	var beratVolume float64 = 0
 	if req.Panjang > 0 && req.Lebar > 0 && req.Tinggi > 0 {
 		beratVolume = (req.Panjang * req.Lebar * req.Tinggi) / 4000.0
@@ -280,11 +285,9 @@ func CalculateTarif(c *gin.Context) {
 		beratChargeable = beratVolume
 	}
 
-	// Tentukan nominal pengali tarif berdasarkan Jenis Layanan pilihan user ("REGULER" atau "EKONOMIS")
 	var hargaPerKg, minBerat, biayaPenerus float64
 
 	if strings.ToUpper(req.JenisLayanan) == "EKONOMIS" && ekonomisRow != nil {
-		// Parsing data dari tabel ekonomis
 		if val, ok := ekonomisRow["hargapokok"].(float64); ok {
 			hargaPerKg = val
 		}
@@ -295,7 +298,6 @@ func CalculateTarif(c *gin.Context) {
 			biayaPenerus = val
 		}
 	} else if regulerRow != nil {
-		// Default / Fallback ke tabel reguler umum
 		if val, ok := regulerRow["hargapokok"].(float64); ok {
 			hargaPerKg = val
 		}
@@ -307,7 +309,6 @@ func CalculateTarif(c *gin.Context) {
 		}
 	}
 
-	// Aturan minimum charge berat kargo
 	beratFinal := beratChargeable
 	if beratChargeable < minBerat {
 		beratFinal = minBerat
@@ -316,9 +317,6 @@ func CalculateTarif(c *gin.Context) {
 	totalHarga := beratFinal * hargaPerKg
 	grandTotal := totalHarga + biayaPenerus
 
-	// =========================================================================
-	// 🚀 KIRIM BALIK PAYLOAD LENGKAP KE REACT (SINKRON DATA & VISUAL TABEL)
-	// =========================================================================
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "success",
 		"detected_asal":    kotaAsalMaster,
@@ -331,16 +329,13 @@ func CalculateTarif(c *gin.Context) {
 		"biaya_penerus":    biayaPenerus,
 		"total_harga":      totalHarga,
 		"grand_total":      grandTotal,
-
-		// 🌟 KUNCI UTAMA: Kirim objek baris murni database agar diisi otomatis ke tabel bawah React lu!
-		"reguler_row":  regulerRow,
-		"ekonomis_row": ekonomisRow,
+		"reguler_row":      regulerRow,
+		"ekonomis_row":     ekonomisRow,
 	})
 }
 
 // CreateBTT menghandle INSERT data transaksi BTT baru dari React Form ke mkt_t_econote
 func CreateBTT(c *gin.Context) {
-	// 1. Ambil PT ID aman dari context token JWT kamu
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
@@ -350,6 +345,18 @@ func CreateBTT(c *gin.Context) {
 	var rawPayload map[string]interface{}
 	if err := c.ShouldBindJSON(&rawPayload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Payload input form tidak valid: " + err.Error()})
+		return
+	}
+
+	// 🛑 PROTEKSI SERVER: BLOKIR INSERT BTT DARI PUSAT DAKOTA / HOLDING
+	asalAgenRaw := strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalagenid"]))
+	upperAsalAgen := strings.ToUpper(asalAgenRaw)
+
+	if asalAgenRaw == "1" || upperAsalAgen == "PUSAT DAKOTA" || strings.Contains(upperAsalAgen, "PUSAT") || strings.Contains(upperAsalAgen, "HOLDING") {
+		c.JSON(http.StatusForbidden, gin.H{
+			"status": "error",
+			"error":  "Akses Ditolak! Pusat Dakota (Holding) tidak diizinkan membuat BTT baru.",
+		})
 		return
 	}
 
@@ -396,7 +403,7 @@ func CreateBTT(c *gin.Context) {
 		jmlKoliRaw = "1"
 	}
 
-	kodeCabangRaw := fmt.Sprintf("%v", rawPayload["bttt_kodecabangagen"]) // Menangkap "DK-16117"
+	kodeCabangRaw := fmt.Sprintf("%v", rawPayload["bttt_kodecabangagen"])
 	if kodeCabangRaw == "<nil>" || strings.TrimSpace(kodeCabangRaw) == "" {
 		kodeCabangRaw = "DK-GENERAL"
 	}
@@ -430,8 +437,6 @@ func CreateBTT(c *gin.Context) {
 		}
 	}
 
-	// 🔥 STRATEGI MASTERPIECE: Bungkus seluruh data sekunder ke kolom bttt_ket yang 100% ada di database!
-	// Hasil cetak manifest: "LAPTOP (181 KOLI) - CABANG: DK-16117 - SURAT JALAN KEMBALI [B.PACKING: Rp 300000, B.PENERUS: Rp 0]"
 	carterSuffix := ""
 	if pilihCarterRaw != "" {
 		carterSuffix = fmt.Sprintf(" - CARTER: %s", pilihCarterRaw)
@@ -481,7 +486,6 @@ func CreateBTT(c *gin.Context) {
 				if conv, err := strconv.Atoi(cleanStr); err == nil {
 					tujuanAgenID = conv
 				} else {
-					// Cari berdasarkan nama agen di glb_m_agen
 					type Agen struct {
 						AgenKode string `gorm:"column:agen_kode"`
 					}
@@ -491,7 +495,6 @@ func CreateBTT(c *gin.Context) {
 							tujuanAgenID = code
 						}
 					} else {
-						// Fuzzy match
 						queryPattern := "%" + strings.ReplaceAll(cleanStr, " ", "%") + "%"
 						if err := database.Table("public.glb_m_agen").Select("agen_kode").Where("agen_nama ILIKE ?", queryPattern).First(&a).Error; err == nil {
 							if code, err := strconv.Atoi(a.AgenKode); err == nil {
@@ -508,7 +511,7 @@ func CreateBTT(c *gin.Context) {
 		"bttt_id":              cleanStringVal(bttIDStr),
 		"bttt_tanggal":         now,
 		"bttt_nosuratjalan":    cleanStringVal(rawPayload["bttt_nosuratjalan"]),
-		"bttt_ket":             cleanStringVal(keteranganAsli), // 🚀 TERAMANKAN MUTLAK: Isi barang, Jumlah Koli, Cabang, Packing & Tambahan menyatu aman di sini!
+		"bttt_ket":             cleanStringVal(keteranganAsli),
 		"bttt_nobttmanual":     cleanStringVal(rawPayload["bttt_nobttmanual"]),
 		"bttt_dliexpryn":       cleanStringVal(rawPayload["bttt_dliexpryn"]),
 		"bttt_promoid":         cleanStringVal(rawPayload["bttt_promoid"]),
@@ -533,50 +536,16 @@ func CreateBTT(c *gin.Context) {
 		"bttt_beratvol":        rawPayload["bttt_beratvol"],
 		"bttt_ukuran":          cleanStringVal(rawPayload["bttt_ukuran"]),
 		"bttt_harga":           rawPayload["bttt_harga"],
-
-		"bttt_spyn":       "Y",
-		"bttt_aktifyn":    "Y",
-		"bttt_servid":     1,             // 1 = Moda Transportasi Darat Murni
-		"bttt_asalagenid": agenIDDinamis, // Terisi dinamis mengikuti login loket
+		"bttt_spyn":            "Y",
+		"bttt_aktifyn":         "Y",
+		"bttt_servid":          1,
+		"bttt_asalagenid":      agenIDDinamis,
 	}
 
-	bilaInginDie := false
-
-	if bilaInginDie {
-		var keys []string
-		var vals []string
-		for k, v := range dbRow {
-			keys = append(keys, fmt.Sprintf(`"%s"`, k))
-			switch val := v.(type) {
-			case string:
-				vals = append(vals, fmt.Sprintf("'%s'", strings.ReplaceAll(val, "'", "''")))
-			case time.Time:
-				vals = append(vals, fmt.Sprintf("'%s'", val.Format("2006-01-02 15:04:05")))
-			default:
-				vals = append(vals, fmt.Sprintf("'%v'", val))
-			}
-		}
-		stringQueryMentah := fmt.Sprintf(
-			"INSERT INTO public.mkt_t_econote (%s) VALUES (%s);",
-			strings.Join(keys, ", "),
-			strings.Join(vals, ", "),
-		)
-
-		// Berhenti di sini dan muntahkan query mentah ke console inspect element browser lu!
-		c.JSON(http.StatusOK, gin.H{
-			"status":      "success",
-			"message":     "PHP DIE DUMP ACTIVE",
-			"query_debug": stringQueryMentah,
-		})
-		return
-	}
-
-	// 4. EKSEKUSI INSERT INTO public.mkt_t_econote MENGGUNAKAN TABLE MAP BERSIH
 	err := database.Table("public.mkt_t_econote").Create(&dbRow).Error
 	if err != nil {
 		fmt.Println("❌ [DB INSERT CRASH MELEDAK]:", err.Error())
 
-		// Deteksi cerdas jika error diakibatkan oleh duplikasi primary key bttt_id
 		if strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "duplicate key") {
 			c.JSON(http.StatusConflict, gin.H{
 				"status": "error",
@@ -589,7 +558,6 @@ func CreateBTT(c *gin.Context) {
 		return
 	}
 
-	// 6. SEMBURKAN RESPONSE SUKSES JEDERRR!
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": "Data Bukti Tanda Terima (BTT) Berhasil Disimpan ke Database!",
@@ -597,37 +565,31 @@ func CreateBTT(c *gin.Context) {
 	})
 }
 
-// GetKecamatanByKota menarik daftar kecamatan & kodepos murni dari glb_m_kota berdasarkan filter kota
 func GetKecamatanByKota(c *gin.Context) {
-	// 1. Ambil PT ID aman dari token JWT
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan"})
 		return
 	}
 
-	// 2. Tangkap parameter query ?kota=JAKARTA+BARAT
 	namaKota := c.Query("kota")
 	if namaKota == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Parameter kota wajib diisi, bro!"})
 		return
 	}
 
-	// 3. Resolve koneksi database tenant
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
 		return
 	}
 
-	// 4. Siapkan struct penampung anonim khusus data area kirim
 	type AreaKecamatan struct {
 		Kecamatan string `json:"kecamatan" gorm:"column:kot_kecamatan"`
 		KodePos   string `json:"kodepos" gorm:"column:kot_kodepos"`
 	}
 	var listKecamatan []AreaKecamatan
 
-	// 5. Eksekusi query tembak ke tabel public.glb_m_kota sesuai foto kamu!
 	err := database.Table("public.glb_m_kota").
 		Select("kot_kecamatan, kot_kodepos").
 		Where("kot_nama = ? AND kot_aktifyn = 'Y'", namaKota).
@@ -639,14 +601,12 @@ func GetKecamatanByKota(c *gin.Context) {
 		return
 	}
 
-	// 6. Semburkan data ke React
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"data":   listKecamatan,
 	})
 }
 
-// SearchAreaByKecamatan mencari data area kirim lengkap berdasarkan ketikan nama kecamatan
 func SearchAreaByKecamatan(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists {
@@ -654,7 +614,6 @@ func SearchAreaByKecamatan(c *gin.Context) {
 		return
 	}
 
-	// Tangkap input pencarian dari React form (contoh: ?search=koja)
 	searchKeyword := c.Query("search")
 	if len(searchKeyword) < 3 {
 		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []gin.H{}})
@@ -667,7 +626,6 @@ func SearchAreaByKecamatan(c *gin.Context) {
 		return
 	}
 
-	// Penampung data hasil join/query sesuai kolom database di foto kamu
 	type AreaData struct {
 		KodePos   string `json:"kodepos" gorm:"column:kodepos"`
 		Kelurahan string `json:"desakelurahan" gorm:"column:desakelurahan"`
@@ -677,7 +635,6 @@ func SearchAreaByKecamatan(c *gin.Context) {
 	}
 	var results []AreaData
 
-	// Tembak pencarian fleksibel ILIKE (Case-Insensitive) maksimal 15 baris agar performa kencang
 	err := database.Table("public.glb_m_kodepos").
 		Select("kodepos, desakelurahan, kecamatandistrik, kotakabupaten, propinsi").
 		Where("kecamatandistrik ILIKE ?", "%"+searchKeyword+"%").
@@ -696,31 +653,24 @@ func SearchAreaByKecamatan(c *gin.Context) {
 }
 
 func ValidateBTTHandler(c *gin.Context) {
-	// 1. Ambil PT ID aman dari token JWT
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
 		return
 	}
 
-	// 2. Bind JSON Request body dari React
 	var req models.BttValidateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Data validasi tidak komplit: " + err.Error()})
 		return
 	}
 
-	// 3. Resolve database dinamis sesuai tenant PT
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
 		return
 	}
 
-	// =========================================================================
-	// LAPISAN 1: Validasi Format Nomor Telepon (Regex)
-	// =========================================================================
-	// Pola regex untuk memastikan nomor diawali 08 atau +62 dan berisi angka 10-15 digit
 	re := regexp.MustCompile(`^(08|\+628)\d{8,13}$`)
 
 	if !re.MatchString(req.AsalTelp) {
@@ -732,10 +682,6 @@ func ValidateBTTHandler(c *gin.Context) {
 		return
 	}
 
-	// =========================================================================
-	// LAPISAN 2: Proteksi Minimal Nominal Rp100.000 untuk Tagih Tujuan (COD)
-	// =========================================================================
-	// Asumsi jika req.CaraBayar == "1" artinya metode "Tagih Tujuan"
 	if req.CaraBayar == "1" && req.GrandTotal < 100000 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": fmt.Sprintf("Metode Tagih Tujuan (COD) ditolak! Total biaya kargo kamu baru Rp %.2f. Syarat minimal wajib Rp 100.000, bro!", req.GrandTotal),
@@ -743,9 +689,6 @@ func ValidateBTTHandler(c *gin.Context) {
 		return
 	}
 
-	// =========================================================================
-	// LAPISAN 3: Proteksi Kredit Plafon Akhir (Double Check Status Piutang Agen)
-	// =========================================================================
 	var totalTunggakan float64
 	err := database.Table("public.art_t_invoiceh").
 		Select("COALESCE(SUM(artih_sisabayar), 0)").
@@ -757,7 +700,6 @@ func ValidateBTTHandler(c *gin.Context) {
 		return
 	}
 
-	// Rule: Jika total piutang yang belum dibayar ditambah transaksi saat ini jebol > 50 Juta, blokir!
 	if (totalTunggakan + req.GrandTotal) > 50000000 {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": fmt.Sprintf("Transaksi diblokir sistem keuangan! Total piutang berjalan kamu (Rp %.2f) sudah melewati batas limit kredit 50 Juta.", totalTunggakan),
@@ -765,9 +707,6 @@ func ValidateBTTHandler(c *gin.Context) {
 		return
 	}
 
-	// =========================================================================
-	// JIKA LOLOS SEMUA VALIDASI SERVER
-	// =========================================================================
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": "Validasi berlapis tingkat server sukses! Data aman untuk disimpan.",
@@ -775,28 +714,26 @@ func ValidateBTTHandler(c *gin.Context) {
 }
 
 func GenerateCustIDUmumHandler(c *gin.Context) {
-	kodeAgen := c.Query("kode_agen") // Diperoleh dari cabang asal user login (misal: JKT)
+	kodeAgen := c.Query("kode_agen")
 	if kodeAgen == "" {
-		kodeAgen = "DKX" // Fallback jika kosong
+		kodeAgen = "DKX"
 	}
 
 	now := time.Now()
-	bulanStr := now.Format("01") // Hasil: "05" (Mei)
-	tahunStr := now.Format("06") // Hasil: "26" (Tahun 2026)
+	bulanStr := now.Format("01")
+	tahunStr := now.Format("06")
 
-	prefix := kodeAgen + bulanStr + tahunStr // Hasil: "JKT0526"
+	prefix := kodeAgen + bulanStr + tahunStr
 
-	// Hitung counter urutan 5 digit terakhir berdasarkan prefix bulan berjalan di DB
 	var count int64
 	db.DB.Table("mkt_m_customer").
 		Where("cust_id LIKE ?", prefix+"%").
 		Count(&count)
 
 	nextCounter := count + 1
-	// Format agar selalu 5 digit dengan padding nol di depan (misal: 00001)
 	fiveDigitStr := fmt.Sprintf("%05d", nextCounter)
 
-	generatedID := prefix + fiveDigitStr // Hasil Final Berkelas: JKT052600001
+	generatedID := prefix + fiveDigitStr
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":       "success",
@@ -804,44 +741,36 @@ func GenerateCustIDUmumHandler(c *gin.Context) {
 	})
 }
 
-// GenerateCustIDHandler membuat ID unik: 3 Digit Agen + MM + YY + 5 Digit Urutan Terakhir + 1
 func GenerateCustIDHandler(c *gin.Context) {
-	// 1. Ambil PT ID & KODE AGEN USER LOGIN dari context JWT token (Multi-Tenant Dakota)
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "PT ID tidak ditemukan"})
 		return
 	}
 
-	// Ambil kode agen asal user login (misal user login di konter DEPOK -> "DPK", JAKARTA -> "JKT")
-	// Jika lu belum set "kode_agen" di auth middleware, lu bisa fallback ke query param atau default "JKT"
 	kodeAgen, _ := c.Get("kode_agen")
 	kodeAgenStr := fmt.Sprintf("%v", kodeAgen)
 
 	if kodeAgenStr == "" || kodeAgenStr == "<nil>" {
-		// Taktik fallback cerdas: Jika kosong, kita ambil dari parameter atau default standard Dakota
 		kodeParam := c.Query("kode_agen")
 		if kodeParam != "" {
 			kodeAgenStr = strings.ToUpper(kodeParam)
 		} else {
-			kodeAgenStr = "JKT" // Default pusat Dakota
+			kodeAgenStr = "JKT"
 		}
 	}
 
-	// Pastikan hanya ambil 3 digit huruf capital murni (Contoh: JKT, DPK, BKS)
 	if len(kodeAgenStr) > 3 {
 		kodeAgenStr = kodeAgenStr[:3]
 	} else {
-		kodeAgenStr = fmt.Sprintf("%-3s", kodeAgenStr) // Padding jika kurang dari 3 huruf
+		kodeAgenStr = fmt.Sprintf("%-3s", kodeAgenStr)
 	}
 	kodeAgenStr = strings.ToUpper(strings.TrimSpace(kodeAgenStr))
 
-	// 2. Ambil Waktu Real-Time Komputer Hari Ini (Bulan & Tahun)
 	now := time.Now()
-	bulanStr := now.Format("01") // Hasil: "05" (Mei)
-	tahunStr := now.Format("06") // Hasil: "26" (Tahun 2026)
+	bulanStr := now.Format("01")
+	tahunStr := now.Format("06")
 
-	// Gabungan prefix fix (contoh: JKT0526)
 	prefixID := kodeAgenStr + bulanStr + tahunStr
 
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
@@ -850,7 +779,6 @@ func GenerateCustIDHandler(c *gin.Context) {
 		return
 	}
 
-	// 3. LOCK CHECK URUTAN TERAKHIR DI POSTGRES
 	var lastCustID string
 	err := database.Table("public.mkt_m_customer").
 		Select("cust_id").
@@ -862,17 +790,14 @@ func GenerateCustIDHandler(c *gin.Context) {
 	var nextUrutan int = 1
 
 	if err == nil && len(lastCustID) >= 12 {
-		// Format ID Dakota: JKT052600001 (Total 12 Karakter)
-		// Kita ambil 5 digit urutan paling buntut
 		suffix := lastCustID[7:]
 		var currentUrutan int
 		fmt.Sscanf(suffix, "%d", &currentUrutan)
 		nextUrutan = currentUrutan + 1
 	}
 
-	// 4. PADDING 5 DIGIT (Contoh: 00001)
 	fiveDigitStr := fmt.Sprintf("%05d", nextUrutan)
-	finalGeneratedID := prefixID + fiveDigitStr // Hasil Pasti Akurat: JKT052600001
+	finalGeneratedID := prefixID + fiveDigitStr
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":       "success",
@@ -899,18 +824,16 @@ func SearchHistoryPengirimHandler(c *gin.Context) {
 		return
 	}
 
-	// 🛠️ STRUCT DISESUAIKAN 100% DENGAN SCREENSHOT pgAdmin LU, BRO!
 	type HistoryPengirimRes struct {
-		PengirimNama   string `json:"pengirim_nama" gorm:"column:bttt_asalname"`     // Menunjuk ke bttt_asalname
-		PengirimAlamat string `json:"pengirim_alamat" gorm:"column:bttt_asalalamat"` // Menunjuk ke bttt_asalalamat
-		PengirimTelp   string `json:"pengirim_telp" gorm:"column:bttt_asaltelp"`     // Menunjuk ke bttt_asaltelp
-		PengirimEmail  string `json:"pengirim_email" gorm:"column:bttt_asalemail"`   // Menunjuk ke bttt_asalemail
-		PengirimKota   string `json:"pengirim_kota" gorm:"column:bttt_asalkota"`     // Menunjuk ke bttt_asalkota
+		PengirimNama   string `json:"pengirim_nama" gorm:"column:bttt_asalname"`
+		PengirimAlamat string `json:"pengirim_alamat" gorm:"column:bttt_asalalamat"`
+		PengirimTelp   string `json:"pengirim_telp" gorm:"column:bttt_asaltelp"`
+		PengirimEmail  string `json:"pengirim_email" gorm:"column:bttt_asalemail"`
+		PengirimKota   string `json:"pengirim_kota" gorm:"column:bttt_asalkota"`
 	}
 
 	var data []HistoryPengirimRes
 
-	// 🛠️ EKSEKUSI QUERY DENGAN NAMA KOLOM ASLI BTTT_...
 	err := database.Table("public.mkt_t_econote").
 		Select("bttt_asalname, bttt_asalalamat, bttt_asaltelp, bttt_asalemail, bttt_asalkota").
 		Where("bttt_asalname ILIKE ?", "%"+keyword+"%").
@@ -931,7 +854,6 @@ func SearchHistoryPengirimHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": data})
 }
 
-// cleanStringVal membersihkan payload dynamic interface{} ke type string secara aman untuk Postgres varchar/text
 func cleanStringVal(val interface{}) string {
 	if val == nil {
 		return ""
@@ -943,15 +865,12 @@ func cleanStringVal(val interface{}) string {
 	return str
 }
 
-// getUniqueBttID mengecek keberadaan BTT ID di database. Jika bentrok, fungsi ini otomatis mencari nomor urut tertinggi dengan prefix yang sama dan menaikkannya (auto-increment).
 func getUniqueBttID(database *gorm.DB, rawID string, rawPayload map[string]interface{}, now time.Time) string {
 	bttIDStr := strings.TrimSpace(rawID)
 	if bttIDStr == "" || bttIDStr == "<nil>" {
-		// Fallback generator
 		bttIDStr = fmt.Sprintf("A%s%s00001", fmt.Sprintf("%v", rawPayload["bttt_asalagenid"]), now.Format("0106"))
 	}
 
-	// Loop untuk memastikan uniqueness
 	for {
 		var count int64
 		err := database.Table("public.mkt_t_econote").Where("bttt_id = ?", bttIDStr).Count(&count).Error
@@ -959,7 +878,6 @@ func getUniqueBttID(database *gorm.DB, rawID string, rawPayload map[string]inter
 			break
 		}
 
-		// Jika sudah terpakai, cari ID tertinggi dengan prefix yang sama untuk di-increment
 		if len(bttIDStr) > 5 {
 			prefix := bttIDStr[:len(bttIDStr)-5]
 			var maxID string
@@ -981,7 +899,6 @@ func getUniqueBttID(database *gorm.DB, rawID string, rawPayload map[string]inter
 			}
 		}
 
-		// Fallback darurat jika ada masalah parsing: tambah suffix acak / time epoch
 		bttIDStr = fmt.Sprintf("%s_%d", bttIDStr, time.Now().UnixNano()%1000)
 		break
 	}
@@ -989,7 +906,6 @@ func getUniqueBttID(database *gorm.DB, rawID string, rawPayload map[string]inter
 	return bttIDStr
 }
 
-// CheckStatusClosingKemarin mengecek apakah hari kemarin sudah diclosing oleh agen terkait
 func CheckStatusClosingKemarin(c *gin.Context) {
 	ptID, _ := c.Get("pt_id")
 	if fmt.Sprintf("%v", ptID) == "<nil>" || fmt.Sprintf("%v", ptID) == "" {
@@ -1012,31 +928,26 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 		return
 	}
 
-	// 🕒 Hitung tanggal hari kemarin (H-1) berdasarkan waktu server lokal
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	hariKemarin := time.Now().In(loc).AddDate(0, 0, -1).Format("2006-01-02")
 
-	// Pengecekan 1: Cek apakah hari kemarin agen tersebut punya aktivitas BTT aktif
 	var totalBttKemarin int64
 	database.Table("public.mkt_t_econote").
 		Where("bttt_tanggal >= ? AND bttt_tanggal <= ? AND bttt_asalagenid = ? AND bttt_aktifyn = 'Y'",
 			hariKemarin+" 00:00:00", hariKemarin+" 23:59:59", agenID).
 		Count(&totalBttKemarin)
 
-	// Jika hari kemarin tidak ada transaksi BTT sama sekali, lolos (tidak perlu closing kosong)
 	if totalBttKemarin == 0 {
 		c.JSON(http.StatusOK, gin.H{"status": "allowed", "message": "Hari kemarin tidak ada transaksi BTT"})
 		return
 	}
 
-	// Pengecekan 2: Jika ada transaksi, cek apakah sudah terdaftar di art_t_penjualanbtth
 	var countClosing int64
 	database.Table("public.art_t_penjualanbtth").
 		Where("btth_tanggal = ? AND btth_agenid = ? AND btth_activeyn = 'Y'", hariKemarin, agenID).
 		Count(&countClosing)
 
 	if countClosing == 0 {
-		// 🛑 BLOKIR LOKET: Hari kemarin ada transaksi tapi belum di-closing!
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "blocked",
 			"message": fmt.Sprintf("BTT kemarin (%s) belum di-closing! Selesaikan closingan terlebih dahulu untuk membuka akses transaksi BTT baru!", hariKemarin),
@@ -1047,11 +958,9 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "allowed", "message": "Akses loket disetujui"})
 }
 
-// SearchMasterGeoBtt memproses pencarian bebas dari kolom apa saja untuk operasional loket BTT (SINKRON NUSANTARA)
 func SearchMasterGeoBtt(c *gin.Context) {
 	keyword := strings.TrimSpace(c.Query("q"))
 
-	// 🟢 UBAH DI SINI: Cukup ketik minimal 1 huruf, backend langsung izinkan query ke Postgres!
 	if len(keyword) < 1 {
 		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []interface{}{}})
 		return
@@ -1068,7 +977,6 @@ func SearchMasterGeoBtt(c *gin.Context) {
 
 	var results []map[string]interface{}
 
-	// 🚀 SQL EXPLICIT: Nama kolom diselaraskan dengan metadata desakelurahan & kecamatandistrik asli DB lu!
 	queryRaw := `
 		SELECT 
 			kodepos as id,
@@ -1105,7 +1013,6 @@ func SearchMasterGeoBtt(c *gin.Context) {
 	})
 }
 
-// GetKelurahanByKecamatan menarik daftar kelurahan & kodepos murni berdasarkan kecamatan terpilih (Gambar 2)
 func GetKelurahanByKecamatan(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists {
@@ -1128,7 +1035,6 @@ func GetKelurahanByKecamatan(c *gin.Context) {
 	}
 	var listKelurahan []KelurahanRes
 
-	// Ambil data kelurahan & kodepos asli dari tabel public.glb_m_kodepos
 	err := database.Table("public.glb_m_kodepos").
 		Select("desakelurahan, kodepos").
 		Where("kecamatandistrik = ?", kecamatan).

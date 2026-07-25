@@ -12,58 +12,63 @@ import (
 	"gorm.io/gorm"
 )
 
+// GET /api/v1/users - SAFE FOR DBS & DLI (ORDER BY USERNAME)
 func GetAllWebLogins(c *gin.Context) {
-	var users []models.WebLogin
-	err := db.DB.Table("weblogin").Select(`
-        username, 
-        realname, 
-        user_aktifyn, 
-        gender, 
-        all_cabangyn, 
-        usertype, 
-        email, 
-        lastlogin, 
-        profileimage, 
-        kode_cabang, 
-        mobilenumber, 
-        nickname, 
-        lastiplogin
-    `).Find(&users).Error
+	ptID, exists := c.Get("pt_id")
+	ptStr := fmt.Sprintf("%v", ptID)
+	if !exists || ptStr == "" || ptStr == "<nil>" {
+		ptStr = "A" // Default fallback ke DBS
+	}
 
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	gormDB, ok := resolveGormDB(ptStr)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tenant tidak terhubung"})
 		return
 	}
 
-	// 2. Looping untuk memperkaya data (Data Enrichment)
-	for i := 0; i < len(users); i++ {
-		if users[i].All_cabangYN == "Y" {
-			// Jika ALL, kita set teks keterangannya
-			users[i].KodeCabang = "PUSAT DAKOTA"
-		} else {
-			// Jika tidak ALL, kita ambil daftar cabang dari tabel relasi
-			var cabangList []string
-			db.DB.Table("weblogin_cabang").
-				Where("username = ?", users[i].Username).
-				Pluck("kode_cabang", &cabangList) // Ambil kolom kode_cabang saja jadi array string
+	var users []models.WebLogin
 
-			// Gabungkan jadi string "JKT, BDG, SUB" untuk tampilan tabel
-			users[i].KodeCabang = strings.Join(cabangList, ", ")
+	// 🌟 KUNCI PENJINAK: Ganti "id ASC" jadi "username ASC" bray!
+	err := gormDB.Table("public.weblogin").
+		Where("username <> ?", "administrator").
+		Order("username ASC").
+		Find(&users).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal muat user: " + err.Error()})
+		return
+	}
+
+	for i := 0; i < len(users); i++ {
+		if strings.ToUpper(users[i].All_cabangYN) == "Y" {
+			users[i].KodeCabang = "ALL CABANG"
+		} else {
+			var cabangList []string
+			gormDB.Table("public.weblogin_cabang").
+				Where("LOWER(username) = LOWER(?)", users[i].Username).
+				Pluck("kode_cabang", &cabangList)
+
+			if len(cabangList) > 0 {
+				users[i].KodeCabang = strings.Join(cabangList, ", ")
+			}
 		}
 	}
 
-	c.JSON(200, users)
+	c.JSON(http.StatusOK, users)
 }
 
+// 🔄 3. UPDATE WEB LOGIN - FULLY ADAPTIVE MULTI-TENANT
 func UpdateWebLogin(c *gin.Context) {
 	var input map[string]interface{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(400, gin.H{"message": "Format data tidak valid"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Format data tidak valid"})
 		return
 	}
 
-	// 1. Resolve DB & Username
-	ptid, _ := input["pt_id"].(string)
+	// Ambil PT_ID langsung dari token context login aktif bray!
+	ctxPTID, _ := c.Get("pt_id")
+	ptid := fmt.Sprintf("%v", ctxPTID)
+
 	username, _ := input["Username"].(string)
 	if username == "" {
 		username, _ = input["username"].(string)
@@ -72,11 +77,11 @@ func UpdateWebLogin(c *gin.Context) {
 
 	gormDB, ok := resolveGormDB(ptid)
 	if !ok {
-		c.JSON(400, gin.H{"message": "Koneksi database tidak ditemukan"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Koneksi database corporate tidak ditemukan bray!"})
 		return
 	}
 
-	// 2. Siapkan penampung untuk string cabang (biar tabel utama rapi)
+	// Siapkan penampung string cabang untuk tabel utama
 	var cabangTeks string
 	if rawCabang, ok := input["kode_cabang"].([]interface{}); ok {
 		var temp []string
@@ -85,17 +90,17 @@ func UpdateWebLogin(c *gin.Context) {
 				temp = append(temp, s)
 			}
 		}
-		cabangTeks = strings.Join(temp, ", ") // Hasilnya: "CAB1, CAB2, CAB3"
+		cabangTeks = strings.Join(temp, ", ")
 	}
 
 	tx := gormDB.Begin()
 
 	updateData := map[string]interface{}{
 		"all_cabangyn": allCabangYN,
-		"kode_cabang":  cabangTeks, // <--- MASUKKAN INI supaya di pgAdmin muncul namanya
+		"kode_cabang":  cabangTeks,
 	}
 
-	// Mapping field standar lainnya (realname, email, dll)
+	// Mapping field standar dengan aman
 	if val, ok := input["real_name"].(string); ok {
 		updateData["realname"] = val
 	}
@@ -105,64 +110,55 @@ func UpdateWebLogin(c *gin.Context) {
 	if val, ok := input["email"].(string); ok {
 		updateData["email"] = val
 	}
-	if val, ok := input["Gender"].(string); ok {
-		updateData["gender"] = val
-	}
-
 	if val, ok := input["gender"]; ok {
 		updateData["gender"] = val
 	}
-
 	if val, ok := input["usertype"].(string); ok {
 		updateData["usertype"] = val
 	}
-	// Atau jaga-jaga kalau payload pakai huruf besar (UserType)
-	if val, ok := input["UserType"].(string); ok {
-		updateData["usertype"] = val
-	}
-
-	if val, ok := input["User_aktifYN"].(string); ok {
+	if val, ok := input["user_aktifyn"].(string); ok {
 		updateData["user_aktifyn"] = val
 	}
 
-	// 3. Eksekusi Update Tabel Utama
+	// Eksekusi Update Tabel Utama weblogin
 	if err := tx.Table("weblogin").Where("LOWER(username) = LOWER(?)", username).Updates(updateData).Error; err != nil {
 		tx.Rollback()
-		c.JSON(500, gin.H{"message": "Gagal update weblogin: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal update weblogin: " + err.Error()})
 		return
 	}
 
-	// 4. LOGIKA CABANG KAMU (Optimasi)
-	// Selalu hapus data lama di weblogin_cabang untuk username ini supaya bersih
+	// Bersihkan data cabang lama di weblogin_cabang untuk username ini
 	if err := tx.Table("weblogin_cabang").Where("LOWER(username) = LOWER(?)", username).Delete(map[string]interface{}{}).Error; err != nil {
 		tx.Rollback()
-		c.JSON(500, gin.H{"message": "Gagal membersihkan data cabang lama"})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal membersihkan data cabang lama"})
 		return
 	}
 
-	// Jika All Cabang = 'N' (Tidak), baru kita simpan list cabang pilihannya
 	if allCabangYN == "N" {
 		if rawCabang, ok := input["kode_cabang"].([]interface{}); ok {
+			seenCabang := make(map[string]bool)
 			for _, v := range rawCabang {
-				if kdBranche, ok := v.(string); ok && kdBranche != "" {
-					relasi := map[string]interface{}{
-						"username":    username,
-						"kode_cabang": kdBranche,
-					}
-					if err := tx.Table("weblogin_cabang").Create(relasi).Error; err != nil {
-						tx.Rollback()
-						c.JSON(500, gin.H{"message": "Gagal simpan detail cabang"})
-						return
+				if kdBranche, ok := v.(string); ok && strings.TrimSpace(kdBranche) != "" {
+					cleanBranch := strings.TrimSpace(kdBranche)
+					if !seenCabang[cleanBranch] {
+						seenCabang[cleanBranch] = true
+						relasi := map[string]interface{}{
+							"username":    strings.ToUpper(strings.TrimSpace(username)),
+							"kode_cabang": cleanBranch,
+						}
+						if err := tx.Table("weblogin_cabang").Create(relasi).Error; err != nil {
+							tx.Rollback()
+							c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal simpan detail cabang: " + err.Error()})
+							return
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// 5. COMMIT JIKA SEMUA BERHASIL
 	tx.Commit()
-	c.JSON(200, gin.H{"status": "success", "message": "Update berhasil dengan logika optimasi cabang"})
-
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Data user " + username + " berhasil diperbarui!"})
 }
 
 func CheckUsername(c *gin.Context) {
@@ -198,51 +194,71 @@ func CheckUsername(c *gin.Context) {
 func CreateUser(c *gin.Context) {
 	var input map[string]interface{}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(400, gin.H{"message": "Format data salah"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Format data tidak valid: " + err.Error()})
 		return
 	}
 
-	// 1. Resolve Database berdasarkan PT ID
+	// 1. Ambil PT_ID dengan Fallback bertingkat
 	ptid, _ := input["pt_id"].(string)
+	if ptid == "" || ptid == "<nil>" {
+		if tokenPT, exists := c.Get("pt_id"); exists {
+			ptid = fmt.Sprintf("%v", tokenPT)
+		}
+	}
+	if ptid == "" || ptid == "<nil>" {
+		ptid = "C" // Fallback default DLI
+	}
+
+	// 2. Resolve GORM DB sesuai PT_ID
 	gormDB, ok := resolveGormDB(ptid)
 	if !ok {
-		c.JSON(400, gin.H{"message": "Database tidak ditemukan"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Database corporate (" + ptid + ") tidak ditemukan bray!"})
 		return
 	}
 
-	// 2. Mapping User Type
+	// 3. Mapping User Type
 	userTypeInput, _ := input["UserType"].(string)
+	if userTypeInput == "" {
+		userTypeInput, _ = input["usertype"].(string)
+	}
+
 	var finalUserType string
-	switch userTypeInput {
-	case "Superadmin":
+	switch strings.ToUpper(userTypeInput) {
+	case "SUPERADMIN", "S":
 		finalUserType = "S"
-	case "Admin":
+	case "ADMIN", "A":
 		finalUserType = "A"
-	case "Supervisor":
+	case "SUPERVISOR", "V":
 		finalUserType = "V"
 	default:
 		finalUserType = "U"
 	}
 
-	// 3. Prepare Multi-Cabang dari Frontend
+	// 4. Multi-Cabang + 🌟 DEDUPLIKASI ARRAY (PENJINAK DUPLIKAT KEY!)
 	var cabangs []string
+	seenCabang := make(map[string]bool)
+
 	if rawCabang, ok := input["kode_cabang"].([]interface{}); ok {
 		for _, v := range rawCabang {
-			if s, ok := v.(string); ok {
-				cabangs = append(cabangs, s)
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				cleanCode := strings.TrimSpace(s)
+				// Cek apakah kode cabang ini sudah pernah dimasukkan ke map
+				if !seenCabang[cleanCode] {
+					seenCabang[cleanCode] = true
+					cabangs = append(cabangs, cleanCode)
+				}
 			}
 		}
 	}
 
-	// 4. Ambil Cabang Utama untuk serverid
-	mainCabang := ""
+	mainCabang := "PUSAT DAKOTA"
 	if len(cabangs) > 0 {
 		mainCabang = cabangs[0]
 	}
 
-	// 5. Cari ServerID (Agen_ID)
+	// 5. Cari ServerID
 	var agenID string
-	db.DB.Table("glb_m_agen").Select("agen_id").Where("agen_kode = ?", mainCabang).Limit(1).Scan(&agenID)
+	gormDB.Table("public.glb_m_agen").Select("agen_id").Where("agen_kode = ?", mainCabang).Limit(1).Scan(&agenID)
 	if agenID == "" {
 		agenID = "1"
 	}
@@ -250,98 +266,125 @@ func CreateUser(c *gin.Context) {
 	// 6. Validasi & Hash Password
 	rawPassword, _ := input["Passwordjwt"].(string)
 	if rawPassword == "" {
-		c.JSON(400, gin.H{"message": "Password wajib diisi"})
+		rawPassword, _ = input["Password"].(string)
+	}
+	if rawPassword == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Password wajib diisi bray!"})
 		return
 	}
 	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
 	passStr := string(hashedPassword)
 
-	// 7. Handle Gender (Smallint protection)
-	var finalGender interface{}
-	g, okG := input["Gender"].(string)
-	if !okG {
-		g, _ = input["gender"].(string)
-	}
-	if g != "" {
-		finalGender = g
-	} else {
-		finalGender = nil
+	// 7. Handle Gender & All Cabang YN
+	genderVal := input["gender"]
+	if genderVal == nil {
+		genderVal = input["Gender"]
 	}
 
-	// 8. MULAI TRANSAKSI DATABASE (tx)
-	tx := gormDB.Begin()
+	allCabangYN, _ := input["all_cabangyn"].(string)
+	if allCabangYN == "" {
+		allCabangYN = "N"
+	}
 
-	// Ambil Username (pastikan tidak nil)
+	// 8. Username Normalization
 	usernameVal := input["Username"]
-	if usernameVal == nil {
+	if usernameVal == nil || fmt.Sprintf("%v", usernameVal) == "" {
 		usernameVal = input["username"]
 	}
+	cleanUsername := strings.TrimSpace(fmt.Sprintf("%v", usernameVal))
+
+	// Realname
+	realNameVal := input["RealName"]
+	if realNameVal == nil || fmt.Sprintf("%v", realNameVal) == "" {
+		realNameVal = input["real_name"]
+	}
+
+	// 9. MULAI TRANSAKSI DATABASE
+	tx := gormDB.Begin()
 
 	dataBaru := map[string]interface{}{
-		"username":     usernameVal,
-		"realname":     input["real_name"],
+		"username":     cleanUsername,
+		"realname":     realNameVal,
 		"password":     passStr,
 		"passwordjwt":  passStr,
 		"pt_id":        ptid,
 		"mobilenumber": input["mobilenumber"],
 		"email":        input["email"],
-		"gender":       finalGender,
+		"gender":       genderVal,
 		"kode_cabang":  mainCabang,
-		"user_aktifyn": input["User_aktifYN"],
+		"user_aktifyn": "Y",
 		"usertype":     finalUserType,
+		"all_cabangyn": allCabangYN,
 		"serverid":     agenID,
 	}
 
-	// Simpan ke table weblogin
-	if err := tx.Table("weblogin").Create(dataBaru).Error; err != nil {
+	// Insert ke public.weblogin
+	if err := tx.Table("public.weblogin").Create(dataBaru).Error; err != nil {
 		tx.Rollback()
-		c.JSON(500, gin.H{"message": "Gagal simpan user: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal simpan user ke DB: " + err.Error()})
 		return
 	}
 
-	// Simpan ke table weblogin_cabang (Looping semua cabang yang dipilih)
-	for _, kdBranche := range cabangs {
-		relasiCabang := map[string]interface{}{
-			"username":    usernameVal,
-			"kode_cabang": kdBranche,
-		}
-		if err := tx.Table("weblogin_cabang").Create(relasiCabang).Error; err != nil {
-			tx.Rollback()
-			c.JSON(500, gin.H{"message": "Gagal simpan relasi cabang: " + err.Error()})
-			return
+	// Insert ke public.weblogin_cabang jika bukan ALL CABANG (Gunakan array cabangs yang sudah BERSIH & UNIK!)
+	if allCabangYN == "N" {
+		for _, kdBranche := range cabangs {
+			relasiCabang := map[string]interface{}{
+				"username":    cleanUsername,
+				"kode_cabang": kdBranche,
+			}
+			if err := tx.Table("public.weblogin_cabang").Create(relasiCabang).Error; err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal simpan relasi cabang: " + err.Error()})
+				return
+			}
 		}
 	}
 
-	// COMMIT!
 	tx.Commit()
 
 	c.JSON(http.StatusCreated, gin.H{
 		"status":  "success",
-		"message": "User " + fmt.Sprintf("%v", usernameVal) + " berhasil ditambahkan dengan " + fmt.Sprintf("%d", len(cabangs)) + " akses cabang",
+		"message": fmt.Sprintf("User %s berhasil ditambahkan ke PT %s!", cleanUsername, ptid),
 	})
 }
 
 func DeleteUser(c *gin.Context) {
-	username := c.Param("username") // Ambil parameter username dari URL
-
+	username := c.Param("username")
 	if username == "" {
-		c.JSON(400, gin.H{"message": "Username kosong"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Username kosong"})
 		return
 	}
 
-	// Eksekusi Delete
-	err := db.DB.Table("weblogin").Where("username = ?", username).Delete(nil).Error
+	// Ambil PT_ID langsung dari token context login aktif bray!
+	ctxPTID, _ := c.Get("pt_id")
+	ptid := fmt.Sprintf("%v", ctxPTID)
 
-	if err != nil {
-		c.JSON(500, gin.H{"message": "Gagal hapus: " + err.Error()})
+	gormDB, ok := resolveGormDB(ptid)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Database tidak ditemukan bray!"})
 		return
 	}
 
-	fmt.Printf("\n🔥 [DELETE USER] Berhasil menghapus user dari database\n")
-	fmt.Printf("Username yang dihapus: %s\n", username)
-	fmt.Println("--------------------------------")
+	tx := gormDB.Begin()
 
-	c.JSON(200, gin.H{"status": "success", "message": "Data " + username + " terhapus"})
+	// 1. Hapus dari tabel utama
+	if err := tx.Table("weblogin").Where("LOWER(username) = LOWER(?)", username).Delete(nil).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal hapus weblogin: " + err.Error()})
+		return
+	}
+
+	// 2. Hapus dari tabel relasi cabang biar bersih tanpa ampas data
+	if err := tx.Table("weblogin_cabang").Where("LOWER(username) = LOWER(?)", username).Delete(nil).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal hapus relasi cabang: " + err.Error()})
+		return
+	}
+
+	tx.Commit()
+
+	fmt.Printf("\n🔥 [DELETE USER TENANT %s] Sukses membersihkan user: %s\n", ptid, username)
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Data user " + username + " resmi dimusnahkan bray!"})
 }
 
 // resolveGormDB mengembalikan GORM instance berdasarkan PT_ID

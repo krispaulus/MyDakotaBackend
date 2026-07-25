@@ -1,6 +1,8 @@
 package models
 
 type WebLogin struct {
+	ID    int64  `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	PT_ID string `gorm:"column:pt_id;default:DLI" json:"pt_id"`
 	// Gunakan tag gorm:"column:NAMA_KOLOM_DI_SQL" supaya mappingnya presisi
 	Username     string   `gorm:"column:username" json:"username"`
 	RealName     string   `gorm:"column:realname" json:"realname"`
@@ -18,4 +20,5 @@ type WebLogin struct {
 	LastIPlogin  string   `gorm:"column:lastiplogin" json:"lastiplogin"`
 	NickName     string   `gorm:"column:nickname" json:"nickname"`
 	Cabangs      []string `gorm:"-" json:"cabangs"`
+	ServerID     string   `gorm:"column:serverid" json:"serverid"`
 }

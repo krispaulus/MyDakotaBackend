@@ -58,6 +58,7 @@ type WebLogin struct {
 	Gender       int    `gorm:"column:gender" json:"gender"`
 	KodeCabang   string `gorm:"column:kode_cabang" json:"kode_cabang"`
 	All_cabangYN string `gorm:"column:all_cabangyn" json:"all_cabangyn"`
+	UserType     string `gorm:"column:usertype" json:"usertype"`
 	LastLogin    string `gorm:"column:lastlogin" json:"lastlogin"`
 	LastIPlogin  string `gorm:"column:lastiplogin" json:"lastiplogin"`
 	ProfileImage string `gorm:"column:profileimage" json:"profileimage"`
@@ -184,7 +185,7 @@ func resolveDB(ptID string) (*sql.DB, bool) {
 
 func LoginHandler(c *gin.Context) {
 	fmt.Println("\n==================================")
-	fmt.Println("🚀 REQUEST LOGIN MASUK KE HANDLER")
+	fmt.Println("🚀 REQUEST LOGIN MASUK KE HANDLER DLI/DBS")
 	fmt.Println("==================================")
 
 	// 1. AMBIL INPUT DARI JSON
@@ -201,10 +202,13 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	// 2. QUERY DATABASE (Deklarasikan variabel yang tadi undefined)
-	var dbPassword, aktif string
-	var user UserInfo // Ini variabel 'user' yang tadi undefined
+	// 2. QUERY DATABASE WITH PRECISE SNAKE_CASE MAPPING
+	var dbPassword, aktif, defaultKodeCabang string
+	var user UserInfo
 
+	user.PTID = req.PTID
+
+	// 🟩 DIBERSIHKAN TOTAL MENGIKUTI FISIK TABEL PGADMIN DLI BRAY!
 	queryUser := `SELECT 
                     username, 
                     password, 
@@ -213,11 +217,9 @@ func LoginHandler(c *gin.Context) {
                     COALESCE(email, '') as email, 
                     COALESCE(usertype, 'U') as usertype, 
 					COALESCE(all_cabangyn, 'N') as all_cabangyn,
-					COALESCE(kode_cabang, 'PUSAT DAKOTA') as kode_cabang
-                  FROM weblogin 
-                  WHERE username = $1 OR email = $2`
-
-	var defaultKodeCabang string
+					COALESCE(serverid, '1') as kode_cabang
+                  FROM public.weblogin 
+                  WHERE UPPER(username) = UPPER($1) OR UPPER(email) = UPPER($2)`
 
 	err := conn.QueryRow(queryUser, req.Email, req.Email).Scan(
 		&user.Username,
@@ -232,63 +234,86 @@ func LoginHandler(c *gin.Context) {
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusUnauthorized, gin.H{"status": "error", "message": "User tidak ditemukan"})
+			c.JSON(http.StatusUnauthorized, gin.H{"status": "error", "message": "User tidak ditemukan bray"})
 			return
 		}
+		fmt.Println("❌ [CRASH LOGIN QUERY INTERNAL]:", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database error"})
 		return
 	}
 
-	// 3. CEK PASSWORD MENGGUNAKAN BCRYPT
+	// 3. HYBRID PASSWORD CHECKER ENGINE (BCRYPT + MD5 FALLBACK)
+	isPasswordCorrect := false
+
 	err = bcrypt.CompareHashAndPassword([]byte(dbPassword), []byte(req.Password))
-	if err != nil {
+	if err == nil {
+		isPasswordCorrect = true
+	} else {
+		if len(dbPassword) == 32 {
+			hashedMD5 := md5Hash(req.Password)
+			if hashedMD5 == dbPassword {
+				isPasswordCorrect = true
+
+				// 💥 AUTO UPGRADE: UBAH TANDA TANYA (?) MENJADI FORMULA DOLLAR ($1, $2, $3) UNTUK POSTGRESQL!
+				newHashedPassword, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+				_, errUpgrade := conn.Exec(
+					"UPDATE public.weblogin SET password = $1, passwordjwt = $2 WHERE username = $3",
+					string(newHashedPassword),
+					string(newHashedPassword),
+					user.Username,
+				)
+				if errUpgrade != nil {
+					fmt.Println("⚠️ [WARN]: Gagal auto-upgrade password ke Bcrypt:", errUpgrade.Error())
+				} else {
+					fmt.Println("✨ [SUCCESS]: Akun", user.Username, "resmi di-upgrade ke kasta tertinggi Bcrypt!")
+				}
+			}
+		}
+	}
+
+	if !isPasswordCorrect {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"status":  "error",
-			"message": "Password yang kamu masukkan tidak sesuai",
+			"message": "Password yang kamu masukkan tidak sesuai bray!",
 		})
 		return
 	}
 
 	// 4. CEK STATUS AKTIF
-	if aktif != "Y" {
+	if strings.ToUpper(aktif) != "Y" {
 		c.JSON(http.StatusForbidden, gin.H{"status": "error", "message": "Akun tidak aktif"})
 		return
 	}
 
-	// ==========================================
-	// LOGIKA OPTIMASI CABANG
-	// ==========================================
+	// 5. LOGIKA OPTIMASI HAK AKSES CABANG (ANTI-LEAK)
 	var userCabangs []string
-
 	if user.All_cabangYN == "Y" {
-		// Jika 'Y', ambil semua dari master agen
-		rows, _ := conn.Query("SELECT agen_kode FROM glb_m_agen")
-		defer rows.Close()
-		for rows.Next() {
-			var code string
-			rows.Scan(&code)
-			userCabangs = append(userCabangs, code)
+		rows, err := conn.Query("SELECT agen_kode FROM glb_m_agen")
+		if err == nil && rows != nil {
+			for rows.Next() {
+				var code string
+				if errScan := rows.Scan(&code); errScan == nil {
+					userCabangs = append(userCabangs, code)
+				}
+			}
+			rows.Close()
 		}
 	} else {
-		// Jika 'N', ambil dari tabel relasi weblogin_cabang
-		rows, _ := conn.Query("SELECT kode_cabang FROM weblogin_cabang WHERE username = $1", user.Username)
-		defer rows.Close()
-		for rows.Next() {
-			var code string
-			rows.Scan(&code)
-			userCabangs = append(userCabangs, code)
+		rows, err := conn.Query("SELECT kode_cabang FROM weblogin_cabang WHERE username = $1", user.Username)
+		if err == nil && rows != nil {
+			for rows.Next() {
+				var code string
+				if errScan := rows.Scan(&code); errScan == nil {
+					userCabangs = append(userCabangs, code)
+				}
+			}
+			rows.Close()
 		}
 	}
-
-	// Masukkan ke field penampung (Cabangs)
 	user.Cabangs = userCabangs
 
-	// 5. JWT PROCESS
+	// 6. GENERATE JWT PROCESS
 	secret := os.Getenv("JWT_SECRET")
-	// if secret == "" {
-	// 	secret = os.Getenv("JWT_SECRET")
-	// }
-
 	expirationTime := time.Now().Add(24 * time.Hour).Unix()
 
 	claims := jwt.MapClaims{
@@ -297,31 +322,32 @@ func LoginHandler(c *gin.Context) {
 		"pt_id":      req.PTID,
 		"user_type":  user.UserType,
 		"agent_code": defaultKodeCabang,
-		"exp":        expirationTime, // Gunakan variabel expirationTime di sini
+		"exp":        expirationTime,
 		"iat":        time.Now().Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(secret))
-
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal membuat token"})
 		return
 	}
 
-	// 6. RESPONSE FINAL
+	// 7. RESPONSE FINAL KE FRONTEND REACT
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"token":  tokenString,
 		"pt_id":  req.PTID,
 		"user": gin.H{
-			"username":     user.Username,
-			"real_name":    user.RealName,
-			"email":        user.Email,
-			"user_type":    user.UserType,
-			"all_cabangyn": user.All_cabangYN,
-			"profileimage": user.ProfileImage,
-			"agent_code":   defaultKodeCabang, // Dioper ke frontend bro!
+			"username":      user.Username,
+			"realname":      user.RealName,
+			"real_name":     user.RealName,
+			"email":         user.Email,
+			"user_type":     user.UserType,
+			"all_cabangyn":  user.All_cabangYN,
+			"profileimage":  user.ProfileImage,
+			"profile_image": user.ProfileImage,
+			"agent_code":    defaultKodeCabang,
 		},
 	})
 }
