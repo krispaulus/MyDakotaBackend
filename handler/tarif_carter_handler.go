@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"dakotagroup/business-insight-be/db"
@@ -70,17 +71,46 @@ func AddMassCarter(c *gin.Context) {
 
 // 📱 1. API GET: Ambil List Halaman Utama (Index Master Carter) [cite: 48]
 func GetTarifCarterIndex(c *gin.Context) {
-	var result []models.CarterIndexDTO
-	searchAgen := c.Query("agen_nama")
-
 	ptID, _ := c.Get("pt_id")
-	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	ptStr := fmt.Sprintf("%v", ptID)
+
+	database, ok := db.ResolveDB(ptStr)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Database resolver gagal"})
+		database = db.DB
+	}
+
+	searchAgen := strings.TrimSpace(c.Query("agen_nama"))
+
+	// 🟢 JIKA PT = DLI / MEMAKAI OPR_M_KENDJENIS
+	if database.Migrator().HasTable("public.opr_m_kendjenis") && !database.Migrator().HasTable("public.mkt_m_eharga_charter") {
+		type KendJenisDTO struct {
+			JenisID        string  `json:"agen_id"`   // Digunakan sebagai ID utama
+			JenisMerk      string  `json:"agen_nama"` // Merek Armada
+			JenisModel     string  `json:"agen_kota"` // Model Armada
+			JenisHargasewa float64 `json:"hargasewa"` // Harga Sewa DLI
+			Jml            int64   `json:"jml"`       // Indicator Status
+		}
+
+		var listKend []KendJenisDTO
+		query := database.Table("public.opr_m_kendjenis").
+			Select("jenis_id, jenis_merk, jenis_model, jenis_hargasewa, 1 as jml").
+			Where("jenis_aktifyn = 'Y'")
+
+		if searchAgen != "" {
+			query = query.Where("UPPER(jenis_merk) LIKE UPPER(?) OR UPPER(jenis_model) LIKE UPPER(?)", "%"+searchAgen+"%", "%"+searchAgen+"%")
+		}
+
+		if err := query.Order("jenis_id ASC").Scan(&listKend).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat tarif carter DLI"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": listKend, "schema_type": "DLI"})
 		return
 	}
 
-	// Raw Query Join kasta tertinggi mengikuti query asli .asp [cite: 48]
+	// 🔵 JIKA PT = DBS / MEMAKAI MKT_M_EHARGA_CHARTER
+	var result []models.CarterIndexDTO
 	queryStr := `
 		SELECT a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_phone1, 
 		       COUNT(c.id) AS jml 
@@ -95,11 +125,12 @@ func GetTarifCarterIndex(c *gin.Context) {
 
 	err := database.Raw(queryStr).Scan(&result).Error
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal memuat index tarif carter"})
+		// Fallback jika tabel mkt_m_eharga_charter belum dibuat di DB ini
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []interface{}{}, "schema_type": "NONE"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success", "data": result})
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": result, "schema_type": "DBS"})
 }
 
 // 🗺️ 2. API GET: Ambil Matrix Detail Berdasarkan Agen & Jenis Kendaraan untuk Halaman Edit

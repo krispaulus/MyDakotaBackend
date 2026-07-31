@@ -18,11 +18,9 @@ func infoHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"status": "running", "message": "Dakota Business Insight API is Live"}`)
 }
 
-// Buat fungsi Logger sederhana
-
 func main() {
 	handler.InitGlobalLogger()
-	// Di main.go atau router.g
+
 	// 1. Load Environment Variables
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, menggunakan system env")
@@ -35,9 +33,7 @@ func main() {
 	fmt.Println("✅ Database Dakota Group (DBS, DLB, DLI) Berhasil Inisialisasi!")
 
 	// 3. Setup Server Gin
-	// Secara default Gin sudah punya Logger dan Recovery middleware
 	r := gin.Default()
-	//r.Use(middleware.CORSMiddleware())
 	r.Use(CorsMiddleware())
 	r.Use(middleware.ActivityLogger())
 
@@ -53,7 +49,6 @@ func main() {
 
 	// Grouping API
 	api := r.Group("/api")
-	//api.Use(middleware.ActivityLogger())
 	{
 		api.POST("/login", handler.LoginHandler)
 		api.POST("/request-otp", handler.RequestOTPHandler)
@@ -64,7 +59,6 @@ func main() {
 		api.GET("/btt/generate-custid-umum", handler.GenerateCustIDUmumHandler)
 		api.GET("/sp/list", handler.GetSuratPengantarFetch)
 		api.POST("/sp/add", handler.CreateSuratPengantar)
-		//api.GET("/marketing/kembali-sj", handler.GetKembaliSJList)
 
 		// Group ini butuh token JWT
 		authorized := api.Group("/")
@@ -117,6 +111,8 @@ func main() {
 			authorized.GET("/customer/search-kota", handler.SearchKotaHandler)
 			authorized.GET("/customer", handler.GetMasterCustomerList)
 
+			authorized.POST("/customer/workdays/update", handler.UpdateCustomerWorkDaysHandler)
+
 			authorized.GET("/btt/search-customer", handler.SearchCustomerHandler)
 			authorized.POST("/btt/add", handler.CreateBTT)
 			authorized.GET("/closing-agen/list", handler.GetClosingAgenList)
@@ -152,11 +148,82 @@ func main() {
 			authorized.POST("/operasional/sp-turun/autosave", handler.AutoSaveRowSPTurun)
 			authorized.GET("/operasional/sp-turun/history", handler.GetHistorySPTurun)
 
+			// 📄 OPERASIONAL: LOPER
+			authorized.GET("/operasional/loper-list", handler.GetLoperList)
+			authorized.POST("/operasional/loper-create", handler.CreateLoper)
 			authorized.GET("/operasional/loper/history", handler.GetHistoryLoper)
-			authorized.GET("/operasional/kembali-btt/history", handler.GetHistoryKembaliBTT)
-			authorized.GET("/operasional/kembali-btt/monitor-belum-kembali", handler.GetBTTBelumKembali)
-			authorized.GET("/operasional/kembali-btt/monitor-outstanding-bdb", handler.GetReturOutstandingBDB)
+
+			// 📄 OPERASIONAL: LOPER DEADLINE
+			authorized.GET("/operasional/loper-deadline-list", handler.GetLoperDeadlineList)
+			authorized.POST("/operasional/loper-deadline-action", handler.ProcessLoperDeadlineAction)
+			authorized.POST("/operasional/loper-deadline-create", handler.CreateLoperDeadline)
+			authorized.PUT("/operasional/loper-deadline-update", handler.UpdateLoperDeadline)
+			authorized.DELETE("/operasional/loper-deadline-delete", handler.DeleteLoperDeadline)
+
+			// 📄 OPERASIONAL: PEMBONGKARAN BARANG (UNLOADING)
+			authorized.GET("/operasional/unload-barang", handler.GetListUnloadBarang)
+			authorized.POST("/operasional/unload-barang-create", handler.CreateUnloadBarang)
+			authorized.PUT("/operasional/unload-barang-update", handler.UpdateUnloadBarang)
+			authorized.DELETE("/operasional/unload-barang-delete", handler.DeleteUnloadBarang)
+
+			// 📄 OPERASIONAL: INVENTORY BARANG CUSTOMER
+			authorized.GET("/operasional/inventory-customer", handler.GetListCustomerInventory)
+			authorized.POST("/operasional/inventory-customer-create", handler.CreateCustomerInventory)
+			authorized.PUT("/operasional/inventory-customer-update", handler.UpdateCustomerInventory)
+			authorized.DELETE("/operasional/inventory-customer-delete", handler.DeleteCustomerInventory)
+
 			authorized.GET("/operasional/sp-terima/print-detail/:id", handler.GetPrintSPDetail)
+
+			// 📄 OPERASIONAL: PENGEMBALIAN BTT (CLEANED ROUTE)
+			authorized.GET("/operasional/kembali-btt/history", handler.GetListKembaliBTT)
+			authorized.GET("/operasional/kembali-btt-list", handler.GetListKembaliBTT)
+			authorized.POST("/operasional/kembali-btt-create", handler.CreateKembaliBTT)
+			authorized.PUT("/operasional/kembali-btt-update", handler.UpdateKembaliBTT)
+			authorized.DELETE("/operasional/kembali-btt-delete", handler.DeleteKembaliBTT)
+			//authorized.GET("/operasional/kembali-btt/monitor-belum-kembali", handler.GetBTTBelumKembali)
+			//authorized.GET("/operasional/kembali-btt/monitor-outstanding-bdb", handler.GetReturOutstandingBDB)
+			authorized.GET("/operasional/kembali-btt/monitor-belum-kembali", handler.GetMonitorBelumKembali)
+			authorized.GET("/operasional/kembali-btt/monitor-outstanding-bdb", handler.GetMonitorOutstandingBDB)
+
+			// 📄 OPERASIONAL: HASIL LOPER (POD)
+			authorized.GET("/operasional/hasil-loper-list", handler.GetHasilLoperList)
+			authorized.GET("/operasional/reason-list", handler.GetReasonList)
+			authorized.POST("/operasional/hasil-loper-create", handler.CreateHasilLoper)
+			authorized.PUT("/operasional/hasil-loper-update", handler.UpdateHasilLoper)
+			authorized.DELETE("/operasional/hasil-loper-delete", handler.DeleteHasilLoper)
+
+			// 📄 OPERASIONAL: RETUR BTT / BARANG BERMASALAH
+			authorized.GET("/operasional/retur-btt-list", handler.GetListReturBTT)
+			authorized.POST("/operasional/retur-btt-create", handler.CreateReturBTT)
+			authorized.PUT("/operasional/retur-btt-update", handler.UpdateReturBTT)
+			authorized.DELETE("/operasional/retur-btt-delete", handler.DeleteReturBTT)
+
+			// 📑 OPERASIONAL: LAPORAN LSBP (INFORMASI LSPB)
+			authorized.GET("/operasional/laporan-lspb/list", handler.GetLSPBReportList)
+			authorized.POST("/operasional/laporan-lspb/save", handler.SaveLSPB)
+			authorized.DELETE("/operasional/laporan-lspb/delete/:nodo", handler.DeleteLSPB)
+
+			authorized.GET("/operasional/laporan-lspb-v2/list", handler.GetLSPBV2ReportList)
+			authorized.GET("/operasional/laporan-barang-turun/detail", handler.GetLaporanBarangTurunDetail)
+			authorized.GET("/operasional/laporan-barang-turun/rekap", handler.GetLaporanBarangTurunRekap)
+			authorized.GET("/operasional/laporan-btt-belum-kembali/detail", handler.GetBTTBelumKembaliDetail)
+			authorized.GET("/operasional/laporan-btt-belum-kembali/rekap", handler.GetBTTBelumKembaliRekap)
+			authorized.GET("/operasional/laporan-data-penerima-customer", handler.GetLaporanDataPenerimaCustomer)
+			authorized.GET("/operasional/laporan-pendapatan-operasional", handler.GetLaporanPendapatanOperasional)
+			authorized.GET("/operasional/loading-barang", handler.GetListLoadingBarang)
+
+			// 📄 OPERASIONAL: PENGAMBILAN BARANG RETUR
+			authorized.GET("/operasional/ambilretur-list", handler.GetAmbilReturList)
+			authorized.POST("/operasional/ambilretur-create", handler.CreateAmbilRetur)
+			authorized.PUT("/operasional/ambilretur-update", handler.UpdateAmbilRetur)
+			authorized.DELETE("/operasional/ambilretur-delete", handler.DeleteAmbilRetur)
+
+			// 📄 OPERASIONAL: PENGAMBILAN BARANG SENDIRI
+			authorized.GET("/operasional/ambil-list", handler.GetAmbilList)
+			authorized.POST("/operasional/ambil-create", handler.CreateAmbil)
+			authorized.PUT("/operasional/ambil-update", handler.UpdateAmbil)
+			authorized.DELETE("/operasional/ambil-delete", handler.DeleteAmbil)
+
 			authorized.GET("/marketing/bdb/list", handler.GetBDBListHandler)
 			authorized.GET("/marketing/monitoring-btt", handler.GetMonitoringBTT)
 			authorized.GET("/marketing/kembali-sj", handler.GetKembaliSJList)
@@ -211,13 +278,6 @@ func main() {
 			authorized.POST("/master/tarif-carter/mass-add", handler.AddMassCarter)
 			authorized.GET("/master/active-agen-list", handler.GetActiveAgenList)
 
-			authorized.GET("/operasional/loper-list", handler.GetLoperList)
-			authorized.POST("/operasional/loper", handler.CreateLoper)
-			authorized.GET("/operasional/ambil-list", handler.GetAmbilList)
-			authorized.POST("/operasional/ambil-create", handler.CreateAmbil)
-			authorized.GET("/operasional/ambilretur-list", handler.GetAmbilList)
-			authorized.POST("/operasional/ambilretur-create", handler.CreateAmbilRetur)
-
 			authorized.GET("/master/econote/list", handler.GetEconoteList)
 			authorized.GET("/master/econote/detail/:id", handler.GetEconoteDetail)
 			authorized.PUT("/master/econote/update", handler.UpdateEconote)
@@ -249,6 +309,71 @@ func main() {
 			authorized.POST("/master/perawatan-kendaraan/add", handler.CreateKendaraanBaru)
 			authorized.PUT("/master/perawatan-kendaraan/update/:id", handler.UpdateKendaraanBaru)
 			authorized.DELETE("/master/perawatan-kendaraan/delete/:id", handler.DeleteKendaraanBaru)
+
+			leadTimeGroup := authorized.Group("/master/leadtime-customer")
+			{
+				leadTimeGroup.GET("/list", handler.GetListLeadTime)
+				leadTimeGroup.POST("/add", handler.CreateLeadTime)
+				leadTimeGroup.PUT("/update", handler.UpdateLeadTime)
+				leadTimeGroup.DELETE("/delete", handler.DeleteLeadTime)
+			}
+
+			tarifCustGroup := authorized.Group("/master/tarif-customer")
+			{
+				tarifCustGroup.GET("/list", handler.GetTarifCustomerList)
+				tarifCustGroup.GET("/detail/:customer_id", handler.GetDetailTarifByCustomer)
+				tarifCustGroup.POST("/save", handler.SaveTarifCustomer)
+				tarifCustGroup.POST("/delete", handler.DeleteTarifCustomer)
+			}
+
+			tarifHandlingGroup := authorized.Group("/master/tarif-handling-propinsi")
+			{
+				tarifHandlingGroup.GET("/list", handler.GetTarifHandlingPropinsiList)
+				tarifHandlingGroup.POST("/save", handler.SaveTarifHandlingPropinsi)
+				tarifHandlingGroup.POST("/delete", handler.DeleteTarifHandlingPropinsi)
+			}
+
+			tarifPaketGroup := authorized.Group("/master/tarif-paket")
+			{
+				tarifPaketGroup.GET("/list", handler.GetTarifPaketSummaryList)
+				tarifPaketGroup.GET("/detail/:agen_id", handler.GetDetailTarifPaketByAgen)
+				tarifPaketGroup.POST("/save", handler.SaveTarifPaketArea)
+				tarifPaketGroup.POST("/delete", handler.DeleteTarifPaketArea)
+			}
+
+			authorized.GET("/master/jenis-kendaraan-carter/list", handler.GetJenisKendaraanCarterList)
+			authorized.POST("/master/jenis-kendaraan-carter/save", handler.SaveJenisKendaraanCarter)
+			authorized.DELETE("/master/jenis-kendaraan-carter/delete/:id", handler.DeleteJenisKendaraanCarter)
+
+			// 🏬 MASTER VENDOR (MKT_M_VENDOR)
+			authorized.GET("/master/vendor/list", handler.GetVendorList)
+			authorized.POST("/master/vendor/save", handler.SaveVendor)
+			authorized.DELETE("/master/vendor/delete/:id", handler.DeleteVendor)
+
+			// 📄 OPERASIONAL: PENGELUARAN INVENTORY BARANG CUSTOMER
+			authorized.GET("/operasional/inventory-customer-out", handler.GetListCustomerInventoryOut)
+			authorized.POST("/operasional/inventory-customer-out-create", handler.CreateCustomerInventoryOut)
+			authorized.PUT("/operasional/inventory-customer-out-update", handler.UpdateCustomerInventoryOut)
+			authorized.DELETE("/operasional/inventory-customer-out-delete", handler.DeleteCustomerInventoryOut)
+
+			// 📄 OPERASIONAL: PENGISIAN BBM
+			authorized.GET("/operasional/isibbm-list", handler.GetIsiBBMList)
+			authorized.POST("/operasional/isibbm-create", handler.CreateIsiBBM)
+			authorized.PUT("/operasional/isibbm-update", handler.UpdateIsiBBM)
+			authorized.DELETE("/operasional/isibbm-delete", handler.DeleteIsiBBM)
+
+			// 📄 OPERASIONAL: SURAT TUGAS SUPIR / SURAT JALAN
+			authorized.GET("/operasional/surattugas-list", handler.GetSuratTugasList)
+			authorized.POST("/operasional/surattugas-create", handler.CreateSuratTugas)
+			authorized.PUT("/operasional/surattugas-update", handler.UpdateSuratTugas)
+			authorized.DELETE("/operasional/surattugas-delete", handler.DeleteSuratTugas)
+
+			// 📄 OPERASIONAL: SURAT MUATAN UDARA (SMU)
+			authorized.GET("/operasional/smu-list", handler.GetSMUList)
+			authorized.POST("/operasional/smu-create", handler.CreateSMU)
+			authorized.PUT("/operasional/smu-update", handler.UpdateSMU)
+			authorized.DELETE("/operasional/smu-delete", handler.DeleteSMU)
+
 		}
 	}
 
@@ -260,9 +385,7 @@ func main() {
 
 	fmt.Printf("🚀 Server Dakota Business Insight running on %s\n", port)
 	fmt.Printf("🚀 Server Golang Dakota Cargo Menyala di Port: %s\n", port)
-	//r.Run(":" + port)
 
-	// r.Run akan nge-block di sini
 	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("❌ Server gagal jalan: %v", err)
 	}
@@ -280,7 +403,6 @@ func ProfileHandler(c *gin.Context) {
 
 func CorsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Membaca origin dari browser secara dinamis agar localhost maupun IP 22.25 lolos semua
 		origin := c.Request.Header.Get("Origin")
 		if origin != "" {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
@@ -292,7 +414,6 @@ func CorsMiddleware() gin.HandlerFunc {
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
 
-		// 🌟 KUNCI EMAS PREFLIGHT BYPASS
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return

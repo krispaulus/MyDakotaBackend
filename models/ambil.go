@@ -2,14 +2,16 @@ package models
 
 // OprTEambil memetakan tabel induk transaksi pengambilan barang sendiri oleh customer
 type OprTEambil struct {
-	ID              int64  `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
-	AmbilID         string `gorm:"column:ambil_id" json:"ambil_id"`
-	AmbilAgenID     string `gorm:"column:ambil_agenid" json:"ambil_agenid"`
-	AmbilTanggal    string `gorm:"column:ambil_tanggal" json:"ambil_tanggal"`
-	AmbilJam        string `gorm:"column:ambil_jam" json:"ambil_jam"`
-	AmbilMenit      string `gorm:"column:ambil_menit" json:"ambil_menit"`
-	AmbilBTTID      string `gorm:"column:ambil_bttid" json:"ambil_bttid"`
-	AmbilCheckerNIP string `gorm:"column:ambil_checkernip" json:"ambil_checkernip"`
+	AmbilID      string `gorm:"column:ambil_id;primaryKey" json:"ambil_id"`
+	AmbilAgenID  string `gorm:"column:ambil_agenid" json:"ambil_agenid"`
+	AmbilTanggal string `gorm:"column:ambil_tanggal" json:"ambil_tanggal"`
+	AmbilJam     string `gorm:"column:ambil_jam" json:"ambil_jam"`
+	AmbilMenit   string `gorm:"column:ambil_menit" json:"ambil_menit"`
+	AmbilBTTID   string `gorm:"column:ambil_bttid" json:"ambil_bttid"`
+
+	// ✅ PERBAIKAN: gorm:"column:ambil_chekernip" (tanpa huruf 'c')
+	AmbilCheckerNIP string `gorm:"column:ambil_chekernip" json:"ambil_checkernip"`
+
 	AmbilCustNama   string `gorm:"column:ambil_custnama" json:"ambil_custnama"`
 	AmbilCustAlamat string `gorm:"column:ambil_custalamat" json:"ambil_custalamat"`
 	AmbilCustTelp   string `gorm:"column:ambil_custtelp" json:"ambil_custtelp"`
@@ -22,7 +24,7 @@ type OprTEambil struct {
 	AmbilAktifYN    string `gorm:"column:ambil_aktifyn;default:Y" json:"ambil_aktifyn"`
 	AmbilHistID     string `gorm:"column:ambil_histid" json:"ambil_histid"`
 
-	// Field Relasi Virtual (Bukan kolom tabel, tapi nampung hasil Left Join)
+	// Field Relasi Virtual (Nampung nama checker hasil Left Join)
 	KryNama string `gorm:"->" json:"kry_nama"`
 }
 

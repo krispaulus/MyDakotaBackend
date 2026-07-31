@@ -1,11 +1,12 @@
 package handler
 
 import (
-	"dakotagroup/business-insight-be/db"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"dakotagroup/business-insight-be/db"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -89,12 +90,12 @@ func GetPoolBTT(c *gin.Context) {
 		}
 	}
 
-	// Ambil daftar resi aktif yang belum berasosiasi dengan nomor SP Naik mana pun
+	// ✅ PERBAIKAN UTAMA: Menggunakan nama kolom asli database PostgreSQL (`bttt_id`, `bttt_asalagenid`, dll.)
 	var poolBTT []map[string]interface{}
 	database.Table("public.mkt_t_econote").
-		Select("btt_id, btt_asal_agenid, btt_tujuan_agenid, btt_service, btt_tanggal, btt_berat").
-		Where("btt_id LIKE ? AND btt_id NOT IN (SELECT sptd_bttid FROM public.opr_t_esp_terimadetil)", matchPrefix+"%").
-		Order("btt_id DESC").
+		Select("bttt_id AS btt_id, bttt_asalagenid AS btt_asal_agenid, bttt_tujuanagenid AS btt_tujuan_agenid, bttt_servid AS btt_service, bttt_tanggal AS btt_tanggal").
+		Where("bttt_id LIKE ? AND bttt_id NOT IN (SELECT sptd_bttid FROM public.opr_t_esp_terimadetil)", matchPrefix+"%").
+		Order("bttt_id DESC").
 		Find(&poolBTT)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -144,7 +145,7 @@ func CreateSPNaikHandler(c *gin.Context) {
 	}
 
 	// A. RESOLUSI KODE ASAL AGEN & KODE CABANG DB MURNI
-	var asalAgenID, tujuanAgenID int
+	var asalAgenID, tujuanAgenID string
 	var asalCabangID string
 
 	cleanAsal := input.AsalAgenNama

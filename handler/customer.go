@@ -494,3 +494,73 @@ func DeleteCustomerHandler(c *gin.Context) {
 		"message": fmt.Sprintf("Data Customer ID %s Berhasil Dilenyapkan dari Server!", input.CustID),
 	})
 }
+
+// =========================================================================
+// 🟢 FITUR HARI KERJA CUSTOMER (SABTU / MINGGU / LIBUR) VIA AJAX
+// =========================================================================
+func UpdateCustomerWorkDaysHandler(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "PT ID tidak ditemukan"})
+		return
+	}
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Koneksi database tenant gagal"})
+		return
+	}
+
+	type WorkDaysInput struct {
+		CustID string `json:"cust_id" binding:"required"`
+		Field  string `json:"field" binding:"required"` // sabtuyn, mingguyn, atau liburyn
+		Value  string `json:"value" binding:"required"` // Y atau N
+	}
+
+	var input WorkDaysInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Payload tidak valid"})
+		return
+	}
+
+	cleanField := strings.ToLower(strings.TrimSpace(input.Field))
+	cleanValue := strings.ToUpper(strings.TrimSpace(input.Value))
+
+	if cleanField != "sabtuyn" && cleanField != "mingguyn" && cleanField != "liburyn" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nama field hari kerja tidak valid"})
+		return
+	}
+
+	// Cek apakah data di tabel mkt_m_customer_workdays sudah ada
+	var count int64
+	database.Table("public.mkt_m_customer_workdays").Where("cust_id = ?", input.CustID).Count(&count)
+
+	if count == 0 {
+		// Jika belum ada, lakukan INSERT baru (Default 'N')
+		newWorkDays := map[string]interface{}{
+			"cust_id":  input.CustID,
+			"sabtuyn":  "N",
+			"mingguyn": "N",
+			"liburyn":  "N",
+		}
+		newWorkDays[cleanField] = cleanValue
+
+		if err := database.Table("public.mkt_m_customer_workdays").Create(&newWorkDays).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan hari kerja"})
+			return
+		}
+	} else {
+		// Jika sudah ada, laksanakan UPDATE pada field terkait saja
+		if err := database.Table("public.mkt_m_customer_workdays").
+			Where("cust_id = ?", input.CustID).
+			Update(cleanField, cleanValue).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengupdate hari kerja"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Hari kerja customer berhasil diperbarui",
+	})
+}
