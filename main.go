@@ -200,6 +200,7 @@ func main() {
 
 			// 📑 OPERASIONAL: LAPORAN LSBP (INFORMASI LSPB)
 			authorized.GET("/operasional/laporan-lspb/list", handler.GetLSPBReportList)
+			authorized.GET("/operasional/laporan-lsbp", handler.GetLSPBReportList)
 			authorized.POST("/operasional/laporan-lspb/save", handler.SaveLSPB)
 			authorized.DELETE("/operasional/laporan-lspb/delete/:nodo", handler.DeleteLSPB)
 
