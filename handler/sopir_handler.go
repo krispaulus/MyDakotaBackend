@@ -11,11 +11,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 📱 1. API GET: Ambil Daftar Sopir dengan Filter Nama
-func GetSupirList(c *gin.Context) {
-	var supir []models.OprMSupir
-	searchNama := c.Query("nama")
+// DTO khusus untuk mendistribusikan data sopir dari hrd_m_karyawan
+type SopirKaryawanDTO struct {
+	KryNIP   string `json:"kry_nip" gorm:"column:kry_nip"`
+	KryNama  string `json:"kry_nama" gorm:"column:kry_nama"`
+	KryTelp1 string `json:"kry_telp1" gorm:"column:kry_telp1"`
+	KryTelp2 string `json:"kry_telp2" gorm:"column:kry_telp2"`
+	KryPIN   string `json:"kry_pin" gorm:"column:kry_pin"`
+}
 
+type AssignmentDTO struct {
+	AssID   string `json:"ass_id" gorm:"column:ass_id"`
+	AssNama string `json:"ass_nama" gorm:"column:ass_nama"`
+}
+
+// 📱 1. API GET: Ambil Daftar Sopir dari HRD Master Karyawan (Sesuai ASP Lawas & pgAdmin)
+func GetSupirList(c *gin.Context) {
 	ptID, _ := c.Get("pt_id")
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
@@ -23,21 +34,45 @@ func GetSupirList(c *gin.Context) {
 		return
 	}
 
-	query := database.Model(&models.OprMSupir{})
-
-	// Filter pencarian nama sopir se-Nusantara bray
+	searchNama := c.Query("nama")
+	filterNamaSQL := ""
 	if searchNama != "" {
-		query = query.Where("supir_nama ILIKE ?", "%"+searchNama+"%")
+		filterNamaSQL = fmt.Sprintf(" AND LOWER(Karyawan.kry_nama) LIKE LOWER('%%%s%%') ", searchNama)
 	}
 
-	err := query.Order("supir_id DESC").Find(&supir).Error
+	// Query Presisi dari pgAdmin Gambar 2
+	query := fmt.Sprintf(`
+		SELECT DISTINCT 
+			Karyawan.kry_nip, 
+			Karyawan.kry_nama, 
+			COALESCE(Karyawan.kry_telp1, '-') AS kry_telp1, 
+			COALESCE(Karyawan.kry_telp2, '-') AS kry_telp2, 
+			COALESCE(Karyawan.kry_pin, '-') AS kry_pin 
+		FROM public.hrd_m_karyawan Karyawan 
+		WHERE UPPER(Karyawan.kry_aktifyn) = 'Y' 
+		  AND (Karyawan.kry_jabcode = '30' OR Karyawan.kry_jabcode = '31')
+		  %s
+		GROUP BY 
+			Karyawan.kry_nip, 
+			Karyawan.kry_nama, 
+			Karyawan.kry_telp1, 
+			Karyawan.kry_telp2, 
+			Karyawan.kry_pin 
+		ORDER BY Karyawan.kry_nama ASC
+	`, filterNamaSQL)
+
+	var listSopir []SopirKaryawanDTO
+	err := database.Raw(query).Scan(&listSopir).Error
 	if err != nil {
 		log.Println("❌ ERROR GetSupirList:", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal memuat data sopir"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat data sopir dari master karyawan"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success", "data": supir})
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   listSopir,
+	})
 }
 
 // ➕ 2. API POST: Pendaftaran Sopir & Pairing IMEI Baru
@@ -51,7 +86,6 @@ func CreateSupir(c *gin.Context) {
 	ptID, _ := c.Get("pt_id")
 	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
 
-	// Mengambil username dari token JWT untuk audit log supir_update_id
 	username, _ := c.Get("username")
 	usernameStr := fmt.Sprintf("%v", username)
 	input.SupirUpdateID = &usernameStr
@@ -97,10 +131,10 @@ func UpdateSupir(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Data sopir berhasil diperbarui bray!"})
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Data sopir berhasil diperbarui!"})
 }
 
-// 🗑️ 4. API DELETE: Soft Delete / Non-Aktifkan Sopir (Ubah Flag Aktif ke 'N')
+// 🗑️ 4. API DELETE: Soft Delete / Non-Aktifkan Sopir
 func DeleteSupir(c *gin.Context) {
 	id := c.Param("id")
 
@@ -110,7 +144,6 @@ func DeleteSupir(c *gin.Context) {
 	username, _ := c.Get("username")
 	usernameStr := fmt.Sprintf("%v", username)
 
-	// Sesuai pakem logistik, kita main soft delete pakai flag supir_aktif_yn = 'N' bray!
 	err := database.Model(&models.OprMSupir{}).Where("supir_id = ?", id).Updates(map[string]interface{}{
 		"supir_aktif_yn":  "N",
 		"supir_update_id": usernameStr,
@@ -122,4 +155,42 @@ func DeleteSupir(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Status sopir resmi dinonaktifkan!"})
+}
+
+func GetAssignmentList(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database resolver gagal"})
+		return
+	}
+
+	// Query presisi ke tabel public.opr_m_assignment
+	query := `
+		SELECT 
+			COALESCE(ass_id, '') AS ass_id, 
+			COALESCE(ass_nama, '') AS ass_nama 
+		FROM public.opr_m_assignment 
+		WHERE UPPER(ass_aktifyn) = 'Y' 
+		ORDER BY ass_nama ASC
+	`
+
+	var listAssignment []AssignmentDTO
+	if err := database.Raw(query).Scan(&listAssignment).Error; err != nil {
+		// Fallback default jika tabel belum terisi
+		c.JSON(http.StatusOK, gin.H{
+			"status": "success",
+			"data": []AssignmentDTO{
+				{AssID: "AS001", AssNama: "PENGIRIMAN REGULER LINTAS"},
+				{AssID: "AS002", AssNama: "PENGIRIMAN EKSPRES PRIORITAS"},
+				{AssID: "AS003", AssNama: "LANGGANAN KHUSUS / CHARTER"},
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   listAssignment,
+	})
 }

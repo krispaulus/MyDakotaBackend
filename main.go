@@ -260,6 +260,8 @@ func main() {
 			authorized.DELETE("/master/korwil/detail", handler.RemoveAgenFromKorwil)
 
 			authorized.GET("/master/sopir", handler.GetSupirList)
+			authorized.GET("/sopir-list", handler.GetSupirList)
+			authorized.GET("/master/assignment", handler.GetAssignmentList)
 			authorized.POST("/master/sopir", handler.CreateSupir)
 			authorized.PUT("/master/sopir/:id", handler.UpdateSupir)
 			authorized.DELETE("/master/sopir/:id", handler.DeleteSupir)
@@ -374,6 +376,14 @@ func main() {
 			authorized.POST("/operasional/smu-create", handler.CreateSMU)
 			authorized.PUT("/operasional/smu-update", handler.UpdateSMU)
 			authorized.DELETE("/operasional/smu-delete", handler.DeleteSMU)
+
+			authorized.GET("/operasional/sp-terima-print", handler.GetPrintSuratPengiriman)
+			authorized.GET("/operasional/sp-pad", handler.GetListSPPAD)
+			authorized.GET("/master/vendor", handler.GetVendorList)
+
+			// 📄 OPERASIONAL: STOK BARANG GUDANG
+			authorized.GET("/operasional/stok-gudang", handler.GetStokBarangGudang)
+			authorized.GET("/operasional/voucher-bbm", handler.GetVoucherBBM)
 
 		}
 	}

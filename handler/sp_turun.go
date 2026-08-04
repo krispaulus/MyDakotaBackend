@@ -261,15 +261,22 @@ func GetHistorySPTurun(c *gin.Context) {
 	tglAwal := c.Query("tgl_awal")
 	tglAkhir := c.Query("tgl_akhir")
 
-	// 🎯 FIX FINAL SAPU JAGAT: casting sp_tanggal ke timestamp agar TO_CHAR tidak mogok!
+	// Fallback jika parameter tanggal tidak dikirim dari frontend
+	if tglAwal == "" {
+		tglAwal = "2017-01-01"
+	}
+	if tglAkhir == "" {
+		tglAkhir = time.Now().Format("2006-01-02")
+	}
+
 	query := `SELECT
             t.sp_eid,
             TO_CHAR(t.sp_tanggal::timestamp, 'YYYY-MM-DD HH24:MI:SS') AS sp_tanggal,
             t.sp_aktifyn,
             COUNT(t.sp_bttid) AS jumlah_btt,
             COALESCE(h.spt_transityn, 'N') AS spt_transityn,
-            COALESCE(a_asal.agen_nama, 'CABANG ASAL X') AS cabang_asal_nama,
-            COALESCE(a_tuj.agen_nama, 'CABANG TUJUAN Y') AS cabang_tujuan_nama
+            COALESCE(a_asal.agen_nama, 'CABANG ASAL') AS cabang_asal_nama,
+            COALESCE(a_tuj.agen_nama, 'CABANG TUJUAN') AS cabang_tujuan_nama
          FROM public.opr_t_esp_turun AS t 
          LEFT JOIN public.opr_t_esp_terima h ON t.sp_eid::text = h.spt_eid::text 
          LEFT JOIN public.glb_m_agen a_asal ON h.spt_asalagenid::text = a_asal.agen_id::text 
@@ -283,11 +290,6 @@ func GetHistorySPTurun(c *gin.Context) {
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
-		return
-	}
-
-	if len(results) == 0 {
-		c.JSON(http.StatusOK, []map[string]interface{}{})
 		return
 	}
 
