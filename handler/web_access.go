@@ -86,9 +86,14 @@ func GetUserAccess(c *gin.Context) {
 	username := c.Param("username")
 	database := db.GetDBS()
 
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database DBS tidak ditemukan"})
+		return
+	}
+
 	rows, err := database.Query("SELECT menu_id, can_view, can_create, can_edit, can_delete FROM web_access WHERE username = $1", username)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -110,5 +115,11 @@ func GetUserAccess(c *gin.Context) {
 		}
 	}
 
-	c.JSON(200, permissions)
+	// 🎯 FIX WARNING: Wajib cek rows.Err() setelah perulangan selesai
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saat membaca baris data: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, permissions)
 }

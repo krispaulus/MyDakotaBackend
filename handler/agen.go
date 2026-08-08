@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// GET /api/agens - DYNAMIC MULTI-TENANT
+// GET /api/agens - DYNAMIC MULTI-TENANT COMPLETE WITH PUSAT OVERRIDE
 func GetAgens(c *gin.Context) {
 	var agens []models.Agen
 	ptID, _ := c.Get("pt_id")
@@ -31,6 +32,26 @@ func GetAgens(c *gin.Context) {
 		log.Printf("❌ ERROR SQL SELECT ALL AGENS: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengambil data fisik agen"})
 		return
+	}
+
+	// 🎯 FIX OVERRIDE: Cek apakah Agen ID '1' atau Kode 'PUSAT' sudah ada
+	hasPusat := false
+	for i := range agens {
+		if fmt.Sprintf("%v", agens[i].AgenID) == "1" || strings.ToUpper(agens[i].AgenKode) == "PUSAT" {
+			agens[i].AgenNama = "PUSAT DAKOTA"
+			hasPusat = true
+		}
+	}
+
+	// Jika di database belum ada record ID 1, sisipkan otomatis di paling awal array
+	if !hasPusat {
+		pusatAgen := models.Agen{
+			AgenID:      "1",
+			AgenKode:    "PUSAT",
+			AgenNama:    "PUSAT DAKOTA",
+			AgenAktifYN: "Y",
+		}
+		agens = append([]models.Agen{pusatAgen}, agens...)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": agens})

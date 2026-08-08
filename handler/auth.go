@@ -37,7 +37,7 @@ type UserInfo struct {
 	RealName     string   `json:"realname"`
 	Email        string   `json:"email"`
 	PTID         string   `json:"pt_id"`
-	UserType     string   `json:"usertype"` // Ini penampung S, A, V, atau U dari DB
+	UserType     string   `json:"usertype"` // Penampung S, A, V, atau U dari DB
 	All_cabangYN string   `json:"all_cabangyn"`
 	Cabangs      []string `json:"cabangs"`
 	ProfileImage string   `json:"profileimage"`
@@ -97,8 +97,6 @@ func RequestOTPHandler(c *gin.Context) {
 
 	var exists int
 	checkQuery := "SELECT COUNT(*) FROM weblogin WHERE username = ?"
-	// checkQuery := "SELECT COUNT(*) FROM webLogin WHERE LTRIM(RTRIM(username)) = @user"
-	// err := conn.QueryRow(checkQuery, sql.Named("user", req.Username)).Scan(&exists)
 	err := conn.QueryRow(checkQuery, req.Username).Scan(&exists)
 
 	if err != nil {
@@ -119,7 +117,6 @@ func RequestOTPHandler(c *gin.Context) {
 		return
 	}
 
-	// updateQuery := "UPDATE webLogin SET userToken = @otp WHERE username = @user"
 	updateQuery := "UPDATE weblogin SET usertoken = ? WHERE username = ?"
 	_, errUpdate := conn.Exec(updateQuery, sql.Named("otp", otpCode), sql.Named("user", req.Username))
 	if errUpdate != nil {
@@ -144,7 +141,7 @@ func VerifyAndSaveEmailHandler(c *gin.Context) {
 
 	// 1. Cek OTP di Database
 	var dbOTP string
-	query := "SELECT usertoken FROM weblogin WHERE username = ?" // Gunakan usertoken (huruf kecil)
+	query := "SELECT usertoken FROM weblogin WHERE username = ?"
 	err := conn.QueryRow(query, req.Username).Scan(&dbOTP)
 
 	if err != nil || req.OTPCode != dbOTP {
@@ -153,7 +150,6 @@ func VerifyAndSaveEmailHandler(c *gin.Context) {
 	}
 
 	// 2. OTP COCOK -> Simpan Email Permanen & Hapus Token (Set NULL)
-	// Query ini harus mengupdate email dan mengosongkan token
 	updateQuery := "UPDATE weblogin SET email = ?, usertoken = NULL WHERE username = ?"
 	_, errUpdate := conn.Exec(updateQuery, req.Email, req.Username)
 
@@ -208,7 +204,6 @@ func LoginHandler(c *gin.Context) {
 
 	user.PTID = req.PTID
 
-	// 🟩 DIBERSIHKAN TOTAL MENGIKUTI FISIK TABEL PGADMIN DLI BRAY!
 	queryUser := `SELECT 
                     username, 
                     password, 
@@ -216,8 +211,8 @@ func LoginHandler(c *gin.Context) {
                     user_aktifyn, 
                     COALESCE(email, '') as email, 
                     COALESCE(usertype, 'U') as usertype, 
-					COALESCE(all_cabangyn, 'N') as all_cabangyn,
-					COALESCE(serverid, '1') as kode_cabang
+                    COALESCE(all_cabangyn, 'N') as all_cabangyn,
+                    COALESCE(serverid, '1') as kode_cabang
                   FROM public.weblogin 
                   WHERE UPPER(username) = UPPER($1) OR UPPER(email) = UPPER($2)`
 
@@ -254,7 +249,6 @@ func LoginHandler(c *gin.Context) {
 			if hashedMD5 == dbPassword {
 				isPasswordCorrect = true
 
-				// 💥 AUTO UPGRADE: UBAH TANDA TANYA (?) MENJADI FORMULA DOLLAR ($1, $2, $3) UNTUK POSTGRESQL!
 				newHashedPassword, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 				_, errUpgrade := conn.Exec(
 					"UPDATE public.weblogin SET password = $1, passwordjwt = $2 WHERE username = $3",
@@ -287,7 +281,7 @@ func LoginHandler(c *gin.Context) {
 
 	// 5. LOGIKA OPTIMASI HAK AKSES CABANG (ANTI-LEAK)
 	var userCabangs []string
-	if user.All_cabangYN == "Y" {
+	if strings.ToUpper(user.All_cabangYN) == "Y" || strings.ToUpper(user.UserType) == "S" {
 		rows, err := conn.Query("SELECT agen_kode FROM glb_m_agen")
 		if err == nil && rows != nil {
 			for rows.Next() {
@@ -312,7 +306,26 @@ func LoginHandler(c *gin.Context) {
 	}
 	user.Cabangs = userCabangs
 
-	// 6. GENERATE JWT PROCESS
+	// 🎯 6. FIX SUPERADMIN DEFAULT AGEN KE PUSAT DAKOTA (AGEN ID: 1)
+	activeAgenID := defaultKodeCabang
+	activeAgenNama := "PUSAT DAKOTA"
+
+	if strings.ToUpper(user.UserType) == "S" || strings.ToUpper(user.All_cabangYN) == "Y" {
+		activeAgenID = "1"
+		// Ambil Nama Agen Resmi dari DB untuk Agen ID '1'
+		errNama := conn.QueryRow("SELECT agen_nama FROM public.glb_m_agen WHERE CAST(agen_id AS VARCHAR) = '1' LIMIT 1").Scan(&activeAgenNama)
+		if errNama != nil || activeAgenNama == "" || activeAgenNama == "AGEN 1" {
+			activeAgenNama = "PUSAT DAKOTA" // Fallback nama resmi
+		}
+	} else {
+		// Ambil Nama Agen sesuai ID Agen khusus user biasa
+		_ = conn.QueryRow("SELECT agen_nama FROM public.glb_m_agen WHERE CAST(agen_id AS VARCHAR) = $1 LIMIT 1", activeAgenID).Scan(&activeAgenNama)
+		if activeAgenNama == "" {
+			activeAgenNama = defaultKodeCabang
+		}
+	}
+
+	// 7. GENERATE JWT PROCESS
 	secret := os.Getenv("JWT_SECRET")
 	expirationTime := time.Now().Add(24 * time.Hour).Unix()
 
@@ -321,7 +334,7 @@ func LoginHandler(c *gin.Context) {
 		"cabangs":    user.Cabangs,
 		"pt_id":      req.PTID,
 		"user_type":  user.UserType,
-		"agent_code": defaultKodeCabang,
+		"agent_code": activeAgenID,
 		"exp":        expirationTime,
 		"iat":        time.Now().Unix(),
 	}
@@ -333,11 +346,13 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	// 7. RESPONSE FINAL KE FRONTEND REACT
+	// 8. RESPONSE FINAL KE FRONTEND REACT
 	c.JSON(http.StatusOK, gin.H{
-		"status": "success",
-		"token":  tokenString,
-		"pt_id":  req.PTID,
+		"status":           "success",
+		"token":            tokenString,
+		"pt_id":            req.PTID,
+		"active_agen_id":   activeAgenID,
+		"active_agen_nama": activeAgenNama,
 		"user": gin.H{
 			"username":      user.Username,
 			"realname":      user.RealName,
@@ -347,20 +362,18 @@ func LoginHandler(c *gin.Context) {
 			"all_cabangyn":  user.All_cabangYN,
 			"profileimage":  user.ProfileImage,
 			"profile_image": user.ProfileImage,
-			"agent_code":    defaultKodeCabang,
+			"agent_code":    activeAgenID,
 		},
 	})
 }
 
-// Fungsi pembantu untuk membersihkan spasi jika diperlukan saat pengecekan string
 func LTRIM_RTRIM(s string) string {
-	return fmt.Sprintf("%s", s) // Sesuaikan jika database kamu mengembalikan trailing spaces
+	return fmt.Sprintf("%s", s)
 }
 
 func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Hanya izinkan method PUT atau POST
 	if r.Method != http.MethodPost && r.Method != http.MethodPut {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -373,9 +386,6 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ambil PTID (asumsi dikirim di header atau body,
-	// karena struct WebLogin lo tidak ada PTID, kita ambil manual atau tambahkan di payload)
-	// Untuk sementara kita pakai default PT A, atau sesuaikan dengan logika PT lo:
 	ptID := r.URL.Query().Get("pt_id")
 	conn, ok := resolveDB(ptID)
 	if !ok {
@@ -383,23 +393,6 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"message": "pt_id tidak valid"})
 		return
 	}
-
-	// Query Update menggunakan tag 'gorm' column yang ada di struct lo
-	// updateQuery := `UPDATE webLogin SET
-	//                 realName = @realName,
-	//                 mobileNumber = @mobile,
-	//                 email = @email,
-	//                 gender = @gender,
-	//                 kode_cabang = @cabang
-	//                 WHERE LTRIM(RTRIM(username)) = @user`
-
-	// _, err := conn.Exec(updateQuery,
-	// 	sql.Named("realName", req.RealName),
-	// 	sql.Named("mobile", req.MobileNumber),
-	// 	sql.Named("email", req.Email),
-	// 	sql.Named("gender", req.Gender),
-	// 	sql.Named("cabang", req.KodeCabang),
-	// 	sql.Named("user", req.Username))
 
 	updateQuery := `UPDATE weblogin SET 
                     realname = ?, 
@@ -436,33 +429,28 @@ func UpdateProfileImage(c *gin.Context) {
 	}
 	userNameStr := fmt.Sprintf("%v", val)
 
-	// 1. Cek File ada di Request?
 	file, err := c.FormFile("profileImage")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Gagal menerima file"})
 		return
 	}
 
-	// 2. Buat Folder Uploads
 	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
 		os.Mkdir("uploads", os.ModePerm)
 	}
 
-	// 3. Rename File (Username_Timestamp.jpg)
 	ext := filepath.Ext(file.Filename)
 	filename := fmt.Sprintf("%v_%d%v", userNameStr, time.Now().Unix(), ext)
 	dst := filepath.Join("uploads", filename)
 
-	// 4. Save File ke Folder
 	if err := c.SaveUploadedFile(file, dst); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan foto"})
 		return
 	}
 
-	// 5. Ambil PTID dari Query
 	ptID := c.Query("pt_id")
 	if ptID == "" {
-		ptID = "A" // Default
+		ptID = "A"
 	}
 
 	conn, ok := resolveDB(ptID)
@@ -471,44 +459,30 @@ func UpdateProfileImage(c *gin.Context) {
 		return
 	}
 
-	// 6. Update Database
-	// Kita set juga link lengkapnya biar bisa langsung dipakai di frontend
 	imageURL := fmt.Sprintf("http://localhost:8080/uploads/%s", filename)
-
-	// 1. Pastikan username di-string dan dibersihkan dari spasi kiri-kanan di Go
 	cleanUsername := strings.TrimSpace(strings.ToLower(fmt.Sprintf("%v", userNameStr)))
 
-	updateQuery := `UPDATE webLogin SET 
+	updateQuery := `UPDATE weblogin SET 
                     profileimage = ?
                     WHERE LOWER(LTRIM(RTRIM(username))) = ?`
 
-	// _, err = conn.Exec(updateQuery, imageURL, userNameStr)
-	// 3. Eksekusi ke database
 	result, err := conn.Exec(updateQuery, imageURL, cleanUsername)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal update foto di database: " + err.Error()})
 		return
 	}
 
-	// 4. VALIDASI SAKTI: Cek apakah ada baris yang benar-benar berubah!
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		log.Println("Gagal mengambil rows affected:", err)
 	}
 
 	if rowsAffected == 0 {
-		// Jika 0, berarti username dari JWT kagak cocok dengan yang ada di tabel weblogin!
 		log.Printf("⚠️ Peringatan: Foto tersimpan di server, tapi 0 baris diupdate di DB untuk username: %s", cleanUsername)
 		c.JSON(http.StatusNotFound, gin.H{
 			"status":  "warning",
 			"message": "Foto sukses diunggah, namun data user tidak ditemukan di database. Pastikan Username sesuai.",
 		})
-		return
-	}
-
-	if err != nil {
-		log.Printf("DB Error: %v", err) // Tambahkan log buat debug
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal update database"})
 		return
 	}
 

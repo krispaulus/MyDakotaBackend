@@ -384,7 +384,65 @@ func main() {
 			// 📄 OPERASIONAL: STOK BARANG GUDANG
 			authorized.GET("/operasional/stok-gudang", handler.GetStokBarangGudang)
 			authorized.GET("/operasional/voucher-bbm", handler.GetVoucherBBM)
+			authorized.GET("/gl/jurnal-tidak-seimbang", handler.GetJurnalTidakSeimbang)
+			authorized.GET("/gl/search-coa", handler.SearchCoaHandler)
+			authorized.GET("/gl/buku-besar-report", handler.GetBukuBesarReportHandler)
+			authorized.GET("/gl/export-buku-besar-xls", handler.ExportBukuBesarXlsHandler)
+			authorized.GET("/gl/neraca-saldo-report", handler.GetNeracaSaldoReportHandler)
+			authorized.GET("/gl/export-neraca-saldo-xls", handler.ExportNeracaSaldoXlsHandler)
+			authorized.GET("/gl/neraca-report", handler.GetNeracaReportHandler)
+			authorized.GET("/gl/export-neraca-xls", handler.ExportNeracaXlsHandler)
 
+			authorized.GET("/gl/rugilaba-report", handler.GetRugiLabaReportHandler)
+			authorized.GET("/gl/export-rugilaba-xls", handler.ExportRugiLabaXlsHandler)
+
+			authorized.GET("/gl/posisi-keuangan-report", handler.GetPosisiKeuanganReportHandler)
+			authorized.GET("/gl/export-posisi-keuangan-xls", handler.ExportPosisiKeuanganXlsHandler)
+			authorized.GET("/gl/labarugi-komprehensif-report", handler.GetLabaRugiKomprehensifHandler)
+
+			authorized.GET("/gl/daftar-bank", handler.GetDaftarBankHandler)
+			authorized.PUT("/gl/toggle-bank/:id", handler.ToggleStatusBankHandler)
+			authorized.POST("/gl/bank", handler.CreateBankHandler)
+			authorized.PUT("/gl/bank/:id", handler.UpdateBankHandler)
+			authorized.DELETE("/gl/bank/:id", handler.DeleteBankHandler)
+			authorized.GET("/gl/master-kota", handler.GetKotaListHandler)
+
+			authorized.GET("/gl/pemasukan-pengeluaran", handler.GetDaftarItemHandler)
+			authorized.GET("/gl/master-category-item", handler.GetCategoryItemListHandler)
+			authorized.POST("/gl/pemasukan-pengeluaran", handler.CreateItemHandler)
+			authorized.PUT("/gl/pemasukan-pengeluaran/:id", handler.UpdateItemHandler)
+			authorized.DELETE("/gl/pemasukan-pengeluaran/:id", handler.DeleteItemHandler)
+
+			authorized.GET("/gl/kelompok-perkiraan", handler.GetDaftarKelompokPerkiraanHandler)
+			authorized.POST("/gl/kelompok-perkiraan", handler.CreateKelompokPerkiraanHandler)
+			authorized.PUT("/gl/kelompok-perkiraan/:id", handler.UpdateKelompokPerkiraanHandler)
+			authorized.DELETE("/gl/kelompok-perkiraan/:id", handler.DeleteKelompokPerkiraanHandler)
+
+			authorized.GET("/gl/kode-perkiraan", handler.GetDaftarKodePerkiraanHandler)
+			authorized.POST("/gl/kode-perkiraan", handler.CreateKodePerkiraanHandler)
+			authorized.PUT("/gl/kode-perkiraan/:id", handler.UpdateKodePerkiraanHandler)
+			authorized.DELETE("/gl/kode-perkiraan/:id", handler.DeleteKodePerkiraanHandler)
+
+			authorized.GET("/gl/daftar-sgu", handler.GetDaftarSGUHandler)
+			authorized.POST("/gl/daftar-sgu", handler.CreateSGUHandler)
+			authorized.PUT("/gl/daftar-sgu/:id", handler.UpdateSGUHandler)
+			authorized.DELETE("/gl/daftar-sgu/:id", handler.DeleteSGUHandler)
+
+			authorized.GET("/gl/agen-ca", handler.GetDaftarAgenCAHandler)
+			authorized.POST("/gl/agen-ca/update", handler.UpdateAgenCAMappingHandler)
+			authorized.DELETE("/gl/agen-ca/:id", handler.DeleteAgenCAMappingHandler)
+
+			authorized.GET("/gl/insentif-loper", handler.GetInsentifLoperHandler)
+			authorized.GET("/gl/insentif-loper/driver-options", handler.GetDriverOptionsHandler)
+			authorized.DELETE("/gl/insentif-loper/:id", handler.DeleteInsentifLoperHandler)
+
+			authorized.GET("/gl/jurnal", handler.GetJurnalListHandler)
+			authorized.DELETE("/gl/jurnal/:id", handler.DeleteJurnalHandler)
+
+			authorized.GET("/gl/komisi-sopir", handler.GetKomisiSopirListHandler)
+			authorized.GET("/gl/komisi-sopir/lookup-sp/:nosp", handler.LookupSPKomisiHandler)
+			authorized.POST("/gl/komisi-sopir/create", handler.CreateKomisiSopirHandler)
+			authorized.DELETE("/gl/komisi-sopir/:id", handler.DeleteKomisiSopirHandler)
 		}
 	}
 
