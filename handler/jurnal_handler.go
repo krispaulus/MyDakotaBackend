@@ -25,6 +25,15 @@ type JurnalListModel struct {
 	TotalAmount     float64 `json:"total_amount" gorm:"column:jml"`
 }
 
+// CreateJurnalReq DTO Input/Update Jurnal
+type CreateJurnalReq struct {
+	TJurHNo         string `json:"tjurh_no"`
+	TJurHTanggal    string `json:"tjurh_tanggal" binding:"required"`
+	TJurHType       string `json:"tjurh_type" binding:"required"`
+	TJurHKeterangan string `json:"tjurh_keterangan"`
+	TJurHCBID       string `json:"tjurh_cbid"` // ID Cabang/Agen
+}
+
 func getJurnalDB(c *gin.Context) *gorm.DB {
 	ptID, _ := c.Get("pt_id")
 	if database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID)); ok {
@@ -128,15 +137,6 @@ func DeleteJurnalHandler(c *gin.Context) {
 		"status":  "success",
 		"message": fmt.Sprintf("Jurnal Nomor %s berhasil dibatalkan!", noJurnal),
 	})
-}
-
-// CreateJurnalReq DTO Input/Update Jurnal
-type CreateJurnalReq struct {
-	TJurHNo         string `json:"tjurh_no"`
-	TJurHTanggal    string `json:"tjurh_tanggal" binding:"required"`
-	TJurHType       string `json:"tjurh_type" binding:"required"`
-	TJurHKeterangan string `json:"tjurh_keterangan"`
-	TJurHCBID       string `json:"tjurh_cbid"` // ID Cabang/Agen
 }
 
 // =========================================================================

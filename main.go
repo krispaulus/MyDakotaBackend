@@ -438,7 +438,7 @@ func main() {
 
 			authorized.GET("/gl/jurnal", handler.GetJurnalListHandler)
 			authorized.DELETE("/gl/jurnal/:id", handler.DeleteJurnalHandler)
-			authorized.POST("/gl/jurnal/create", handler.CreateJurnalHandler) // 👈 PASTIIN ROUTE INI ADA!
+			authorized.POST("/gl/jurnal/create", handler.CreateJurnalHandler)
 			authorized.POST("/gl/jurnal/update", handler.UpdateJurnalHandler)
 
 			authorized.GET("/gl/komisi-sopir", handler.GetKomisiSopirListHandler)
