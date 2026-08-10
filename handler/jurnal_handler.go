@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"dakotagroup/business-insight-be/db"
 
@@ -125,5 +127,124 @@ func DeleteJurnalHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": fmt.Sprintf("Jurnal Nomor %s berhasil dibatalkan!", noJurnal),
+	})
+}
+
+// CreateJurnalReq DTO Input/Update Jurnal
+type CreateJurnalReq struct {
+	TJurHNo         string `json:"tjurh_no"`
+	TJurHTanggal    string `json:"tjurh_tanggal" binding:"required"`
+	TJurHType       string `json:"tjurh_type" binding:"required"`
+	TJurHKeterangan string `json:"tjurh_keterangan"`
+	TJurHCBID       string `json:"tjurh_cbid"` // ID Cabang/Agen
+}
+
+// =========================================================================
+// 3. POST /api/gl/jurnal/create (TAMBAH JURNAL BARU)
+// =========================================================================
+func CreateJurnalHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	userID, _ := c.Get("username")
+
+	var req CreateJurnalReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	// 🌟 Auto-generate Nomor Jurnal jika kosong
+	if strings.TrimSpace(req.TJurHNo) == "" {
+		cbID := strings.TrimSpace(req.TJurHCBID)
+		if cbID == "" {
+			cbID = "1"
+		}
+		cbInt, _ := strconv.Atoi(cbID)
+
+		tglParsed, err := time.Parse("2006-01-02", req.TJurHTanggal)
+		if err != nil {
+			tglParsed = time.Now()
+		}
+
+		// Format penomoran Dakota: YYMM + 3 Digit AgenID + Type + 5 Digit Counter
+		prefix := fmt.Sprintf("%s%03d%s", tglParsed.Format("0601"), cbInt, req.TJurHType)
+
+		var lastNo string
+		database.Table("public.gl_t_jurnalh").
+			Select("tjurh_no").
+			Where("tjurh_no LIKE ?", prefix+"%").
+			Order("tjurh_no DESC").
+			Limit(1).
+			Scan(&lastNo)
+
+		counter := 1
+		if lastNo != "" && len(lastNo) >= 13 {
+			lastCounter, _ := strconv.Atoi(lastNo[len(lastNo)-5:])
+			counter = lastCounter + 1
+		}
+
+		req.TJurHNo = fmt.Sprintf("%s%05d", prefix, counter)
+	}
+
+	insertHeader := map[string]interface{}{
+		"tjurh_no":         strings.TrimSpace(req.TJurHNo),
+		"tjurh_tanggal":    req.TJurHTanggal + " " + time.Now().Format("15:04:05"),
+		"tjurh_type":       req.TJurHType,
+		"tjurh_keterangan": req.TJurHKeterangan,
+		"tjurh_deleteyn":   "N",
+		"tjurh_postyn":     "N",
+		"tjurh_updateid":   fmt.Sprintf("%v", userID),
+		"tjurh_updatetime": time.Now(),
+	}
+
+	if err := database.Table("public.gl_t_jurnalh").Create(insertHeader).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan Header Jurnal: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "success",
+		"message":   fmt.Sprintf("Jurnal Keuangan No %s Berhasil Disimpan!", req.TJurHNo),
+		"no_jurnal": req.TJurHNo,
+	})
+}
+
+// =========================================================================
+// 4. POST /api/gl/jurnal/update (UPDATE JURNAL)
+// =========================================================================
+func UpdateJurnalHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	userID, _ := c.Get("username")
+
+	var req CreateJurnalReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	if strings.TrimSpace(req.TJurHNo) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nomor Jurnal tidak boleh kosong saat update!"})
+		return
+	}
+
+	updateHeader := map[string]interface{}{
+		"tjurh_tanggal":    req.TJurHTanggal + " " + time.Now().Format("15:04:05"),
+		"tjurh_type":       req.TJurHType,
+		"tjurh_keterangan": req.TJurHKeterangan,
+		"tjurh_updateid":   fmt.Sprintf("%v", userID),
+		"tjurh_updatetime": time.Now(),
+	}
+
+	err := database.Table("public.gl_t_jurnalh").
+		Where("tjurh_no = ?", strings.TrimSpace(req.TJurHNo)).
+		Updates(updateHeader).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengupdate Jurnal: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Data Jurnal Berhasil Diperbarui!",
 	})
 }

@@ -438,11 +438,33 @@ func main() {
 
 			authorized.GET("/gl/jurnal", handler.GetJurnalListHandler)
 			authorized.DELETE("/gl/jurnal/:id", handler.DeleteJurnalHandler)
+			authorized.POST("/gl/jurnal/create", handler.CreateJurnalHandler) // 👈 PASTIIN ROUTE INI ADA!
+			authorized.POST("/gl/jurnal/update", handler.UpdateJurnalHandler)
 
 			authorized.GET("/gl/komisi-sopir", handler.GetKomisiSopirListHandler)
 			authorized.GET("/gl/komisi-sopir/lookup-sp/:nosp", handler.LookupSPKomisiHandler)
 			authorized.POST("/gl/komisi-sopir/create", handler.CreateKomisiSopirHandler)
 			authorized.DELETE("/gl/komisi-sopir/:id", handler.DeleteKomisiSopirHandler)
+
+			authorized.GET("/gl/cashbank", handler.GetCashBankListHandler)
+			authorized.POST("/gl/cashbank/create", handler.CreateCashBankHandler)
+			authorized.DELETE("/gl/cashbank/:id", handler.DeleteCashBankHandler)
+
+			authorized.GET("/gl/pembayaran-vendor", handler.GetPembayaranVendorListHandler)
+			authorized.POST("/gl/pembayaran-vendor/create", handler.CreatePembayaranVendorHandler)
+			authorized.DELETE("/gl/pembayaran-vendor/:id", handler.DeletePembayaranVendorHandler)
+			authorized.GET("/gl/pembayaran-vendor/vendor-options", handler.GetVendorOptionsHandler)
+			authorized.PUT("/gl/pembayaran-vendor/update", handler.UpdatePembayaranVendorHandler)
+
+			authorized.GET("/gl/posting-jurnal/status", handler.GetPostingJurnalStatusHandler)
+			authorized.POST("/gl/posting-jurnal/process", handler.ProcessPostingJurnalHandler)
+			authorized.GET("/gl/posting-jurnal/year-options", handler.GetYearOptionsHandler)
+
+			authorized.GET("/gl/setoran-cod", handler.GetSetoranCODListHandler)
+			authorized.GET("/gl/setoran-cod/detail/:id", handler.GetSetoranCODDetailHandler)
+			authorized.POST("/gl/setoran-cod/create", handler.CreateSetoranCODHandler)
+			authorized.PUT("/gl/setoran-cod/update", handler.UpdateSetoranCODHandler)
+			authorized.DELETE("/gl/setoran-cod/:id", handler.DeleteSetoranCODHandler)
 		}
 	}
 
