@@ -13,3 +13,5 @@ bin/
 vendor/.env
 *.exe
 bin/
+logs/
+logs/

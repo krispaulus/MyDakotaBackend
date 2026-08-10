@@ -53,6 +53,7 @@ func GetJurnalListHandler(c *gin.Context) {
 	cabangNama := c.Query("cabang_nama")
 	tipeJurnal := c.Query("tipe_jurnal")
 	noJurnal := c.Query("no_jurnal")
+	showDeleted := c.Query("show_deleted") // 'Y' jika ingin menampilkan jurnal batal
 	pageStr := c.DefaultQuery("page", "1")
 	limitStr := c.DefaultQuery("limit", "500")
 
@@ -80,6 +81,11 @@ func GetJurnalListHandler(c *gin.Context) {
 		Joins("LEFT JOIN public.gl_t_jurnald jd ON TRIM(BOTH FROM CAST(jh.tjurh_no AS VARCHAR)) = TRIM(BOTH FROM CAST(jd.tjurd_tjurhno AS VARCHAR))").
 		Joins("LEFT JOIN public.glb_m_agen a ON CAST(SUBSTRING(jh.tjurh_no FROM 5 FOR 3) AS INTEGER) = CAST(a.agen_id AS INTEGER)").
 		Where("COALESCE(jh.tjurh_no, '') <> ''")
+
+	// 🌟 FILTER: HANYA TAMPILKAN JURNAL AKTIF (SEMBUNYIKAN YANG BATAL/DELETE)
+	if showDeleted != "Y" {
+		query = query.Where("COALESCE(jh.tjurh_deleteyn, 'N') = 'N'")
+	}
 
 	if startDate != "" && endDate != "" {
 		query = query.Where("jh.tjurh_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
