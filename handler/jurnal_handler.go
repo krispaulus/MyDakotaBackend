@@ -13,7 +13,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// JurnalListModel Struct Tampilan Header Jurnal
 type JurnalListModel struct {
 	TJurHNo         string  `json:"tjurh_no" gorm:"column:tjurh_no"`
 	TJurHTanggal    string  `json:"tjurh_tanggal" gorm:"column:tjurh_tanggal"`
