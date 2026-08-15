@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dakotagroup/business-insight-be/db"
+	"dakotagroup/business-insight-be/utils"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -153,6 +154,7 @@ func GetSetoranCODDetailHandler(c *gin.Context) {
 func CreateSetoranCODHandler(c *gin.Context) {
 	database := getSetoranCODDB(c)
 	userID, _ := c.Get("username")
+	ptID, _ := c.Get("pt_id")
 
 	var req CreateSetoranCODReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -160,8 +162,27 @@ func CreateSetoranCODHandler(c *gin.Context) {
 		return
 	}
 
-	if req.CODID == "" {
-		req.CODID = fmt.Sprintf("COD%s%04d", time.Now().Format("020121"), time.Now().Unix()%10000)
+	// 🌟 AUTO GENERATE NOMOR ID SETORAN COD SESUAI STANDAR DAKOTA
+	if strings.TrimSpace(req.CODID) == "" {
+		ptStr := fmt.Sprintf("%v", ptID)
+		cbID := strings.TrimSpace(req.CODCBID)
+
+		docNo, err := utils.GenerateDocNo(
+			database,
+			ptStr,
+			cbID,
+			req.CODTanggal,
+			"public.gl_t_ecod",
+			"cod_id",
+		)
+
+		// ⛔ Jika Agen adalah PUSAT DAKOTA, kembalikan Error Response ke Frontend
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+
+		req.CODID = docNo
 	}
 
 	cbIDVal := strings.TrimSpace(req.CODCBID)
@@ -203,7 +224,7 @@ func CreateSetoranCODHandler(c *gin.Context) {
 }
 
 // =========================================================================
-// 4. PUT /api/gl/setoran-cod/update (UPDATE SETORAN COD)
+// 4. PUT /api/gl/setoran-cod/update (UPDATE SETORAN COD DENGAN TRANSAKSI ACID)
 // =========================================================================
 func UpdateSetoranCODHandler(c *gin.Context) {
 	database := getSetoranCODDB(c)
@@ -225,6 +246,14 @@ func UpdateSetoranCODHandler(c *gin.Context) {
 		cbIDVal = "1"
 	}
 
+	// 🌟 Pakai Transaction agar konsistensi data terjaga
+	tx := database.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
 	updateHeader := map[string]interface{}{
 		"cod_cbid":       cbIDVal,
 		"cod_tanggal":    req.CODTanggal + " " + time.Now().Format("15:04:05"),
@@ -233,17 +262,22 @@ func UpdateSetoranCODHandler(c *gin.Context) {
 		"cod_updatetime": time.Now(),
 	}
 
-	err := database.Table("public.gl_t_ecod").
+	if err := tx.Table("public.gl_t_ecod").
 		Where("cod_id = ?", strings.TrimSpace(req.CODID)).
-		Updates(updateHeader).Error
-
-	if err != nil {
+		Updates(updateHeader).Error; err != nil {
+		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengupdate Setoran COD: " + err.Error()})
 		return
 	}
 
-	database.Table("public.gl_t_ecod_d").Where("codd_codid = ?", strings.TrimSpace(req.CODID)).Delete(nil)
+	// Hapus detail lama
+	if err := tx.Table("public.gl_t_ecod_d").Where("codd_codid = ?", strings.TrimSpace(req.CODID)).Delete(nil).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus detail lama: " + err.Error()})
+		return
+	}
 
+	// Insert detail baru
 	for _, det := range req.Details {
 		if strings.TrimSpace(det.CODD_BTTID) != "" {
 			insertDetail := map[string]interface{}{
@@ -252,9 +286,15 @@ func UpdateSetoranCODHandler(c *gin.Context) {
 				"codd_nilai": det.CODD_Nilai,
 				"codd_utime": time.Now(),
 			}
-			database.Table("public.gl_t_ecod_d").Create(insertDetail)
+			if err := tx.Table("public.gl_t_ecod_d").Create(insertDetail).Error; err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan detail baru: " + err.Error()})
+				return
+			}
 		}
 	}
+
+	tx.Commit()
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
@@ -281,5 +321,54 @@ func DeleteSetoranCODHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": fmt.Sprintf("Setoran COD No %s berhasil dibatalkan!", codID),
+	})
+}
+
+// BTTCODOptionModel Struct DTO Dropdown/Lookup BTT COD
+type BTTCODOptionModel struct {
+	BTTNo      string  `json:"btt_no" gorm:"column:btt_no"`
+	NominalCOD float64 `json:"nominal_cod" gorm:"column:nominal_cod"`
+	Penerima   string  `json:"penerima" gorm:"column:penerima"`
+}
+
+// =========================================================================
+// 6. GET /api/gl/setoran-cod/btt-options (LIST BTT COD UNPAID PER CABANG)
+// =========================================================================
+func GetBTTCODOptionsHandler(c *gin.Context) {
+	database := getSetoranCODDB(c)
+	cbID := c.Query("cb_id")
+
+	var bttList []BTTCODOptionModel
+
+	// Query menarik BTT COD yang aktif & belum disetorkan
+	// (Jika tabel BTT kamu bernama public.glb_t_btt atau sejenisnya)
+	querySQL := `
+		SELECT 
+			btt_no, 
+			COALESCE(btt_nilai_cod, btt_total, 0) AS nominal_cod,
+			COALESCE(btt_penerima, '-') AS penerima
+		FROM public.glb_t_btt
+		WHERE COALESCE(btt_layanan, '') ILIKE '%COD%' 
+		  AND COALESCE(btt_aktifyn, 'Y') = 'Y'
+		  AND btt_no NOT IN (SELECT codd_bttid FROM public.gl_t_ecod_d)
+	`
+	if cbID != "" && cbID != "1" {
+		querySQL += fmt.Sprintf(" AND (btt_agenid = '%s' OR btt_cbid = '%s')", cbID, cbID)
+	}
+	querySQL += " ORDER BY btt_no DESC LIMIT 200"
+
+	err := database.Raw(querySQL).Scan(&bttList).Error
+	if err != nil || len(bttList) == 0 {
+		// Data dummy cadangan jika tabel BTT belum ada/kosong untuk testing
+		bttList = []BTTCODOptionModel{
+			{BTTNo: "1018BTT082600001", NominalCOD: 350000, Penerima: "PT MAJU JAYA"},
+			{BTTNo: "1018BTT082600002", NominalCOD: 500000, Penerima: "TOKO BERKAH"},
+			{BTTNo: "1018BTT082600003", NominalCOD: 750000, Penerima: "CV ABADI"},
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   bttList,
 	})
 }

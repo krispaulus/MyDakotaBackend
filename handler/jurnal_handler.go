@@ -9,6 +9,8 @@ import (
 
 	"dakotagroup/business-insight-be/db"
 
+	"dakotagroup/business-insight-be/utils"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -150,6 +152,7 @@ func DeleteJurnalHandler(c *gin.Context) {
 func CreateJurnalHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	userID, _ := c.Get("username")
+	ptID, _ := c.Get("pt_id")
 
 	var req CreateJurnalReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -157,37 +160,27 @@ func CreateJurnalHandler(c *gin.Context) {
 		return
 	}
 
-	// 🌟 Auto-generate Nomor Jurnal jika kosong
+	// 🌟 PANGGIL FUNGSI REUSABLE DARI PACKAGE UTILS DI SINI
 	if strings.TrimSpace(req.TJurHNo) == "" {
+		ptStr := fmt.Sprintf("%v", ptID)
 		cbID := strings.TrimSpace(req.TJurHCBID)
-		if cbID == "" {
-			cbID = "1"
-		}
-		cbInt, _ := strconv.Atoi(cbID)
 
-		tglParsed, err := time.Parse("2006-01-02", req.TJurHTanggal)
+		docNo, err := utils.GenerateDocNo(
+			database,
+			ptStr,
+			cbID,
+			req.TJurHTanggal,
+			"public.gl_t_jurnalh",
+			"tjurh_no",
+		)
+
+		// ⛔ Jika Agen adalah PUSAT DAKOTA, kembalikan Error Response ke Frontend
 		if err != nil {
-			tglParsed = time.Now()
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			return
 		}
 
-		// Format penomoran Dakota: YYMM + 3 Digit AgenID + Type + 5 Digit Counter
-		prefix := fmt.Sprintf("%s%03d%s", tglParsed.Format("0601"), cbInt, req.TJurHType)
-
-		var lastNo string
-		database.Table("public.gl_t_jurnalh").
-			Select("tjurh_no").
-			Where("tjurh_no LIKE ?", prefix+"%").
-			Order("tjurh_no DESC").
-			Limit(1).
-			Scan(&lastNo)
-
-		counter := 1
-		if lastNo != "" && len(lastNo) >= 13 {
-			lastCounter, _ := strconv.Atoi(lastNo[len(lastNo)-5:])
-			counter = lastCounter + 1
-		}
-
-		req.TJurHNo = fmt.Sprintf("%s%05d", prefix, counter)
+		req.TJurHNo = docNo
 	}
 
 	insertHeader := map[string]interface{}{

@@ -465,6 +465,8 @@ func main() {
 			authorized.POST("/gl/setoran-cod/create", handler.CreateSetoranCODHandler)
 			authorized.PUT("/gl/setoran-cod/update", handler.UpdateSetoranCODHandler)
 			authorized.DELETE("/gl/setoran-cod/:id", handler.DeleteSetoranCODHandler)
+
+			authorized.GET("/gl/setoran-cod/btt-options", handler.GetBTTCODOptionsHandler)
 		}
 	}
 

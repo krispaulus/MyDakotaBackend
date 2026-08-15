@@ -57,7 +57,7 @@ func GetAllWebLogins(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-// 🔄 3. UPDATE WEB LOGIN - FULLY ADAPTIVE MULTI-TENANT
+// 🔄 3. UPDATE WEB LOGIN - FULLY ADAPTIVE WITH BCRYPT PASSWORD UPDATE
 func UpdateWebLogin(c *gin.Context) {
 	var input map[string]interface{}
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -65,7 +65,6 @@ func UpdateWebLogin(c *gin.Context) {
 		return
 	}
 
-	// Ambil PT_ID langsung dari token context login aktif bray!
 	ctxPTID, _ := c.Get("pt_id")
 	ptid := fmt.Sprintf("%v", ctxPTID)
 
@@ -81,7 +80,6 @@ func UpdateWebLogin(c *gin.Context) {
 		return
 	}
 
-	// Siapkan penampung string cabang untuk tabel utama
 	var cabangTeks string
 	if rawCabang, ok := input["kode_cabang"].([]interface{}); ok {
 		var temp []string
@@ -101,9 +99,12 @@ func UpdateWebLogin(c *gin.Context) {
 	}
 
 	// Mapping field standar dengan aman
-	if val, ok := input["real_name"].(string); ok {
+	if val, ok := input["real_name"].(string); ok && val != "" {
+		updateData["realname"] = val
+	} else if val, ok := input["RealName"].(string); ok && val != "" {
 		updateData["realname"] = val
 	}
+
 	if val, ok := input["mobilenumber"].(string); ok {
 		updateData["mobilenumber"] = val
 	}
@@ -118,6 +119,28 @@ func UpdateWebLogin(c *gin.Context) {
 	}
 	if val, ok := input["user_aktifyn"].(string); ok {
 		updateData["user_aktifyn"] = val
+	}
+
+	// 🎯 KUNCI FIXING EDIT PASSWORD: Tangkap input password dan Hash Bcrypt!
+	passInput := ""
+	if p, ok := input["Passwordjwt"].(string); ok && strings.TrimSpace(p) != "" {
+		passInput = strings.TrimSpace(p)
+	} else if p, ok := input["Password"].(string); ok && strings.TrimSpace(p) != "" {
+		passInput = strings.TrimSpace(p)
+	} else if p, ok := input["password"].(string); ok && strings.TrimSpace(p) != "" {
+		passInput = strings.TrimSpace(p)
+	}
+
+	if passInput != "" {
+		hashedPassword, errHash := bcrypt.GenerateFromPassword([]byte(passInput), bcrypt.DefaultCost)
+		if errHash == nil {
+			passStr := string(hashedPassword)
+			updateData["password"] = passStr
+			updateData["passwordjwt"] = passStr
+			fmt.Printf("🔐 [Bcrypt Update] Password user '%s' berhasil di-hash dan diupdate ke DB!\n", username)
+		} else {
+			fmt.Printf("❌ [Bcrypt Error]: %v\n", errHash)
+		}
 	}
 
 	// Eksekusi Update Tabel Utama weblogin
@@ -348,14 +371,28 @@ func CreateUser(c *gin.Context) {
 	})
 }
 
+// 🗑️ DELETE USER - UNIVERSAL (PARMA URL / BODY JSON)
+
 func DeleteUser(c *gin.Context) {
-	username := c.Param("username")
+	username := strings.TrimSpace(c.Param("username"))
+
+	// Jika username tidak dikirim via URL Param, baca dari JSON Body
 	if username == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Username kosong"})
+		var body map[string]interface{}
+		if err := c.ShouldBindJSON(&body); err == nil {
+			if u, ok := body["username"].(string); ok {
+				username = strings.TrimSpace(u)
+			} else if u, ok := body["cust_id"].(string); ok {
+				username = strings.TrimSpace(u)
+			}
+		}
+	}
+
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Username target hapus kosong bray!"})
 		return
 	}
 
-	// Ambil PT_ID langsung dari token context login aktif bray!
 	ctxPTID, _ := c.Get("pt_id")
 	ptid := fmt.Sprintf("%v", ctxPTID)
 
@@ -368,14 +405,14 @@ func DeleteUser(c *gin.Context) {
 	tx := gormDB.Begin()
 
 	// 1. Hapus dari tabel utama
-	if err := tx.Table("weblogin").Where("LOWER(username) = LOWER(?)", username).Delete(nil).Error; err != nil {
+	if err := tx.Table("weblogin").Where("LOWER(username) = LOWER(?)", username).Delete(map[string]interface{}{}).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal hapus weblogin: " + err.Error()})
 		return
 	}
 
 	// 2. Hapus dari tabel relasi cabang biar bersih tanpa ampas data
-	if err := tx.Table("weblogin_cabang").Where("LOWER(username) = LOWER(?)", username).Delete(nil).Error; err != nil {
+	if err := tx.Table("weblogin_cabang").Where("LOWER(username) = LOWER(?)", username).Delete(map[string]interface{}{}).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal hapus relasi cabang: " + err.Error()})
 		return

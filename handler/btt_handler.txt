@@ -199,15 +199,12 @@ func CheckLockBTT(c *gin.Context) {
 	})
 }
 
-// POST /api/btt/calculate-tarif
+// CalculateTarif menghitung berat chargeable dan mencari tarif terbaik dari database
 func CalculateTarif(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
-	if !exists || fmt.Sprintf("%v", ptID) == "" {
-		ptID = "A"
-	}
-	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
-	if !ok {
-		database = db.DB
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
+		return
 	}
 
 	var req models.TarifRequest
@@ -216,91 +213,100 @@ func CalculateTarif(c *gin.Context) {
 		return
 	}
 
-	cleanAgenID := strings.TrimSpace(req.AgenID)
-	if cleanAgenID == "" {
-		cleanAgenID = strings.TrimSpace(req.AsalKota)
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
+		return
 	}
 
-	cleanKecTujuan := strings.ToUpper(strings.TrimSpace(req.TujuanKec))
+	var dbAgen models.GlbMAgen
+	inputAsalRaw := strings.TrimSpace(req.AsalKota)
 
-	log.Printf("🔍 [CalculateTarif] Mencari tarif mkt_m_eharga dari Agen ID: '%s' ➡️ Kecamatan: '%s'", cleanAgenID, cleanKecTujuan)
+	errAgen := database.Table("public.glb_m_agen").
+		Select("agen_kotaid").
+		Where("TRIM(agen_kode) = TRIM(?)", inputAsalRaw).
+		First(&dbAgen).Error
+
+	var namaKotaLengkap string
+
+	if errAgen == nil && dbAgen.AgenKotaID != "" {
+		database.Table("public.glb_m_kota").
+			Select("kota_nama").
+			Where("TRIM(kota_id) = TRIM(?)", dbAgen.AgenKotaID).
+			Scan(&namaKotaLengkap)
+	}
+
+	var kotaAsalMaster string
+
+	if namaKotaLengkap != "" {
+		cleanCityName := strings.ToUpper(strings.TrimSpace(namaKotaLengkap))
+		cleanCityName = strings.ReplaceAll(cleanCityName, " KOTA", "")
+		cleanCityName = strings.ReplaceAll(cleanCityName, " KABUPATEN", "")
+		cleanCityName = strings.ReplaceAll(cleanCityName, " KAB.", "")
+		cleanCityName = strings.TrimSpace(cleanCityName)
+
+		// 🌟 FIX POSTGRESQL SYNTAX: Ubah SELECT TOP 1 menjadi LIMIT 1
+		queryVerify := `SELECT UPPER(TRIM(asalkota)) FROM public.mkt_m_harga WHERE asalkota ILIKE ? LIMIT 1`
+		database.Raw(queryVerify, "%"+cleanCityName+"%").Scan(&kotaAsalMaster)
+	}
+
+	if kotaAsalMaster != "" {
+		req.AsalKota = kotaAsalMaster
+		fmt.Printf("🎯 [RELATIONAL RESOLVE SUCCESS] Agen Kode '%s' -> ID Kota: '%s' -> Terpetakan ke Master Pricing: '%s'\n", inputAsalRaw, dbAgen.AgenKotaID, req.AsalKota)
+	} else {
+		req.AsalKota = strings.ToUpper(inputAsalRaw)
+		fmt.Printf("⚠️ [RELATIONAL RESOLVE FAILED] Gagal menerjemahkan Kode Agen '%s'. Menggunakan data mentah.\n", inputAsalRaw)
+	}
 
 	var regulerRow map[string]interface{}
 	var ekonomisRow map[string]interface{}
 
-	// 🎯 1. Query Master Tarif Reguler dari mkt_m_eharga (servid = 1)
-	_ = database.Table("public.mkt_m_eharga").
-		Where("(agenid_asal = ? OR agenid_asal ILIKE ?) AND UPPER(tujuan_kecamatan) = ? AND (servid = '1' OR servid = 'R')",
-			cleanAgenID, "%"+cleanAgenID+"%", cleanKecTujuan).
-		First(&regulerRow).Error
+	database.Table("public.mkt_m_harga").
+		Where("asalkota = ? AND tujuan_kecamatan LIKE ? AND aktifyn = 'Y'", req.AsalKota, "%"+req.TujuanKec+"%").
+		First(&regulerRow)
 
-	// Jika tidak ketemu exact, coba pencarian toleran (LIKE)
 	if regulerRow == nil {
-		_ = database.Table("public.mkt_m_eharga").
-			Where("(agenid_asal = ? OR agenid_asal ILIKE ?) AND UPPER(tujuan_kecamatan) LIKE ?",
-				cleanAgenID, "%"+cleanAgenID+"%", "%"+cleanKecTujuan+"%").
-			First(&regulerRow).Error
+		database.Table("master_tarif_reguler").
+			Where("UPPER(asal_kota) = ? AND UPPER(tujuan_kecamatan) = ?", req.AsalKota, req.TujuanKec).
+			First(&regulerRow)
 	}
 
-	// 🎯 2. Query Master Tarif Ekonomis (servid = 2 atau tabel pendukung jika ada)
-	_ = database.Table("public.mkt_m_eharga").
-		Where("(agenid_asal = ? OR agenid_asal ILIKE ?) AND UPPER(tujuan_kecamatan) LIKE ? AND (servid = '2' OR servid = 'E')",
-			cleanAgenID, "%"+cleanAgenID+"%", "%"+cleanKecTujuan+"%").
-		First(&ekonomisRow).Error
+	database.Table("public.mkt_m_hargaekonomis").
+		Where("asalkota = ? AND tujuan_kecamatan LIKE ? AND flag_ds = 'N'", req.AsalKota, "%"+req.TujuanKec+"%").
+		First(&ekonomisRow)
 
-	if regulerRow == nil && ekonomisRow == nil {
-		log.Printf("⚠️ [CalculateTarif] Rute tidak ditemukan di mkt_m_eharga")
-		c.JSON(http.StatusNotFound, gin.H{
-			"status": "error",
-			"error":  fmt.Sprintf("Waduh bro, rute pengiriman kargo dari Agen ID %s ke %s belum terdaftar di database tarif!", cleanAgenID, cleanKecTujuan),
-		})
-		return
-	}
-
-	// 🎯 3. Hitung Berat & Biaya
-	beratChargeable := req.BeratAsli
+	var beratVolume float64 = 0
 	if req.Panjang > 0 && req.Lebar > 0 && req.Tinggi > 0 {
-		vol := (req.Panjang * req.Lebar * req.Tinggi) / 4000.0
-		if vol > beratChargeable {
-			beratChargeable = vol
-		}
+		beratVolume = (req.Panjang * req.Lebar * req.Tinggi) / 4000.0
 	}
 
-	targetRow := regulerRow
-	if strings.ToUpper(req.JenisLayanan) == "EKONOMIS" && ekonomisRow != nil {
-		targetRow = ekonomisRow
-	} else if regulerRow == nil && ekonomisRow != nil {
-		targetRow = ekonomisRow
+	beratChargeable := req.BeratAsli
+	if beratVolume > req.BeratAsli {
+		beratChargeable = beratVolume
 	}
 
 	var hargaPerKg, minBerat, biayaPenerus float64
 
-	// Helper konversi interface{} ke float64 aman
-	toFloat := func(val interface{}) float64 {
-		if val == nil {
-			return 0
+	if strings.ToUpper(req.JenisLayanan) == "EKONOMIS" && ekonomisRow != nil {
+		if val, ok := ekonomisRow["hargapokok"].(float64); ok {
+			hargaPerKg = val
 		}
-		switch v := val.(type) {
-		case float64:
-			return v
-		case float32:
-			return float64(v)
-		case int64:
-			return float64(v)
-		case int:
-			return float64(v)
-		case string:
-			f, _ := strconv.ParseFloat(v, 64)
-			return f
-		default:
-			return 0
+		if val, ok := ekonomisRow["minimalkg"].(float64); ok {
+			minBerat = val
 		}
-	}
-
-	if targetRow != nil {
-		hargaPerKg = toFloat(targetRow["hargapokok"])
-		minBerat = toFloat(targetRow["minimalkg"])
-		biayaPenerus = toFloat(targetRow["biayatambahan"])
+		if val, ok := ekonomisRow["biayatambahan"].(float64); ok {
+			biayaPenerus = val
+		}
+	} else if regulerRow != nil {
+		if val, ok := regulerRow["hargapokok"].(float64); ok {
+			hargaPerKg = val
+		}
+		if val, ok := regulerRow["minimalkg"].(float64); ok {
+			minBerat = val
+		}
+		if val, ok := regulerRow["biayatambahan"].(float64); ok {
+			biayaPenerus = val
+		}
 	}
 
 	beratFinal := beratChargeable
@@ -313,12 +319,15 @@ func CalculateTarif(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "success",
-		"detected_asal":    cleanAgenID,
+		"detected_asal":    kotaAsalMaster,
+		"berat_asli":       req.BeratAsli,
+		"berat_volume":     beratVolume,
 		"berat_chargeable": beratChargeable,
 		"berat_final":      beratFinal,
 		"harga_per_kg":     hargaPerKg,
 		"minimum_berat":    minBerat,
 		"biaya_penerus":    biayaPenerus,
+		"total_harga":      totalHarga,
 		"grand_total":      grandTotal,
 		"reguler_row":      regulerRow,
 		"ekonomis_row":     ekonomisRow,
@@ -935,14 +944,9 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "allowed", "message": "Akses loket disetujui"})
 }
 
-// 🎯 1. PENCARIAN KECAMATAN (MURNI glb_m_ekodepos)
-// GET /api/btt/search-geo?q=SAWANGAN
+// GET /api/btt/search-geo?q=SOLO
 func SearchMasterGeoBtt(c *gin.Context) {
 	keyword := strings.TrimSpace(c.Query("q"))
-	if len(keyword) < 1 {
-		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []interface{}{}})
-		return
-	}
 
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
@@ -954,33 +958,85 @@ func SearchMasterGeoBtt(c *gin.Context) {
 	}
 
 	var results []map[string]interface{}
-	likeKeyword := "%" + keyword + "%"
+
+	cleanKeyword := strings.ToUpper(keyword)
+	likeKeyword := "%" + cleanKeyword + "%"
+	prefixKeyword := cleanKeyword + "%"
+
+	// 🌟 ALIAS PINTER KARGO DAKOTA:
+	// Jika user ngetik "SOLO", otomatis cari "SOLO" ATAU "SURAKARTA"!
+	searchKota1 := likeKeyword
+	searchKota2 := likeKeyword
+	if cleanKeyword == "SOLO" {
+		searchKota1 = "%SURAKARTA%"
+		searchKota2 = "%SOLO%"
+	} else if cleanKeyword == "SURAKARTA" {
+		searchKota1 = "%SURAKARTA%"
+		searchKota2 = "%SOLO%"
+	}
 
 	queryRaw := `
-		SELECT DISTINCT ON (kecamatandistrik)
-			kodepos as id,
-			COALESCE(propinsi, '') as propinsi,
-			COALESCE(kotakabupaten, '') as kabupaten,
-			COALESCE(kecamatandistrik, '') as kecamatan,
-			COALESCE(desakelurahan, '') as kelurahan,
-			COALESCE(kodepos, '') as kodepos
-		FROM public.glb_m_ekodepos
-		WHERE 
-			TRIM(COALESCE(kecamatandistrik, '')) != '' AND 
-			TRIM(COALESCE(kecamatandistrik, '')) != '-' AND
-			(
-				kecamatandistrik ILIKE ? OR
-				kotakabupaten ILIKE ? OR
-				propinsi ILIKE ? OR
-				desakelurahan ILIKE ? OR
-				kodepos LIKE ?
-			)
-		ORDER BY kecamatandistrik ASC
-		LIMIT 20`
+		SELECT DISTINCT ON (sub.score, sub.kecamatan)
+			sub.id,
+			sub.propinsi,
+			sub.kabupaten,
+			sub.kecamatan,
+			sub.kelurahan,
+			sub.kodepos
+		FROM (
+			SELECT 
+				id,
+				COALESCE(provinsi, '') as propinsi,
+				COALESCE(kota, '') as kabupaten,
+				COALESCE(kecamatan, '') as kecamatan,
+				COALESCE(kelurahan, '') as kelurahan,
+				COALESCE(kodepos, '') as kodepos,
+				-- 🎯 SCORING PRIORITAS SAKTI
+				CASE 
+					-- Prioritas 1: Jika ngetik SOLO/SURAKARTA, kecamatan di KOTA SURAKARTA langsung JUARA 1!
+					WHEN UPPER(kota) ILIKE '%SURAKARTA%' THEN 1
+					WHEN UPPER(kecamatan) ILIKE ? THEN 2             -- Match diawali keyword kecamatan
+					WHEN UPPER(kecamatan) ILIKE ? THEN 3             -- Match mengandung keyword kecamatan
+					WHEN UPPER(kota) ILIKE ? THEN 4                  -- Match nama Kota/Kabupaten
+					WHEN UPPER(kelurahan) ILIKE ? THEN 5             -- Match nama kelurahan
+					ELSE 6
+				END as score
+			FROM public.glb_m_kodepos_nasional
+			WHERE 
+				-- 🛡️ SANITASI DATA KORUP
+				TRIM(kecamatan) != '' AND 
+				TRIM(kecamatan) != '-' AND 
+				LENGTH(TRIM(kecamatan)) > 1 AND
+				
+				-- 🔍 PENCARIAN MULTI-PATTERN
+				(
+					UPPER(kecamatan) ILIKE ? OR
+					UPPER(kota) ILIKE ? OR
+					UPPER(kota) ILIKE ? OR
+					UPPER(provinsi) ILIKE ? OR
+					UPPER(kelurahan) ILIKE ? OR
+					kodepos LIKE ?
+				)
+		) sub
+		ORDER BY sub.score ASC, sub.kecamatan ASC
+		LIMIT 25`
 
-	if err := database.Raw(queryRaw, likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword).Scan(&results).Error; err != nil {
-		log.Printf("❌ [search-geo] Gagal Scan glb_m_ekodepos: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mencari data wilayah"})
+	err := database.Raw(queryRaw,
+		prefixKeyword, // Score 2
+		likeKeyword,   // Score 3
+		likeKeyword,   // Score 4
+		likeKeyword,   // Score 5
+		likeKeyword,   // WHERE kecamatan
+		searchKota1,   // WHERE kota (SURAKARTA)
+		searchKota2,   // WHERE kota (SOLO)
+		likeKeyword,   // WHERE provinsi
+		likeKeyword,   // WHERE kelurahan
+		likeKeyword,   // WHERE kodepos
+	).Scan(&results).Error
+
+	if err != nil {
+		log.Printf("❌ [Backend search-geo] GAGAL QUERY RELEVANSI: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mencari data kecamatan"})
 		return
 	}
 
@@ -990,8 +1046,7 @@ func SearchMasterGeoBtt(c *gin.Context) {
 	})
 }
 
-// 🎯 2. LIST KELURAHAN BERDASARKAN KECAMATAN (MURNI glb_m_ekodepos)
-// GET /api/btt/get-kelurahan?kecamatan=SAWANGAN
+// GET /api/btt/get-kelurahan?kecamatan=ABOY
 func GetKelurahanByKecamatan(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
@@ -1009,15 +1064,16 @@ func GetKelurahanByKecamatan(c *gin.Context) {
 	}
 
 	type KelurahanRes struct {
-		Kelurahan string `json:"kelurahan" gorm:"column:desakelurahan"`
+		Kelurahan string `json:"kelurahan" gorm:"column:kelurahan"`
 		Kodepos   string `json:"kodepos" gorm:"column:kodepos"`
 	}
 	var listKelurahan []KelurahanRes
 
-	err := database.Table("public.glb_m_ekodepos").
-		Select("desakelurahan, kodepos").
-		Where("UPPER(TRIM(kecamatandistrik)) = UPPER(TRIM(?))", kecamatan).
-		Order("desakelurahan ASC").
+	// 🎯 QUERY SAKTI: Utamakan baris yang kodepos-nya BUKAN '0'
+	err := database.Table("public.glb_m_kodepos_nasional").
+		Select("kelurahan, CASE WHEN kodepos = '0' THEN '' ELSE kodepos END as kodepos").
+		Where("UPPER(TRIM(kecamatan)) = UPPER(TRIM(?))", kecamatan).
+		Order("kodepos DESC, kelurahan ASC"). // Urutkan yang ada kode posnya di atas
 		Find(&listKelurahan).Error
 
 	if err != nil {

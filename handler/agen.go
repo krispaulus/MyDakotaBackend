@@ -23,10 +23,22 @@ func GetAgens(c *gin.Context) {
 	}
 
 	err := database.Table("public.glb_m_agen").Select(`
-		agen_id, agen_kode, agen_nama, agen_alamat, agen_kotaid, agen_kota, 
-		agen_kecamatan, agen_propinsi, agen_aktifyn, agen_cabangid, agen_contactperson, 
-		agen_stt, agen_phone1, agen_phone2, agen_phone3, agen_dialstring, agen_kaakunting, agen_kacontact
-	`).Order("agen_id DESC").Find(&agens).Error
+		CAST(agen_id AS VARCHAR) as agen_id, 
+		COALESCE(agen_kode, '') as agen_kode, 
+		COALESCE(agen_nama, '') as agen_nama, 
+		COALESCE(agen_alamat, '') as agen_alamat, 
+		COALESCE(agen_kotaid, '') as agen_kotaid, 
+		COALESCE(agen_kota, '') as agen_kota, 
+		COALESCE(agen_kecamatan, '') as agen_kecamatan, 
+		COALESCE(agen_propinsi, '') as agen_propinsi, 
+		COALESCE(agen_aktifyn, 'Y') as agen_aktifyn, 
+		COALESCE(agen_cabangid, '') as agen_cabangid, 
+		COALESCE(agen_pic, '') as agen_contactperson, 
+		COALESCE(agen_stt, 0) as agen_stt, 
+		COALESCE(agen_telp, '') as agen_phone1, 
+		COALESCE(agen_fax, '') as agen_phone2, 
+		COALESCE(agen_hp, '') as agen_phone3
+	`).Order("agen_kode ASC").Find(&agens).Error
 
 	if err != nil {
 		log.Printf("❌ ERROR SQL SELECT ALL AGENS: %v", err)
@@ -34,24 +46,14 @@ func GetAgens(c *gin.Context) {
 		return
 	}
 
-	// 🎯 FIX OVERRIDE: Cek apakah Agen ID '1' atau Kode 'PUSAT' sudah ada
-	hasPusat := false
+	// 🎯 OVERRIDE CEK BKI0101 ATAU PST001
 	for i := range agens {
-		if fmt.Sprintf("%v", agens[i].AgenID) == "1" || strings.ToUpper(agens[i].AgenKode) == "PUSAT" {
-			agens[i].AgenNama = "PUSAT DAKOTA"
-			hasPusat = true
-		}
-	}
+		idStr := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", agens[i].AgenID)))
+		kodeStr := strings.ToUpper(strings.TrimSpace(agens[i].AgenKode))
 
-	// Jika di database belum ada record ID 1, sisipkan otomatis di paling awal array
-	if !hasPusat {
-		pusatAgen := models.Agen{
-			AgenID:      "1",
-			AgenKode:    "PUSAT",
-			AgenNama:    "PUSAT DAKOTA",
-			AgenAktifYN: "Y",
+		if idStr == "PST001" || idStr == "1" || kodeStr == "BKI0101" || kodeStr == "PUSAT" {
+			agens[i].AgenNama = "PUSAT DAKOTA"
 		}
-		agens = append([]models.Agen{pusatAgen}, agens...)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": agens})
