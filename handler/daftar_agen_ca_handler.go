@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,31 +44,29 @@ func getAgenCADB(c *gin.Context) *gorm.DB {
 func GetDaftarAgenCAHandler(c *gin.Context) {
 	database := getAgenCADB(c)
 
-	stt := c.DefaultQuery("stt", "2") // '2' = Cabang, '3' = Agen
+	stt := strings.TrimSpace(c.Query("stt")) // '2' = Cabang, '3' = Agen
 
 	query := database.Table("public.glb_m_agen a").
 		Select(`
-			a.agen_id, 
-			a.agen_nama, 
-			COALESCE(a.agen_alamat, '-') AS agen_alamat, 
-			COALESCE(ac.agenc_caid, '') AS agenc_caid, 
-			COALESCE(ac.agenc_caidsetoran, '') AS agenc_caidsetoran, 
+			a.agen_id,
+			a.agen_nama,
+			COALESCE(a.agen_alamat, '-') AS agen_alamat,
+			COALESCE(ac.agenc_caid, '') AS agenc_caid,
+			COALESCE(ac.agenc_caidsetoran, '') AS agenc_caidsetoran,
 			COALESCE(ac.agenc_itemid, '') AS agenc_itemid
 		`).
 		Joins("LEFT JOIN public.glb_m_agenca ac ON TRIM(BOTH FROM CAST(a.agen_id AS VARCHAR)) = TRIM(BOTH FROM CAST(ac.agenc_id AS VARCHAR))").
-		Where("COALESCE(a.agen_aktifyn, 'Y') = 'Y'").
-		Where("a.agen_nama NOT LIKE '%XXX%'")
+		Where("COALESCE(a.agen_aktifyn, 'Y') = 'Y' AND a.agen_nama NOT LIKE '%XXX%'")
 
-	// 🎯 HANDLE NULL / FILTER LONGGAR
-	// Jika agen_stt di DB bernilai NULL, kita izinkan tetap muncul saat filter Cabang ('2')
-	if stt == "2" {
-		query = query.Where("(a.agen_stt = '2' OR a.agen_stt IS NULL OR a.agen_stt = '')")
-	} else {
-		query = query.Where("a.agen_stt = '3'")
+		// 🎯 HANDLE NULL / FILTER LONGGAR
+		// Jika agen_stt di DB bernilai NULL, kita izinkan tetap muncul saat filter Cabang ('2')
+	if stt != "" {
+		if sttInt, err := strconv.Atoi(stt); err == nil {
+			query = query.Where("a.agen_stt = ? OR a.agen_stt IS NULL", sttInt)
+		}
 	}
 
-	// Jangan kunci agen_cabangid = '1' karena di DB nilainya [null]
-	query = query.Order("CAST(a.agen_id AS VARCHAR) ASC")
+	query = query.Order("a.agen_id ASC")
 
 	var list []AgenCAModel
 	err := query.Scan(&list).Error

@@ -5,10 +5,38 @@ import (
 	"dakotagroup/business-insight-be/models"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+// 1. Struct representasi tabel mkt_m_eharga
+type MasterEHarga struct {
+	ID                 int64   `gorm:"column:id;primaryKey" json:"id"`
+	AgenIDAsal         string  `gorm:"column:agenid_asal" json:"agenid_asal"`
+	ServID             string  `gorm:"column:servid" json:"servid"`
+	TujuanKecamatan    string  `gorm:"column:tujuan_kecamatan" json:"tujuan_kecamatan"`
+	TujuanKabupaten    string  `gorm:"column:tujuan_kabupaten" json:"tujuan_kabupaten"`
+	TujuanPropinsi     string  `gorm:"column:tujuan_propinsi" json:"tujuan_propinsi"`
+	HargaPokok         float64 `gorm:"column:hargapokok" json:"hargapokok"`
+	MinimalKg          float64 `gorm:"column:minimalkg" json:"minimalkg"`
+	HargaKgSelanjutnya float64 `gorm:"column:hargakgselanjutnya" json:"hargakgselanjutnya"`
+	EstimasiHari       string  `gorm:"column:estimasihari" json:"estimasihari"`
+	BiayaTambahan      float64 `gorm:"column:biayatambahan" json:"biayatambahan"`
+	FlagDS             string  `gorm:"column:flag_ds" json:"flag_ds"`
+	Bypass1Kg          float64 `gorm:"column:bypass1kg" json:"bypass1kg"`
+	Harga1Kg           float64 `gorm:"column:harga1kg" json:"harga1kg"`
+	Bypass2Kg          float64 `gorm:"column:bypass2kg" json:"bypass2kg"`
+	Harga2Kg           float64 `gorm:"column:harga2kg" json:"harga2kg"`
+	Bypass3Kg          float64 `gorm:"column:bypass3kg" json:"bypass3kg"`
+	Harga3Kg           float64 `gorm:"column:harga3kg" json:"harga3kg"`
+	Keterangan         string  `gorm:"column:keterangan" json:"keterangan"`
+}
+
+func (MasterEHarga) TableName() string {
+	return "public.mkt_m_eharga"
+}
 
 // 1. Untuk Tarif Reguler
 func GetTarifReguler(c *gin.Context) {
@@ -86,70 +114,47 @@ func GetTarifUnit(c *gin.Context) {
 }
 
 func CalculateTarifHandler(c *gin.Context) {
-	// 1. Proteksi token JWT
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
 		return
 	}
 
-	// 2. Bind JSON body dari React Form
 	var req models.TarifRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Payload input tidak valid: " + err.Error()})
 		return
 	}
 
-	// 3. Resolve database dinamis sesuai tenant PT
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
 		return
 	}
 
-	// =========================================================================
-	// 🧠 3-STAGE RELATIONAL LOOKUP (RESOLVE KOTA ASAL DARI KODE AGEN)
-	// =========================================================================
+	// 1. Resolve Info Agen Asal
 	var dbAgen models.GlbMAgen
-	inputAsalRaw := strings.TrimSpace(req.AsalKota)
+	inputAgenRaw := strings.TrimSpace(req.AgenID)
+	if inputAgenRaw == "" {
+		inputAgenRaw = strings.TrimSpace(req.AsalKota)
+	}
 
-	errAgen := database.Table("public.glb_m_agen").
-		Select("agen_kotaid").
-		Where("TRIM(agen_kode) = TRIM(?)", inputAsalRaw).
-		First(&dbAgen).Error
+	database.Table("public.glb_m_agen").
+		Where("TRIM(agen_id) = ? OR TRIM(agen_kode) = ?", inputAgenRaw, inputAgenRaw).
+		First(&dbAgen)
 
-	var rawCabangID string
+	var rawCabangID *string
 	database.Table("public.glb_m_agen").
 		Select("agen_cabangid").
-		Where("TRIM(agen_kode) = TRIM(?)", inputAsalRaw).
-		Scan(&rawCabangID) // Langsung disadap ke string polosan, kebal dari missing field struct models!
+		Where("TRIM(agen_id) = ? OR TRIM(agen_kode) = ?", inputAgenRaw, inputAgenRaw).
+		Scan(&rawCabangID)
 
-	var namaKotaLengkap string
-	if errAgen == nil && dbAgen.AgenKotaID != "" {
-		database.Table("public.glb_m_kota").
-			Select("kota_nama").
-			Where("TRIM(kota_id) = TRIM(?)", dbAgen.AgenKotaID).
-			Scan(&namaKotaLengkap)
+	cabangIDStr := ""
+	if rawCabangID != nil {
+		cabangIDStr = *rawCabangID
 	}
 
-	var kotaAsalMaster string
-	if namaKotaLengkap != "" {
-		cleanCityName := strings.ToUpper(strings.TrimSpace(namaKotaLengkap))
-		cleanCityName = strings.ReplaceAll(cleanCityName, " KOTA", "")
-		cleanCityName = strings.ReplaceAll(cleanCityName, " KABUPATEN", "")
-		cleanCityName = strings.ReplaceAll(cleanCityName, " KAB.", "")
-		kotaAsalMaster = strings.TrimSpace(cleanCityName)
-	}
-
-	if kotaAsalMaster != "" {
-		req.AsalKota = kotaAsalMaster
-	} else {
-		req.AsalKota = strings.ToUpper(inputAsalRaw)
-	}
-
-	// =========================================================================
-	// 📐 HITUNG BERAT CHARGEABLE (VOLUME VS AKTUAL)
-	// =========================================================================
+	// 2. Hitung Berat Chargeable
 	var beratVolume float64 = 0
 	if req.Panjang > 0 && req.Lebar > 0 && req.Tinggi > 0 {
 		beratVolume = (req.Panjang * req.Lebar * req.Tinggi) / 4000.0
@@ -159,119 +164,94 @@ func CalculateTarifHandler(c *gin.Context) {
 	if beratVolume > req.BeratAsli {
 		beratChargeable = beratVolume
 	}
-
-	targetTable := "public.mkt_m_harga"
-	if fmt.Sprintf("%v", req.JenisLayanan) == "1" || strings.ToUpper(req.JenisLayanan) == "EKONOMIS" {
-		targetTable = "public.mkt_m_hargaekonomis"
+	if beratChargeable <= 0 {
+		beratChargeable = 1
 	}
 
-	tujuanClean := strings.ToUpper(strings.TrimSpace(req.TujuanKec)) // Isinya utuh: "BOGOR BARAT - KOTA"
-	asalClean := strings.ToUpper(strings.TrimSpace(req.AsalKota))
+	// Sanitasi Tujuan Kecamatan (hapus - KOTA / - KAB)
+	tujuanClean := strings.ToUpper(strings.TrimSpace(req.TujuanKec))
+	if strings.Contains(tujuanClean, " - ") {
+		tujuanClean = strings.TrimSpace(strings.Split(tujuanClean, " - ")[0])
+	}
 
-	// =========================================================================
-	// 🟣 QUERY DATA DASAR DARAT REGULER (MKT_M_HARGA)
-	// =========================================================================
+	// Daftar kemungkinan identitas agen asal di database tarif
+	asalCandidates := []string{
+		strings.TrimSpace(inputAgenRaw),
+		strings.TrimSpace(dbAgen.AgenKode),
+		strings.TrimSpace(dbAgen.AgenKotaID),
+		strings.TrimSpace(dbAgen.AgenID),
+	}
+
+	// 3. Query Rute REGULER & EKONOMIS
 	var regMap map[string]interface{}
-	var regList []map[string]interface{}
-
-	database.Table("public.mkt_m_harga").
-		Where("asalkota LIKE ? AND tujuan_kecamatan LIKE ?", "%"+asalClean+"%", "%"+tujuanClean+"%").
-		Limit(1).
-		Find(&regList)
-
-	if len(regList) == 0 {
-		database.Table(targetTable).
-			Where("UPPER(asal_kota) LIKE ? AND UPPER(tujuan_kecamatan) LIKE ?", "%"+asalClean+"%", "%"+tujuanClean+"%").
-			Limit(1).
-			Find(&regList)
-	}
-
-	if len(regList) == 0 {
-		database.Table("public.mkt_m_harga").
-			Where("asalkota LIKE ? AND tujuan_kecamatan LIKE ?", "%"+asalClean+"%", "%"+tujuanClean+"%").
-			Limit(1).
-			Find(&regList)
-	}
-
-	if len(regList) > 0 {
-		regMap = regList[0]
-	}
-
-	// =========================================================================
-	// 🟢 QUERY DATA DASAR DARAT EKONOMIS (MKT_M_HARGAEKONOMIS)
-	// =========================================================================
 	var ekoMap map[string]interface{}
+	var regList []map[string]interface{}
 	var ekoList []map[string]interface{}
 
-	database.Table("public.mkt_m_hargaekonomis").
-		Where("asalkota LIKE ? AND tujuan_kecamatan LIKE ?", "%"+asalClean+"%", "%"+tujuanClean+"%").
-		Limit(1).
-		Find(&ekoList)
+	for _, asal := range asalCandidates {
+		if asal == "" {
+			continue
+		}
+		if regMap == nil {
+			database.Table("public.mkt_m_eharga").
+				Where("TRIM(agenid_asal) = ? AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'REGULER' OR TRIM(servid) = '1')",
+					asal, "%"+tujuanClean+"%").
+				Limit(1).
+				Find(&regList)
+			if len(regList) > 0 {
+				regMap = regList[0]
+			}
+		}
 
-	if len(ekoList) == 0 {
-		database.Table("public.mkt_m_hargaekonomis").
-			Where("UPPER(asal_kota) LIKE ? AND UPPER(tujuan_kecamatan) LIKE ?", "%"+asalClean+"%", "%"+tujuanClean+"%").
-			Limit(1).
-			Find(&ekoList)
-	}
+		if ekoMap == nil {
+			database.Table("public.mkt_m_eharga").
+				Where("TRIM(agenid_asal) = ? AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'EKONOMIS' OR TRIM(servid) = '2')",
+					asal, "%"+tujuanClean+"%").
+				Limit(1).
+				Find(&ekoList)
+			if len(ekoList) > 0 {
+				ekoMap = ekoList[0]
+			}
+		}
 
-	if len(ekoList) > 0 {
-		ekoMap = ekoList[0]
-	}
-
-	// Validasi akhir jika kedua rute layanan di database pusat benar-benar kosong
-	if regMap == nil && ekoMap == nil {
-		fmt.Printf("⚠️ [Tarif Guard] Rute benar-benar kosong total di DB: %s ke %s\n", req.AsalKota, req.TujuanKec)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"status": "error",
-			"error":  fmt.Sprintf("Waduh bro, rute pengiriman kargo dari %s ke %s belum terdaftar di database pusat logistik Dakota!", req.AsalKota, req.TujuanKec),
-		})
-		return
-	}
-
-	// =========================================================================
-	// 💎 QUERY MATRIKS DISKON KREDIT CUSTOMER (MKT_M_HargaCustomer)
-	// =========================================================================
-	var custDiscount map[string]interface{}
-	var custDiscountList []map[string]interface{}
-
-	if req.AgenID != "" {
-		// Gunakan Limit(1).Find() agar GORM tidak memaksa ORDER BY PK gaib pada objek Map!
-		database.Table("public.mkt_m_hargacustomer").
-			Where("HargaCust_id = ? AND UPPER(Tujuan_Kecamatan) LIKE ?", req.AgenID, "%"+tujuanClean+"%").
-			Limit(1).
-			Find(&custDiscountList)
-
-		if len(custDiscountList) > 0 {
-			custDiscount = custDiscountList[0]
-			fmt.Println("🎯 [Discount Engine] Kontrak harga kredit customer berhasil dimuat!")
+		if regMap != nil && ekoMap != nil {
+			break
 		}
 	}
 
-	// Fungsi helper internal untuk memetakan row dan kalkulasi diskon
+	// 4. Hitung Baris Layanan
+	custDiscount := make(map[string]interface{})
 	buildLayananRow := rangeLayananRow(regMap, custDiscount, beratChargeable, "REGULER")
 	buildEkoRow := rangeLayananRow(ekoMap, custDiscount, beratChargeable, "EKONOMIS")
 
-	// Penentuan grand total harga final untuk dikirim ke field utama BTT berdasarkan jenis pilihan user
+	// 5. Penentuan Grand Total
 	var finalGrandTotal float64 = 0
 	statusHitung := "TARIF TUNAI UMUM"
+	isEkonomis := strings.ToUpper(req.JenisLayanan) == "EKONOMIS" || req.JenisLayanan == "N"
 
 	if strings.ToUpper(req.JenisLayanan) == "KREDIT" {
 		statusHitung = "TARIF KREDIT ACCOUNT"
-		if fmt.Sprintf("%v", c.Query("bttt_paketyn")) == "N" {
-			finalGrandTotal = buildEkoRow["total_charge"].(float64)
-		} else {
-			finalGrandTotal = buildLayananRow["total_charge"].(float64)
+		if isEkonomis && buildEkoRow != nil {
+			if val, ok := buildEkoRow["total_charge"].(float64); ok {
+				finalGrandTotal = val
+			}
+		} else if buildLayananRow != nil {
+			if val, ok := buildLayananRow["total_charge"].(float64); ok {
+				finalGrandTotal = val
+			}
 		}
 	} else {
-		if fmt.Sprintf("%v", c.Query("bttt_paketyn")) == "N" {
-			finalGrandTotal = buildEkoRow["total_normal"].(float64)
-		} else {
-			finalGrandTotal = buildLayananRow["total_normal"].(float64)
+		if isEkonomis && buildEkoRow != nil {
+			if val, ok := buildEkoRow["total_normal"].(float64); ok {
+				finalGrandTotal = val
+			}
+		} else if buildLayananRow != nil {
+			if val, ok := buildLayananRow["total_normal"].(float64); ok {
+				finalGrandTotal = val
+			}
 		}
 	}
 
-	// 🚀 SEMBURKAN PAYLOAD INTEGRASI FINAl JEDERRR!
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "success",
 		"status_hitung":    statusHitung,
@@ -282,8 +262,7 @@ func CalculateTarifHandler(c *gin.Context) {
 		"reguler_row":      buildLayananRow,
 		"ekonomis_row":     buildEkoRow,
 		"kode_kota_asal":   strings.ToUpper(strings.TrimSpace(dbAgen.AgenKotaID)),
-
-		"nomor_urut_agen": extractThreeDigits(rawCabangID),
+		"nomor_urut_agen":  extractThreeDigits(cabangIDStr),
 	})
 }
 
@@ -297,206 +276,193 @@ func extractThreeDigits(rawCabangID string) string {
 }
 
 func rangeLayananRow(tarifRow map[string]interface{}, discRow map[string]interface{}, berat float64, jenis string) map[string]interface{} {
-	res := map[string]interface{}{
-		"servid":             99,
-		"hargapokok":         0.0,
-		"minimalkg":          0.0,
-		"hargakgselanjutnya": 0.0,
-		"flag_ds":            "N",
-		"bypass1kg":          0.0,
-		"harga1kg":           0.0,
-		"bypass2kg":          0.0,
-		"harga2kg":           0.0,
-		"bypass3kg":          0.0,
-		"harga3kg":           0.0,
-		"keterangan":         "---",
-		"biayatambahan":      0.0,
-		"has_discount":       "N",
-		"total_normal":       0.0,
-		"total_charge":       0.0,
-		"estimasihari":       0, // Lead Time (LT) utama wajib integer
-	}
-
 	if tarifRow == nil {
-		return res
-	}
-
-	// =========================================================================
-	// 🟣 1. AMBIL DATA ASLI TARIF NORMAL (SINKRONISASI FIELD DENGAN PGADMIN)
-	// =========================================================================
-
-	// Mapping Service ID
-	if val, ok := tarifRow["servid"].(int64); ok {
-		res["servid"] = val
-	} else if val, ok := tarifRow["serv_id"].(int64); ok {
-		res["servid"] = val
-	} else if val, ok := tarifRow["serv_id"].(int32); ok {
-		res["servid"] = int64(val)
-	}
-
-	// Mapping Nominal Dasar Tarif
-	if val, ok := tarifRow["hargapokok"].(float64); ok {
-		res["hargapokok"] = val
-	} else if val, ok := tarifRow["harga_pokok"].(float64); ok {
-		res["hargapokok"] = val
-	}
-	if val, ok := tarifRow["minimalkg"].(float64); ok {
-		res["minimalkg"] = val
-	} else if val, ok := tarifRow["minimal_kg"].(float64); ok {
-		res["minimalkg"] = val
-	}
-	if val, ok := tarifRow["hargakgselanjutnya"].(float64); ok {
-		res["hargakgselanjutnya"] = val
-	} else if val, ok := tarifRow["harga_kg_selanjutnya"].(float64); ok {
-		res["hargakgselanjutnya"] = val
-	}
-	if val, ok := tarifRow["flag_ds"].(string); ok {
-		res["flag_ds"] = val
-	}
-	if val, ok := tarifRow["biayatambahan"].(float64); ok {
-		res["biayatambahan"] = val
-	}
-	if val, ok := tarifRow["keterangan"].(string); ok {
-		res["keterangan"] = val
-	}
-
-	// 🚀 FIX MUTLAK SAKRAL LT (LEAD TIME): TYPE SWITCHING TERPADU BERASAL DARI MASTER TARIF UTAMA PUSAT!
-	if rawEst, exists := tarifRow["estimasihari"]; exists && rawEst != nil {
-		switch v := rawEst.(type) {
-		case int32:
-			res["estimasihari"] = int(v)
-		case int64:
-			res["estimasihari"] = int(v)
-		case int:
-			res["estimasihari"] = v
-		case float64:
-			res["estimasihari"] = int(v)
-		case float32:
-			res["estimasihari"] = int(v)
-		}
-	} else if rawEstDel, exists := tarifRow["estimasi_hari"]; exists && rawEstDel != nil {
-		switch v := rawEstDel.(type) {
-		case int32:
-			res["estimasihari"] = int(v)
-		case int64:
-			res["estimasihari"] = int(v)
-		case int:
-			res["estimasihari"] = v
-		case float64:
-			res["estimasihari"] = int(v)
+		return map[string]interface{}{
+			"servid":             jenis,
+			"lt":                 "-",
+			"dasar":              0.0,
+			"kg_min":             0.0,
+			"kg_next":            0.0,
+			"ambil_sdr":          "N",
+			"diskon_1_kg":        0.0,
+			"diskon_1_rp":        0.0,
+			"diskon_2_kg":        0.0,
+			"diskon_2_rp":        0.0,
+			"diskon_3_kg":        0.0,
+			"diskon_3_rp":        0.0,
+			"ket":                "---",
+			"hargapokok":         0.0,
+			"minimalkg":          0.0,
+			"hargakgselanjutnya": 0.0,
+			"bypass1kg":          0.0,
+			"harga1kg":           0.0,
+			"bypass2kg":          0.0,
+			"harga2kg":           0.0,
+			"bypass3kg":          0.0,
+			"harga3kg":           0.0,
+			"keterangan":         "---",
+			"biayatambahan":      0.0,
+			"has_discount":       "N",
+			"total_normal":       0.0,
+			"total_charge":       0.0,
+			"estimasihari":       "-",
 		}
 	}
 
-	// 🚀 FIX SAKRAL BYPASS MASTER VOLUME MASTERING (KOLOM "vol" DARI PGADMIN GAMBAR 5)
-	if val, ok := tarifRow["bypass1vol"].(float64); ok {
-		res["bypass1kg"] = val
-	}
-	if val, ok := tarifRow["harga1vol"].(float64); ok {
-		res["harga1kg"] = val
-	}
-	if val, ok := tarifRow["bypass2vol"].(float64); ok {
-		res["bypass2kg"] = val
-	}
-	if val, ok := tarifRow["harga2vol"].(float64); ok {
-		res["harga2kg"] = val
-	}
-	if val, ok := tarifRow["bypass3vol"].(float64); ok {
-		res["bypass3kg"] = val
-	}
-	if val, ok := tarifRow["harga3vol"].(float64); ok {
-		res["harga3kg"] = val
+	// 1. Parsing data dasar
+	hargaPokok := safeParseFloat(tarifRow["hargapokok"])
+	if hargaPokok == 0.0 {
+		hargaPokok = safeParseFloat(tarifRow["harga_pokok"])
 	}
 
-	// Variabel lokal pembantu kalkulator rumus kargo
-	kgMin := res["minimalkg"].(float64)
-	hargaPokok := res["hargapokok"].(float64)
-	hargaKgNext := res["hargakgselanjutnya"].(float64)
-	biayaPenerus := res["biayatambahan"].(float64)
-
-	// Hitung total normal umum (Flat vs Kumulatif)
-	beratFinalNormal := berat
-	if berat < kgMin {
-		beratFinalNormal = kgMin
+	minKG := safeParseFloat(tarifRow["minimalkg"])
+	if minKG == 0.0 {
+		minKG = safeParseFloat(tarifRow["minimal_kg"])
 	}
-	if berat <= kgMin {
-		res["total_normal"] = hargaPokok + biayaPenerus
+	if minKG <= 0 {
+		minKG = 1
+	}
+
+	hargaNext := safeParseFloat(tarifRow["hargakgselanjutnya"])
+	if hargaNext == 0.0 {
+		hargaNext = safeParseFloat(tarifRow["harga_kg_selanjutnya"])
+	}
+
+	bp1 := safeParseFloat(tarifRow["bypass1kg"])
+	hrg1 := safeParseFloat(tarifRow["harga1kg"])
+	bp2 := safeParseFloat(tarifRow["bypass2kg"])
+	hrg2 := safeParseFloat(tarifRow["harga2kg"])
+	bp3 := safeParseFloat(tarifRow["bypass3kg"])
+	hrg3 := safeParseFloat(tarifRow["harga3kg"])
+	biayaPenerus := safeParseFloat(tarifRow["biayatambahan"])
+
+	lt := fmt.Sprintf("%v", tarifRow["estimasihari"])
+	if lt == "<nil>" || strings.TrimSpace(lt) == "" {
+		lt = fmt.Sprintf("%v", tarifRow["estimasi_hari"])
+	}
+	if lt == "<nil>" || strings.TrimSpace(lt) == "" {
+		lt = "-"
+	}
+
+	ket := fmt.Sprintf("%v", tarifRow["keterangan"])
+	if ket == "<nil>" || strings.TrimSpace(ket) == "" {
+		ket = "---"
+	}
+
+	// 2. Kalkulasi tarif normal
+	beratFinal := berat
+	if beratFinal < minKG {
+		beratFinal = minKG
+	}
+
+	totalNormal := 0.0
+	if berat <= minKG {
+		totalNormal = hargaPokok + biayaPenerus
 	} else {
-		res["total_normal"] = hargaPokok + ((beratFinalNormal - kgMin) * hargaKgNext) + biayaPenerus
+		totalNormal = hargaPokok + ((beratFinal - minKG) * hargaNext) + biayaPenerus
 	}
+	totalCharge := totalNormal
 
-	// =========================================================================
-	// 💎 2. SUNTIKKAN KALKULASI DISCOUNT JIKA ADA CONTRACT KREDIT CUSTOMER
-	// =========================================================================
-	if discRow != nil {
-		res["has_discount"] = "Y"
+	// 3. Kalkulasi diskon jika ada contract
+	hasDiscount := "N"
+	if discRow != nil && len(discRow) > 0 {
+		hasDiscount = "Y"
+		discPokok := safeParseFloat(discRow["DiscountPokok"])
+		discLvl1 := safeParseFloat(discRow["DiscountLevel1"])
+		discLvl2 := safeParseFloat(discRow["DiscountLevel2"])
+		discLvl3 := safeParseFloat(discRow["DiscountLevel3"])
 
-		var discPokok, discLvl1, discLvl2, discLvl3 float64
-		if val, ok := discRow["DiscountPokok"].(float64); ok {
-			discPokok = val
+		if bp := safeParseFloat(discRow["bypass1kg"]); bp > 0 {
+			bp1 = bp
 		}
-		if val, ok := discRow["DiscountLevel1"].(float64); ok {
-			discLvl1 = val
+		if bp := safeParseFloat(discRow["bypass2kg"]); bp > 0 {
+			bp2 = bp
 		}
-		if val, ok := discRow["DiscountLevel2"].(float64); ok {
-			discLvl2 = val
+		if bp := safeParseFloat(discRow["bypass3kg"]); bp > 0 {
+			bp3 = bp
 		}
-		if val, ok := discRow["DiscountLevel3"].(float64); ok {
-			discLvl3 = val
-		}
-
-		// Overriding bypass threshold berdasarkan tabel kontrak customer (jika diset khusus)
-		if val, ok := discRow["bypass1kg"].(float64); ok && val > 0 {
-			res["bypass1kg"] = val
-		}
-		if val, ok := discRow["bypass2kg"].(float64); ok && val > 0 {
-			res["bypass2kg"] = val
-		}
-		if val, ok := discRow["bypass3kg"].(float64); ok && val > 0 {
-			res["bypass3kg"] = val
-		}
-		if val, ok := discRow["biayatambahan"].(float64); ok {
-			res["biayatambahan"] = biayaPenerus + val
+		if bp := safeParseFloat(discRow["biayatambahan"]); bp > 0 {
+			biayaPenerus += bp
 		}
 
-		// Overriding lead time khusus customer (jika ada kontrak SLA khusus dari finance)
-		if val, ok := discRow["estimasiHari"].(int32); ok && val > 0 {
-			res["estimasihari"] = int(val)
-		} else if val, ok := discRow["estimasiHari"].(int64); ok && val > 0 {
-			res["estimasihari"] = int(val)
-		} else if val, ok := discRow["estimasihari"].(float64); ok && val > 0 {
-			res["estimasihari"] = int(val)
-		}
+		hargaPokok = hargaPokok * (1 - discPokok/100)
+		hargaNext = hargaNext * (1 - discPokok/100)
+		hrg1 = hrg1 * (1 - discLvl1/100)
+		hrg2 = hrg2 * (1 - discLvl2/100)
+		hrg3 = hrg3 * (1 - discLvl3/100)
 
-		bp1 := res["bypass1kg"].(float64)
-		bp2 := res["bypass2kg"].(float64)
-		bp3 := res["bypass3kg"].(float64)
-		biayaPenerusFinal := res["biayatambahan"].(float64)
-
-		// Set visual nominal terdiskon server side
-		res["hargapokok"] = hargaPokok * (1 - discPokok/100)
-		res["hargakgselanjutnya"] = hargaKgNext * (1 - discPokok/100)
-		res["harga1kg"] = res["harga1kg"].(float64) * (1 - discLvl1/100)
-		res["harga2kg"] = res["harga2kg"].(float64) * (1 - discLvl2/100)
-		res["harga3kg"] = res["harga3kg"].(float64) * (1 - discLvl3/100)
-
-		// Kalkulasi Akhir Tagihan Kredit Account
 		if bp3 > 0 && berat >= bp3 {
-			res["total_charge"] = (berat * res["harga3kg"].(float64)) + biayaPenerusFinal
+			totalCharge = (berat * hrg3) + biayaPenerus
 		} else if bp2 > 0 && berat >= bp2 {
-			res["total_charge"] = (berat * res["harga2kg"].(float64)) + biayaPenerusFinal
+			totalCharge = (berat * hrg2) + biayaPenerus
 		} else if bp1 > 0 && berat >= bp1 {
-			res["total_charge"] = (berat * res["harga1kg"].(float64)) + biayaPenerusFinal
-		} else if berat >= kgMin {
-			discPokokFactor := res["hargakgselanjutnya"].(float64) / hargaKgNext
-			res["total_charge"] = (berat * (hargaKgNext * discPokokFactor)) + biayaPenerusFinal
+			totalCharge = (berat * hrg1) + biayaPenerus
+		} else if berat >= minKG {
+			totalCharge = (berat * hargaNext) + biayaPenerus
 		} else {
-			res["total_charge"] = res["hargapokok"].(float64) + biayaPenerusFinal
+			totalCharge = hargaPokok + biayaPenerus
 		}
-	} else {
-		// Pascasarana default rollback jika pembayaran non-kredit (TUNAI / COD)
-		// Tetap pastikan res["estimasihari"] yang sudah dihitung di atas ikut ter-return dengan aman!
-		res["total_charge"] = res["total_normal"]
 	}
 
-	return res
+	// 4. Return dengan SEMUA key (kompatibel penuh dengan frontend & backend)
+	return map[string]interface{}{
+		"servid":             jenis,
+		"lt":                 lt,
+		"dasar":              hargaPokok,
+		"kg_min":             minKG,
+		"kg_next":            hargaNext,
+		"ambil_sdr":          "N",
+		"diskon_1_kg":        bp1,
+		"diskon_1_rp":        hrg1,
+		"diskon_2_kg":        bp2,
+		"diskon_2_rp":        hrg2,
+		"diskon_3_kg":        bp3,
+		"diskon_3_rp":        hrg3,
+		"ket":                ket,
+		"hargapokok":         hargaPokok,
+		"minimalkg":          minKG,
+		"hargakgselanjutnya": hargaNext,
+		"bypass1kg":          bp1,
+		"harga1kg":           hrg1,
+		"bypass2kg":          bp2,
+		"harga2kg":           hrg2,
+		"bypass3kg":          bp3,
+		"harga3kg":           hrg3,
+		"keterangan":         ket,
+		"biayatambahan":      biayaPenerus,
+		"has_discount":       hasDiscount,
+		"total_normal":       totalNormal,
+		"total_charge":       totalCharge,
+		"estimasihari":       lt,
+	}
+}
+
+// 🛠️ Helper Universal untuk Parsing Segala Tipe Data Angka dari DB
+func safeParseFloat(v interface{}) float64 {
+	if v == nil {
+		return 0.0
+	}
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case int:
+		return float64(val)
+	case string:
+		clean := strings.TrimSpace(val)
+		if f, err := strconv.ParseFloat(clean, 64); err == nil {
+			return f
+		}
+	case []uint8:
+		clean := strings.TrimSpace(string(val))
+		if f, err := strconv.ParseFloat(clean, 64); err == nil {
+			return f
+		}
+	}
+	return 0.0
 }

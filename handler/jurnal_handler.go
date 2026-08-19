@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"dakotagroup/business-insight-be/db"
-
 	"dakotagroup/business-insight-be/utils"
 
 	"github.com/gin-gonic/gin"
@@ -26,13 +25,13 @@ type JurnalListModel struct {
 	TotalAmount     float64 `json:"total_amount" gorm:"column:jml"`
 }
 
-// CreateJurnalReq DTO Input/Update Jurnal
 type CreateJurnalReq struct {
-	TJurHNo         string `json:"tjurh_no"`
-	TJurHTanggal    string `json:"tjurh_tanggal" binding:"required"`
-	TJurHType       string `json:"tjurh_type" binding:"required"`
-	TJurHKeterangan string `json:"tjurh_keterangan"`
-	TJurHCBID       string `json:"tjurh_cbid"` // ID Cabang/Agen
+	TJurHNo         string  `json:"tjurh_no"`
+	TJurHTanggal    string  `json:"tjurh_tanggal" binding:"required"`
+	TJurHType       string  `json:"tjurh_type" binding:"required"`
+	TJurHKeterangan string  `json:"tjurh_keterangan"`
+	TJurHCBID       string  `json:"tjurh_cbid"`
+	Nominal         float64 `json:"nominal"`
 }
 
 func getJurnalDB(c *gin.Context) *gorm.DB {
@@ -54,7 +53,7 @@ func GetJurnalListHandler(c *gin.Context) {
 	cabangNama := c.Query("cabang_nama")
 	tipeJurnal := c.Query("tipe_jurnal")
 	noJurnal := c.Query("no_jurnal")
-	showDeleted := c.Query("show_deleted") // 'Y' jika ingin menampilkan jurnal batal
+	showDeleted := c.Query("show_deleted")
 	pageStr := c.DefaultQuery("page", "1")
 	limitStr := c.DefaultQuery("limit", "500")
 
@@ -80,10 +79,9 @@ func GetJurnalListHandler(c *gin.Context) {
 			COALESCE(SUM(jd.tjurd_debet), 0) AS jml
 		`).
 		Joins("LEFT JOIN public.gl_t_jurnald jd ON TRIM(BOTH FROM CAST(jh.tjurh_no AS VARCHAR)) = TRIM(BOTH FROM CAST(jd.tjurd_tjurhno AS VARCHAR))").
-		Joins("LEFT JOIN public.glb_m_agen a ON CAST(SUBSTRING(jh.tjurh_no FROM 5 FOR 3) AS INTEGER) = CAST(a.agen_id AS INTEGER)").
+		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM a.agen_id::varchar) = TRIM(BOTH FROM SUBSTRING(jh.tjurh_no FROM 5 FOR 3)) OR TRIM(BOTH FROM a.agen_kode::varchar) = TRIM(BOTH FROM SUBSTRING(jh.tjurh_no FROM 5 FOR 6))").
 		Where("COALESCE(jh.tjurh_no, '') <> ''")
 
-	// 🌟 FILTER: HANYA TAMPILKAN JURNAL AKTIF (SEMBUNYIKAN YANG BATAL/DELETE)
 	if showDeleted != "Y" {
 		query = query.Where("COALESCE(jh.tjurh_deleteyn, 'N') = 'N'")
 	}
@@ -130,7 +128,6 @@ func DeleteJurnalHandler(c *gin.Context) {
 	noJurnal := c.Param("id")
 	database := getJurnalDB(c)
 
-	// Tandai status tjurh_deleteyn = 'Y' (Void/Batal)
 	err := database.Table("public.gl_t_jurnalh").
 		Where("tjurh_no = ?", noJurnal).
 		Update("tjurh_deleteyn", "Y").Error
@@ -153,6 +150,7 @@ func CreateJurnalHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	userID, _ := c.Get("username")
 	ptID, _ := c.Get("pt_id")
+	userAgenID, _ := c.Get("agen_id")
 
 	var req CreateJurnalReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -160,11 +158,16 @@ func CreateJurnalHandler(c *gin.Context) {
 		return
 	}
 
-	// 🌟 PANGGIL FUNGSI REUSABLE DARI PACKAGE UTILS DI SINI
+	cbID := strings.TrimSpace(req.TJurHCBID)
+	if cbID == "" && userAgenID != nil {
+		cbID = strings.TrimSpace(fmt.Sprintf("%v", userAgenID))
+	}
+	if cbID == "" {
+		cbID = "1"
+	}
+
 	if strings.TrimSpace(req.TJurHNo) == "" {
 		ptStr := fmt.Sprintf("%v", ptID)
-		cbID := strings.TrimSpace(req.TJurHCBID)
-
 		docNo, err := utils.GenerateDocNo(
 			database,
 			ptStr,
@@ -173,13 +176,14 @@ func CreateJurnalHandler(c *gin.Context) {
 			"public.gl_t_jurnalh",
 			"tjurh_no",
 		)
-
-		// ⛔ Jika Agen adalah PUSAT DAKOTA, kembalikan Error Response ke Frontend
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
-			return
+			tglTrans, _ := time.Parse("2006-01-02", req.TJurHTanggal)
+			agen3Digit := fmt.Sprintf("%03s", cbID)
+			if len(agen3Digit) > 3 {
+				agen3Digit = agen3Digit[len(agen3Digit)-3:]
+			}
+			docNo = fmt.Sprintf("%s%s%s%05d", tglTrans.Format("0601"), agen3Digit, req.TJurHType, time.Now().Unix()%10000)
 		}
-
 		req.TJurHNo = docNo
 	}
 
@@ -189,7 +193,7 @@ func CreateJurnalHandler(c *gin.Context) {
 		"tjurh_type":       req.TJurHType,
 		"tjurh_keterangan": req.TJurHKeterangan,
 		"tjurh_deleteyn":   "N",
-		"tjurh_postyn":     "N",
+		"tjurh_postyn":     "Y",
 		"tjurh_updateid":   fmt.Sprintf("%v", userID),
 		"tjurh_updatetime": time.Now(),
 	}
@@ -197,6 +201,30 @@ func CreateJurnalHandler(c *gin.Context) {
 	if err := database.Table("public.gl_t_jurnalh").Create(insertHeader).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan Header Jurnal: " + err.Error()})
 		return
+	}
+
+	// Insert Detail Jurnal Penyeimbang jika ada nominal
+	if req.Nominal > 0 {
+		detailDebet := map[string]interface{}{
+			"tjurd_tjurhno":    strings.TrimSpace(req.TJurHNo),
+			"tjurd_nourut":     1,
+			"tjurd_keterangan": req.TJurHKeterangan,
+			"tjurd_debet":      req.Nominal,
+			"tjurd_kredit":     0,
+			"tjurd_updateid":   fmt.Sprintf("%v", userID),
+			"tjurd_updatetime": time.Now(),
+		}
+		detailKredit := map[string]interface{}{
+			"tjurd_tjurhno":    strings.TrimSpace(req.TJurHNo),
+			"tjurd_nourut":     2,
+			"tjurd_keterangan": req.TJurHKeterangan,
+			"tjurd_debet":      0,
+			"tjurd_kredit":     req.Nominal,
+			"tjurd_updateid":   fmt.Sprintf("%v", userID),
+			"tjurd_updatetime": time.Now(),
+		}
+		database.Table("public.gl_t_jurnald").Create(detailDebet)
+		database.Table("public.gl_t_jurnald").Create(detailKredit)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -239,6 +267,16 @@ func UpdateJurnalHandler(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengupdate Jurnal: " + err.Error()})
 		return
+	}
+
+	if req.Nominal > 0 {
+		database.Table("public.gl_t_jurnald").
+			Where("tjurd_tjurhno = ? AND tjurd_nourut = 1", strings.TrimSpace(req.TJurHNo)).
+			Updates(map[string]interface{}{"tjurd_debet": req.Nominal, "tjurd_keterangan": req.TJurHKeterangan})
+
+		database.Table("public.gl_t_jurnald").
+			Where("tjurd_tjurhno = ? AND tjurd_nourut = 2", strings.TrimSpace(req.TJurHNo)).
+			Updates(map[string]interface{}{"tjurd_kredit": req.Nominal, "tjurd_keterangan": req.TJurHKeterangan})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
