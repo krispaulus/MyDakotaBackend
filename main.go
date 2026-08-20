@@ -438,6 +438,8 @@ func main() {
 
 			authorized.GET("/gl/jurnal", handler.GetJurnalListHandler)
 			authorized.DELETE("/gl/jurnal/:id", handler.DeleteJurnalHandler)
+			authorized.GET("/gl/jurnal/detail/:id", handler.GetJurnalDetailHandler)
+			authorized.GET("/gl/chart-accounts", handler.GetChartAccountsHandler)
 			authorized.POST("/gl/jurnal/create", handler.CreateJurnalHandler)
 			authorized.POST("/gl/jurnal/update", handler.UpdateJurnalHandler)
 
