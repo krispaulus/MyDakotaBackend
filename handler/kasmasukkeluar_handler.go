@@ -35,12 +35,12 @@ type CreateCashBankReq struct {
 	Nominal     float64 `json:"nominal"`
 }
 
-type PostCashBankReq struct {
-	CBID         string `json:"cb_id" binding:"required"`
-	SumberDana   string `json:"sumber_dana" binding:"required"` // KAS OPS DK, KAS OPS LK, BCA FLEET, BANK, E-TOLL
-	BankAccount  string `json:"bank_account"`
-	EtollAccount string `json:"etoll_account"`
-}
+// type PostCashBankReq struct {
+// 	CBID         string `json:"cb_id" binding:"required"`
+// 	SumberDana   string `json:"sumber_dana" binding:"required"` // KAS OPS DK, KAS OPS LK, BCA FLEET, BANK, E-TOLL
+// 	BankAccount  string `json:"bank_account"`
+// 	EtollAccount string `json:"etoll_account"`
+// }
 
 type ItemBiayaModel struct {
 	ItemID   string `json:"item_id" gorm:"column:item_id"`
@@ -49,10 +49,37 @@ type ItemBiayaModel struct {
 }
 
 func getCashBankDB(c *gin.Context) *gorm.DB {
-	ptID, _ := c.Get("pt_id")
-	if database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID)); ok {
-		return database
+	ptID := strings.TrimSpace(c.Query("pt_id"))
+	if ptID == "" {
+		if val, exists := c.Get("pt_id"); exists && val != nil {
+			ptID = strings.TrimSpace(fmt.Sprintf("%v", val))
+		}
 	}
+
+	// 💡 Mapping kode PT jika resolver kamu mendaftarkan dengan key khusus
+	if ptID != "" {
+		// Coba langsung dengan ptID (misal "C", "B", "L")
+		if database, ok := db.ResolveDB(ptID); ok && database != nil {
+			return database
+		}
+		// Coba mapping lowercase (misal "C" -> "dli", "B" -> "dbs")
+		dbMap := map[string]string{
+			"c": "dli", "C": "dli", "holding": "dli", "dli": "dli",
+			"b": "dbs", "B": "dbs", "dbs": "dbs",
+			"l": "dlb", "L": "dlb", "dlb": "dlb",
+		}
+		if targetKey, found := dbMap[ptID]; found {
+			if database, ok := db.ResolveDB(targetKey); ok && database != nil {
+				return database
+			}
+		}
+	}
+
+	// Fallback ke DLI jika default belum ketemu
+	if dliDB, ok := db.ResolveDB("dli"); ok && dliDB != nil {
+		return dliDB
+	}
+
 	return db.GetDB()
 }
 
@@ -330,100 +357,100 @@ func UpdateCashBankHandler(c *gin.Context) {
 // =========================================================================
 // 5. POST /api/gl/cashbank/post (POSTING DENGAN KONFIRMASI SUMBER DANA)
 // =========================================================================
-func PostCashBankHandler(c *gin.Context) {
-	database := getCashBankDB(c)
-	userID, _ := c.Get("username")
+// func PostCashBankHandler(c *gin.Context) {
+// 	database := getCashBankDB(c)
+// 	userID, _ := c.Get("username")
 
-	var req PostCashBankReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
-		return
-	}
+// 	var req PostCashBankReq
+// 	if err := c.ShouldBindJSON(&req); err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+// 		return
+// 	}
 
-	// 1. Ambil data Header CashBank menggunakan Map
-	var cbMap map[string]interface{}
-	if err := database.Table("public.gl_t_cashbank").Where("cb_id = ?", req.CBID).Take(&cbMap).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data transaksi kas tidak ditemukan"})
-		return
-	}
+// 	// 1. Ambil data Header CashBank menggunakan Map
+// 	var cbMap map[string]interface{}
+// 	if err := database.Table("public.gl_t_cashbank").Where("cb_id = ?", req.CBID).Take(&cbMap).Error; err != nil {
+// 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data transaksi kas tidak ditemukan"})
+// 		return
+// 	}
 
-	cbNoJurnal := fmt.Sprintf("%v", cbMap["cb_nojurnal"])
-	cbTipe := fmt.Sprintf("%v", cbMap["cb_tipe"])
-	cbAgenID := fmt.Sprintf("%v", cbMap["cb_agenid"])
-	cbKet := fmt.Sprintf("%v", cbMap["cb_ket"])
+// 	cbNoJurnal := fmt.Sprintf("%v", cbMap["cb_nojurnal"])
+// 	cbTipe := fmt.Sprintf("%v", cbMap["cb_tipe"])
+// 	cbAgenID := fmt.Sprintf("%v", cbMap["cb_agenid"])
+// 	cbKet := fmt.Sprintf("%v", cbMap["cb_ket"])
 
-	// Parse Tanggal Transaksi
-	var tglTrans time.Time
-	if rawTgl, ok := cbMap["cb_tanggal"].(time.Time); ok {
-		tglTrans = rawTgl
-	} else {
-		tglStr := fmt.Sprintf("%v", cbMap["cb_tanggal"])
-		tglTrans, _ = time.Parse("2006-01-02 15:04:05", tglStr)
-		if tglTrans.IsZero() {
-			tglTrans = time.Now()
-		}
-	}
+// 	// Parse Tanggal Transaksi
+// 	var tglTrans time.Time
+// 	if rawTgl, ok := cbMap["cb_tanggal"].(time.Time); ok {
+// 		tglTrans = rawTgl
+// 	} else {
+// 		tglStr := fmt.Sprintf("%v", cbMap["cb_tanggal"])
+// 		tglTrans, _ = time.Parse("2006-01-02 15:04:05", tglStr)
+// 		if tglTrans.IsZero() {
+// 			tglTrans = time.Now()
+// 		}
+// 	}
 
-	// 2. Generate Nomor Jurnal Otomatis jika belum ada: [YY][MM][AGEN_3DIGIT][TIPE][URUTAN_5DIGIT]
-	noJurnal := cbNoJurnal
-	if strings.TrimSpace(noJurnal) == "" || noJurnal == "-" || noJurnal == "<nil>" {
-		agen3Digit := fmt.Sprintf("%03s", cbAgenID)
-		if len(agen3Digit) > 3 {
-			agen3Digit = agen3Digit[len(agen3Digit)-3:]
-		}
+// 	// 2. Generate Nomor Jurnal Otomatis jika belum ada: [YY][MM][AGEN_3DIGIT][TIPE][URUTAN_5DIGIT]
+// 	noJurnal := cbNoJurnal
+// 	if strings.TrimSpace(noJurnal) == "" || noJurnal == "-" || noJurnal == "<nil>" {
+// 		agen3Digit := fmt.Sprintf("%03s", cbAgenID)
+// 		if len(agen3Digit) > 3 {
+// 			agen3Digit = agen3Digit[len(agen3Digit)-3:]
+// 		}
 
-		prefixJurnal := fmt.Sprintf("%s%s%s", tglTrans.Format("0601"), agen3Digit, cbTipe)
+// 		prefixJurnal := fmt.Sprintf("%s%s%s", tglTrans.Format("0601"), agen3Digit, cbTipe)
 
-		var lastJurnal string
-		database.Table("public.gl_t_jurnalh").
-			Select("tjurh_no").
-			Where("tjurh_no LIKE ?", prefixJurnal+"%").
-			Order("tjurh_no DESC").
-			Limit(1).
-			Scan(&lastJurnal)
+// 		var lastJurnal string
+// 		database.Table("public.gl_t_jurnalh").
+// 			Select("tjurh_no").
+// 			Where("tjurh_no LIKE ?", prefixJurnal+"%").
+// 			Order("tjurh_no DESC").
+// 			Limit(1).
+// 			Scan(&lastJurnal)
 
-		nextUrut := 1
-		if lastJurnal != "" && len(lastJurnal) >= len(prefixJurnal)+5 {
-			if num, err := strconv.Atoi(lastJurnal[len(prefixJurnal):]); err == nil {
-				nextUrut = num + 1
-			}
-		}
+// 		nextUrut := 1
+// 		if lastJurnal != "" && len(lastJurnal) >= len(prefixJurnal)+5 {
+// 			if num, err := strconv.Atoi(lastJurnal[len(prefixJurnal):]); err == nil {
+// 				nextUrut = num + 1
+// 			}
+// 		}
 
-		noJurnal = fmt.Sprintf("%s%05d", prefixJurnal, nextUrut)
+// 		noJurnal = fmt.Sprintf("%s%05d", prefixJurnal, nextUrut)
 
-		// Simpan Header Jurnal Otomatis
-		insertJurnalH := map[string]interface{}{
-			"tjurh_no":         noJurnal,
-			"tjurh_tanggal":    tglTrans,
-			"tjurh_type":       cbTipe,
-			"tjurh_keterangan": fmt.Sprintf("%s (SUMBER: %s)", cbKet, req.SumberDana),
-			"tjurh_postyn":     "Y",
-			"tjurh_deleteyn":   "N",
-			"tjurh_updateid":   fmt.Sprintf("%v", userID),
-			"tjurh_updatetime": time.Now(),
-		}
-		database.Table("public.gl_t_jurnalh").Create(insertJurnalH)
-	}
+// 		// Simpan Header Jurnal Otomatis
+// 		insertJurnalH := map[string]interface{}{
+// 			"tjurh_no":         noJurnal,
+// 			"tjurh_tanggal":    tglTrans,
+// 			"tjurh_type":       cbTipe,
+// 			"tjurh_keterangan": fmt.Sprintf("%s (SUMBER: %s)", cbKet, req.SumberDana),
+// 			"tjurh_postyn":     "Y",
+// 			"tjurh_deleteyn":   "N",
+// 			"tjurh_updateid":   fmt.Sprintf("%v", userID),
+// 			"tjurh_updatetime": time.Now(),
+// 		}
+// 		database.Table("public.gl_t_jurnalh").Create(insertJurnalH)
+// 	}
 
-	// 3. Update Status Posting KasBank menjadi 'Y'
-	updateData := map[string]interface{}{
-		"cb_postyn":     "Y",
-		"cb_nojurnal":   noJurnal,
-		"cb_updateid":   fmt.Sprintf("%v", userID),
-		"cb_updatetime": time.Now(),
-	}
+// 	// 3. Update Status Posting KasBank menjadi 'Y'
+// 	updateData := map[string]interface{}{
+// 		"cb_postyn":     "Y",
+// 		"cb_nojurnal":   noJurnal,
+// 		"cb_updateid":   fmt.Sprintf("%v", userID),
+// 		"cb_updatetime": time.Now(),
+// 	}
 
-	if err := database.Table("public.gl_t_cashbank").Where("cb_id = ?", req.CBID).Updates(updateData).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal posting transaksi kas: " + err.Error()})
-		return
-	}
+// 	if err := database.Table("public.gl_t_cashbank").Where("cb_id = ?", req.CBID).Updates(updateData).Error; err != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal posting transaksi kas: " + err.Error()})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"status":    "success",
-		"message":   fmt.Sprintf("Transaksi Kas %s Berhasil Diposting ke Jurnal %s (Sumber: %s)!", req.CBID, noJurnal, req.SumberDana),
-		"no_jurnal": noJurnal,
-	})
-}
+// 	c.JSON(http.StatusOK, gin.H{
+// 		"status":    "success",
+// 		"message":   fmt.Sprintf("Transaksi Kas %s Berhasil Diposting ke Jurnal %s (Sumber: %s)!", req.CBID, noJurnal, req.SumberDana),
+// 		"no_jurnal": noJurnal,
+// 	})
+// }
 
 // =========================================================================
 // 6. POST /api/gl/cashbank/unpost (UNPOSTING TRANS KAS)

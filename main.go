@@ -443,6 +443,9 @@ func main() {
 			authorized.POST("/gl/jurnal/create", handler.CreateJurnalHandler)
 			authorized.POST("/gl/jurnal/update", handler.UpdateJurnalHandler)
 
+			api.GET("/gl/bank-data", handler.GetBankDataHandler)
+			api.GET("/gl/etoll-data", handler.GetEtollDataHandler)
+
 			authorized.GET("/gl/komisi-sopir", handler.GetKomisiSopirListHandler)
 			authorized.GET("/gl/komisi-sopir/lookup-sp/:nosp", handler.LookupSPKomisiHandler)
 			authorized.POST("/gl/komisi-sopir/create", handler.CreateKomisiSopirHandler)

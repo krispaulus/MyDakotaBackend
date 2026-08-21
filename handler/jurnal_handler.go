@@ -45,16 +45,40 @@ type SaveJurnalFullReq struct {
 }
 
 func getJurnalDB(c *gin.Context) *gorm.DB {
-	ptID, _ := c.Get("pt_id")
-	if database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID)); ok {
-		return database
+	ptID := strings.TrimSpace(c.Query("pt_id"))
+	if ptID == "" {
+		if val, exists := c.Get("pt_id"); exists && val != nil {
+			ptID = strings.TrimSpace(fmt.Sprintf("%v", val))
+		}
 	}
+
+	if ptID != "" {
+		if database, ok := db.ResolveDB(ptID); ok && database != nil {
+			return database
+		}
+		dbMap := map[string]string{
+			"c": "dli", "C": "dli", "holding": "dli", "dli": "dli",
+			"b": "dbs", "B": "dbs", "dbs": "dbs",
+			"l": "dlb", "L": "dlb", "dlb": "dlb",
+		}
+		if targetKey, found := dbMap[ptID]; found {
+			if database, ok := db.ResolveDB(targetKey); ok && database != nil {
+				return database
+			}
+		}
+	}
+
+	if dliDB, ok := db.ResolveDB("dli"); ok && dliDB != nil {
+		return dliDB
+	}
+
 	return db.GetDB()
 }
 
 // =========================================================================
 // 1. GET /api/gl/jurnal (READ LIST JURNAL)
 // =========================================================================
+// GET /api/gl/jurnal (READ LIST JURNAL DENGAN QUERY TEROPTIMASI)
 func GetJurnalListHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 
@@ -77,6 +101,7 @@ func GetJurnalListHandler(c *gin.Context) {
 	}
 	offset := (page - 1) * limit
 
+	// Subquery agregat debet untuk menghindari JOIN perkalian baris
 	query := database.Table("public.gl_t_jurnalh jh").
 		Select(`
 			jh.tjurh_no, 
@@ -85,11 +110,14 @@ func GetJurnalListHandler(c *gin.Context) {
 			COALESCE(jh.tjurh_keterangan, '-') AS tjurh_keterangan, 
 			COALESCE(jh.tjurh_deleteyn, 'N') AS tjurh_deleteyn, 
 			COALESCE(jh.tjurh_postyn, 'N') AS tjurh_postyn, 
-			COALESCE(a.agen_nama, '-') AS agen_nama, 
-			COALESCE(SUM(jd.tjurd_debet), 0) AS jml
+			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama, 
+			COALESCE((
+				SELECT SUM(jd.tjurd_debet) 
+				FROM public.gl_t_jurnald jd 
+				WHERE TRIM(jd.tjurd_tjurhno) = TRIM(jh.tjurh_no)
+			), 0) AS jml
 		`).
-		Joins("LEFT JOIN public.gl_t_jurnald jd ON TRIM(BOTH FROM CAST(jh.tjurh_no AS VARCHAR)) = TRIM(BOTH FROM CAST(jd.tjurd_tjurhno AS VARCHAR))").
-		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM a.agen_id::varchar) = TRIM(BOTH FROM SUBSTRING(jh.tjurh_no FROM 5 FOR 3)) OR TRIM(BOTH FROM a.agen_kode::varchar) = TRIM(BOTH FROM SUBSTRING(jh.tjurh_no FROM 5 FOR 6))").
+		Joins("LEFT JOIN public.glb_m_agen a ON a.agen_id::varchar = SUBSTRING(jh.tjurh_no FROM 5 FOR 3)").
 		Where("COALESCE(jh.tjurh_no, '') <> ''")
 
 	if showDeleted != "Y" {
@@ -108,10 +136,10 @@ func GetJurnalListHandler(c *gin.Context) {
 		query = query.Where("jh.tjurh_no ILIKE ?", "%"+noJurnal+"%")
 	}
 
-	query = query.Group("jh.tjurh_no, jh.tjurh_tanggal, jh.tjurh_type, jh.tjurh_keterangan, jh.tjurh_deleteyn, jh.tjurh_postyn, a.agen_nama")
-
 	var totalRecords int64
-	database.Table("(?) AS count_tbl", query).Count(&totalRecords)
+	database.Table("public.gl_t_jurnalh jh").
+		Where("COALESCE(jh.tjurh_no, '') <> '' AND COALESCE(jh.tjurh_deleteyn, 'N') = 'N'").
+		Count(&totalRecords)
 
 	var list []JurnalListModel
 	err := query.Order("jh.tjurh_tanggal DESC, jh.tjurh_no DESC").Limit(limit).Offset(offset).Scan(&list).Error
@@ -127,12 +155,13 @@ func GetJurnalListHandler(c *gin.Context) {
 	})
 }
 
-// =========================================================================
-// 2. GET /api/gl/jurnal/detail/:id (AMBIL HEADER & RINCIAN JURNAL LENGKAP)
-// =========================================================================
+// GET /api/gl/jurnal/detail/:id (AMBIL HEADER & RINCIAN JURNAL LENGKAP)
 func GetJurnalDetailHandler(c *gin.Context) {
-	noJurnal := c.Param("id")
+	noJurnal := strings.TrimSpace(strings.TrimPrefix(c.Param("id"), "/"))
 	database := getJurnalDB(c)
+
+	var currentDB string
+	database.Raw("SELECT current_database()").Scan(&currentDB)
 
 	var header JurnalListModel
 	errHeader := database.Table("public.gl_t_jurnalh jh").
@@ -146,30 +175,36 @@ func GetJurnalDetailHandler(c *gin.Context) {
 			COALESCE(a.agen_nama, '-') AS agen_nama
 		`).
 		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM a.agen_id::varchar) = TRIM(BOTH FROM SUBSTRING(jh.tjurh_no FROM 5 FOR 3))").
-		Where("jh.tjurh_no = ?", noJurnal).
+		Where("TRIM(UPPER(jh.tjurh_no)) = TRIM(UPPER(?))", noJurnal).
 		Scan(&header).Error
 
 	if errHeader != nil || header.TJurHNo == "" {
+		fmt.Printf("❌ [JURNAL DETAIL] Header Jurnal %s TIDAK DITEMUKAN di database: %s\n", noJurnal, currentDB)
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Jurnal tidak ditemukan"})
 		return
 	}
 
-	var details []JurnalDetailItem
-	database.Table("public.gl_t_jurnald jd").
-		Select(`
+	details := make([]JurnalDetailItem, 0)
+	rawQuery := `
+		SELECT 
 			jd.tjurd_acccode,
-			COALESCE(ca.ca_name, '-') AS ca_name,
+			COALESCE(ca.ca_name, b.bank_name, it.item_name, 'Akun Perkiraan') AS ca_name,
 			COALESCE(jd.tjurd_agenid, '1') AS tjurd_agenid,
-			COALESCE(a.agen_nama, '-') AS agen_nama,
+			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
 			COALESCE(jd.tjurd_keterangan, '-') AS tjurd_keterangan,
 			COALESCE(jd.tjurd_debet, 0) AS tjurd_debet,
 			COALESCE(jd.tjurd_kredit, 0) AS tjurd_kredit
-		`).
-		Joins("LEFT JOIN public.gl_m_chartaccount ca ON TRIM(BOTH FROM jd.tjurd_acccode::varchar) = TRIM(BOTH FROM ca.ca_id::varchar)").
-		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM jd.tjurd_agenid::varchar) = TRIM(BOTH FROM a.agen_id::varchar)").
-		Where("jd.tjurd_tjurhno = ?", noJurnal).
-		Order("jd.tjurd_acccode ASC"). // 👈 Diurutkan berdasarkan kode akun (tanpa tjurd_nourut)
-		Scan(&details)
+		FROM public.gl_t_jurnald jd
+		LEFT JOIN public.gl_m_chartaccount ca ON TRIM(BOTH FROM jd.tjurd_acccode::varchar) = TRIM(BOTH FROM ca.ca_id::varchar)
+		LEFT JOIN public.gl_m_bank b ON TRIM(BOTH FROM jd.tjurd_acccode::varchar) = TRIM(BOTH FROM b.bank_acccode::varchar)
+		LEFT JOIN public.gl_m_item it ON TRIM(BOTH FROM jd.tjurd_acccode::varchar) = TRIM(BOTH FROM it.item_id::varchar)
+		LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM jd.tjurd_agenid::varchar) = TRIM(BOTH FROM a.agen_id::varchar)
+		WHERE TRIM(UPPER(jd.tjurd_tjurhno::varchar)) = TRIM(UPPER(?::varchar))
+		ORDER BY jd.tjurd_acccode ASC
+	`
+	database.Raw(rawQuery, noJurnal).Scan(&details)
+
+	fmt.Printf("🔍 [DEBUG JURNAL DETAIL] DB: [%s] | No Jurnal: %s | Ditemukan: %d baris detail\n", currentDB, noJurnal, len(details))
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
@@ -231,7 +266,6 @@ func CreateJurnalHandler(c *gin.Context) {
 		cbID = "1"
 	}
 
-	// Auto generate no jurnal jika kosong: [YY][MM][AGEN_3DIGIT][TIPE][URUTAN_5DIGIT]
 	if strings.TrimSpace(req.TJurHNo) == "" {
 		ptStr := fmt.Sprintf("%v", ptID)
 		docNo, err := utils.GenerateDocNo(database, ptStr, cbID, req.TJurHTanggal, "public.gl_t_jurnalh", "tjurh_no")
@@ -262,7 +296,6 @@ func CreateJurnalHandler(c *gin.Context) {
 		return
 	}
 
-	// Simpan detail rincian jurnal
 	for i, d := range req.Details {
 		agenDetail := strings.TrimSpace(d.AgenID)
 		if agenDetail == "" {
@@ -326,7 +359,6 @@ func UpdateJurnalHandler(c *gin.Context) {
 		return
 	}
 
-	// Update detail jika array rincian dikirimkan
 	if len(req.Details) > 0 {
 		database.Table("public.gl_t_jurnald").Where("tjurd_tjurhno = ?", noJurnal).Delete(map[string]interface{}{})
 
@@ -365,7 +397,7 @@ func UpdateJurnalHandler(c *gin.Context) {
 // 6. DELETE /api/gl/jurnal/:id (BATALKAN JURNAL)
 // =========================================================================
 func DeleteJurnalHandler(c *gin.Context) {
-	noJurnal := c.Param("id")
+	noJurnal := strings.TrimSpace(strings.TrimPrefix(c.Param("id"), "/"))
 	database := getJurnalDB(c)
 
 	err := database.Table("public.gl_t_jurnalh").
