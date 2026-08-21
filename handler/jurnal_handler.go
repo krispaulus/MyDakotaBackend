@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"dakotagroup/business-insight-be/db"
-	"dakotagroup/business-insight-be/utils"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -249,7 +248,6 @@ func GetChartAccountsHandler(c *gin.Context) {
 func CreateJurnalHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	userID, _ := c.Get("username")
-	ptID, _ := c.Get("pt_id")
 	userAgenID, _ := c.Get("agen_id")
 
 	var req SaveJurnalFullReq
@@ -266,20 +264,36 @@ func CreateJurnalHandler(c *gin.Context) {
 		cbID = "1"
 	}
 
+	// Generate No Jurnal jika kosong: [YYMM][AGEN_3DIGIT][TIPE][URUTAN_5DIGIT]
 	if strings.TrimSpace(req.TJurHNo) == "" {
-		ptStr := fmt.Sprintf("%v", ptID)
-		docNo, err := utils.GenerateDocNo(database, ptStr, cbID, req.TJurHTanggal, "public.gl_t_jurnalh", "tjurh_no")
-		if err != nil {
-			tglTrans, _ := time.Parse("2006-01-02", req.TJurHTanggal)
-			agen3Digit := fmt.Sprintf("%03s", cbID)
-			if len(agen3Digit) > 3 {
-				agen3Digit = agen3Digit[len(agen3Digit)-3:]
-			}
-			docNo = fmt.Sprintf("%s%s%s%05d", tglTrans.Format("0601"), agen3Digit, req.TJurHType, time.Now().Unix()%10000)
+		tglTrans, errDate := time.Parse("2006-01-02", req.TJurHTanggal)
+		if errDate != nil {
+			tglTrans = time.Now()
 		}
-		req.TJurHNo = docNo
+		agen3Digit := fmt.Sprintf("%03s", cbID)
+		if len(agen3Digit) > 3 {
+			agen3Digit = agen3Digit[len(agen3Digit)-3:]
+		}
+		prefixJurnal := fmt.Sprintf("%s%s%s", tglTrans.Format("0601"), agen3Digit, req.TJurHType)
+
+		var lastJurnal string
+		database.Table("public.gl_t_jurnalh").
+			Select("tjurh_no").
+			Where("tjurh_no LIKE ?", prefixJurnal+"%").
+			Order("tjurh_no DESC").
+			Limit(1).
+			Scan(&lastJurnal)
+
+		nextUrut := 1
+		if lastJurnal != "" && len(lastJurnal) >= len(prefixJurnal)+5 {
+			if num, errNum := strconv.Atoi(lastJurnal[len(prefixJurnal):]); errNum == nil {
+				nextUrut = num + 1
+			}
+		}
+		req.TJurHNo = fmt.Sprintf("%s%05d", prefixJurnal, nextUrut)
 	}
 
+	// 1. Simpan Header Jurnal
 	insertHeader := map[string]interface{}{
 		"tjurh_no":         strings.TrimSpace(req.TJurHNo),
 		"tjurh_tanggal":    req.TJurHTanggal + " " + time.Now().Format("15:04:05"),
@@ -296,7 +310,8 @@ func CreateJurnalHandler(c *gin.Context) {
 		return
 	}
 
-	for i, d := range req.Details {
+	// 2. Simpan Baris Rincian Detail
+	for _, d := range req.Details {
 		agenDetail := strings.TrimSpace(d.AgenID)
 		if agenDetail == "" {
 			agenDetail = cbID
@@ -308,16 +323,15 @@ func CreateJurnalHandler(c *gin.Context) {
 
 		insertD := map[string]interface{}{
 			"tjurd_tjurhno":    strings.TrimSpace(req.TJurHNo),
-			"tjurd_nourut":     i + 1,
 			"tjurd_acccode":    strings.TrimSpace(d.AccCode),
 			"tjurd_agenid":     agenDetail,
 			"tjurd_keterangan": ketDetail,
 			"tjurd_debet":      d.Debet,
 			"tjurd_kredit":     d.Kredit,
-			"tjurd_updateid":   fmt.Sprintf("%v", userID),
-			"tjurd_updatetime": time.Now(),
 		}
-		database.Table("public.gl_t_jurnald").Create(insertD)
+		if err := database.Table("public.gl_t_jurnald").Create(insertD).Error; err != nil {
+			fmt.Printf("❌ [ERROR INSERT JURNALD] %v\n", err)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -360,9 +374,9 @@ func UpdateJurnalHandler(c *gin.Context) {
 	}
 
 	if len(req.Details) > 0 {
-		database.Table("public.gl_t_jurnald").Where("tjurd_tjurhno = ?", noJurnal).Delete(map[string]interface{}{})
+		database.Table("public.gl_t_jurnald").Where("TRIM(tjurd_tjurhno) = TRIM(?)", noJurnal).Delete(map[string]interface{}{})
 
-		for i, d := range req.Details {
+		for _, d := range req.Details {
 			agenDetail := strings.TrimSpace(d.AgenID)
 			if agenDetail == "" {
 				agenDetail = "1"
@@ -374,14 +388,11 @@ func UpdateJurnalHandler(c *gin.Context) {
 
 			insertD := map[string]interface{}{
 				"tjurd_tjurhno":    noJurnal,
-				"tjurd_nourut":     i + 1,
 				"tjurd_acccode":    strings.TrimSpace(d.AccCode),
 				"tjurd_agenid":     agenDetail,
 				"tjurd_keterangan": ketDetail,
 				"tjurd_debet":      d.Debet,
 				"tjurd_kredit":     d.Kredit,
-				"tjurd_updateid":   fmt.Sprintf("%v", userID),
-				"tjurd_updatetime": time.Now(),
 			}
 			database.Table("public.gl_t_jurnald").Create(insertD)
 		}
