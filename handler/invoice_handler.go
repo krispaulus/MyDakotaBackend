@@ -311,7 +311,7 @@ func SaveInvoiceHandler(c *gin.Context) {
 		}
 	}()
 
-	// 1. Generate Nomor Invoice[cite: 11]
+	// 1. Generate Nomor Invoice
 	mmyy := tgl.Format("0106")
 	var maxInv string
 	tx.Raw(`
@@ -328,10 +328,10 @@ func SaveInvoiceHandler(c *gin.Context) {
 	}
 	newInvoiceID := fmt.Sprintf("%s%s%04d", agenIDPad, mmyy, urut)
 
-	// Format Nomor Kwitansi Resmi: 0001/DLI/001/06/26[cite: 6, 11]
+	// Format Nomor Kwitansi Resmi: 0001/DLI/001/06/26
 	noKW := fmt.Sprintf("%04d/DLI/%s/%s/%s", urut, agenIDPad, tgl.Format("01"), tgl.Format("06"))
 
-	// 2. Hitung Total Tagihan dari BTT Terpilih[cite: 12]
+	// 2. Hitung Total Tagihan dari BTT Terpilih
 	var totalInvoice float64 = 0
 	for _, bttID := range req.BTTList {
 		var bttSubtotal float64
@@ -343,12 +343,10 @@ func SaveInvoiceHandler(c *gin.Context) {
 
 		totalInvoice += bttSubtotal
 
-		// Insert Detail
+		// Insert Detail (hanya relasi invoice ID dan BTT ID)
 		detailMap := map[string]interface{}{
-			"artid_artihid":    newInvoiceID,
-			"artid_bttid":      strings.TrimSpace(bttID),
-			"artid_updateid":   fmt.Sprintf("%v", userID),
-			"artid_updatetime": time.Now(),
+			"artid_artihid": newInvoiceID,
+			"artid_bttid":   strings.TrimSpace(bttID),
 		}
 		if err := tx.Table("public.art_t_invoiced").Create(&detailMap).Error; err != nil {
 			tx.Rollback()
@@ -357,7 +355,7 @@ func SaveInvoiceHandler(c *gin.Context) {
 		}
 	}
 
-	// 3. Insert Header Invoice[cite: 11]
+	// 3. Insert Header Invoice
 	headerMap := map[string]interface{}{
 		"artih_id":         newInvoiceID,
 		"artih_nokw":       noKW,
@@ -398,7 +396,12 @@ func UpdateTglACCInvoiceHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung"})
 		return
 	}
-	userID, _ := c.Get("username")
+
+	userVal, exists := c.Get("username")
+	userStr := "SYSTEM"
+	if exists && userVal != nil && fmt.Sprintf("%v", userVal) != "" {
+		userStr = fmt.Sprintf("%v", userVal)
+	}
 
 	var req struct {
 		ARTIHID string `json:"artih_id" binding:"required"`
@@ -414,14 +417,21 @@ func UpdateTglACCInvoiceHandler(c *gin.Context) {
 		tgl = time.Now()
 	}
 
-	if err := database.Table("public.art_t_invoiceh").
-		Where("TRIM(artih_id) = TRIM(?)", req.ARTIHID).
+	res := database.Table("public.art_t_invoiceh").
+		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", req.ARTIHID).
 		Updates(map[string]interface{}{
 			"artih_tglacc":     tgl,
-			"artih_updateid":   fmt.Sprintf("%v", userID),
+			"artih_updateid":   userStr,
 			"artih_updatetime": time.Now(),
-		}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update tanggal ACC: " + err.Error()})
+		})
+
+	if res.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update tanggal ACC: " + res.Error.Error()})
+		return
+	}
+
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Nomor Invoice tidak ditemukan"})
 		return
 	}
 
