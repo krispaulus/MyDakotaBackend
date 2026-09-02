@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// GET /api/area-lopers
+// GET /api/area-loper (Rekap Agen & Jumlah Wilayah Loper)
 func GetAreaLopers(c *gin.Context) {
 	search := c.Query("search")
 	ptID, _ := c.Get("pt_id")
@@ -23,19 +24,28 @@ func GetAreaLopers(c *gin.Context) {
 	var listRekap []map[string]interface{}
 	queryRaw := `
 		SELECT 
-			a.agen_id, TRIM(a.agen_kode) AS agen_kode, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_phone1 AS agen_phone,
+			a.agen_id::varchar AS agen_id,
+			COALESCE(NULLIF(TRIM(a.agen_kode), ''), a.agen_id::varchar, '') AS agen_kode,
+			COALESCE(a.agen_nama, '') AS agen_nama,
+			COALESCE(a.agen_alamat, '') AS agen_alamat,
+			COALESCE(a.agen_kota, '') AS agen_kota,
+			COALESCE(a.agen_telp, a.agen_hp, '') AS agen_phone,
 			COUNT(w.id) AS jumlah_wilayah
 		FROM public.glb_m_agen a
-		LEFT JOIN public.opr_m_earea w ON TRIM(w.area_agenid::text) = TRIM(a.agen_kode) `
+		LEFT JOIN public.opr_m_earea w ON (
+			TRIM(w.area_agenid::text) = TRIM(a.agen_kode::text) OR 
+			TRIM(w.area_agenid::text) = TRIM(a.agen_id::text)
+		)
+	`
 
 	if search != "" {
-		queryRaw += ` WHERE a.agen_nama ILIKE '%` + search + `%' OR a.agen_kode ILIKE '%` + search + `%' OR a.agen_kota ILIKE '%` + search + `%' `
+		queryRaw += ` WHERE a.agen_nama ILIKE '%` + search + `%' OR a.agen_kode ILIKE '%` + search + `%' OR a.agen_id::varchar ILIKE '%` + search + `%' OR a.agen_kota ILIKE '%` + search + `%' `
 	}
 
-	queryRaw += ` GROUP BY a.agen_id, a.agen_kode, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_phone1 ORDER BY a.agen_id ASC`
+	queryRaw += ` GROUP BY a.agen_id, a.agen_kode, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_telp, a.agen_hp ORDER BY a.agen_id ASC`
 
 	if err := database.Raw(queryRaw).Scan(&listRekap).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat rekap data agen"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat rekap data agen: " + err.Error()})
 		return
 	}
 
@@ -100,22 +110,75 @@ func GetWilayahBelumTerdaftar(c *gin.Context) {
 
 	var hasil []models.WilayahBelumTerdaftar
 
-	// 🟩 FORMULA AMAN: Menggunakan quotation mark jika nama tabel di DB DLI lu case-sensitive, atau pastikan namanya lowercase.
-	// Jika tetap tidak ketemu, pastikan lu sudah meng-copy tabel glb_m_kodepos dari database DBS ke DLI lewat pgAdmin!
-	queryRaw := `
-		SELECT 
-			k.kecamatandistrik AS kecamatan, k.desakelurahan AS kelurahan, k.kotakabupaten AS kabupaten, k.propinsi AS propinsi
-		FROM glb_m_kodepos k
-		WHERE NOT EXISTS (
-			SELECT 1 FROM opr_m_earea a 
-			WHERE UPPER(TRIM(a.tujuan_kelurahan)) = UPPER(TRIM(k.desakelurahan))
-			  AND UPPER(TRIM(a.tujuan_kecamatan)) = UPPER(TRIM(k.kecamatandistrik))
-		)
-		ORDER BY k.kecamatandistrik ASC LIMIT 200`
+	// 1. Cek kolom yang tersedia di tabel opr_m_earea
+	var colNames []string
+	database.Raw(`
+		SELECT column_name 
+		FROM information_schema.columns 
+		WHERE table_schema = 'public' AND table_name = 'opr_m_earea'
+	`).Pluck("column_name", &colNames)
+
+	hasCol := func(target string) bool {
+		for _, col := range colNames {
+			if strings.EqualFold(col, target) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 2. Susun kondisi pencocokan kelurahan & kecamatan sesuai kolom fisik yang ada
+	var kelCol, kecCol string
+	if hasCol("area_kelurahan") {
+		kelCol = "a.area_kelurahan"
+	} else if hasCol("tujuan_kelurahan") {
+		kelCol = "a.tujuan_kelurahan"
+	} else if hasCol("kelurahan") {
+		kelCol = "a.kelurahan"
+	} else if hasCol("earea_kelurahan") {
+		kelCol = "a.earea_kelurahan"
+	}
+
+	if hasCol("area_kecamatan") {
+		kecCol = "a.area_kecamatan"
+	} else if hasCol("tujuan_kecamatan") {
+		kecCol = "a.tujuan_kecamatan"
+	} else if hasCol("kecamatan") {
+		kecCol = "a.kecamatan"
+	} else if hasCol("earea_kecamatan") {
+		kecCol = "a.earea_kecamatan"
+	}
+
+	var queryRaw string
+	if kelCol != "" && kecCol != "" {
+		queryRaw = fmt.Sprintf(`
+			SELECT 
+				COALESCE(k.kecamatandistrik, '') AS kecamatan,
+				COALESCE(k.desakelurahan, '') AS kelurahan,
+				COALESCE(k.kotakabupaten, '') AS kabupaten,
+				COALESCE(k.propinsi, '') AS propinsi
+			FROM public.glb_m_kodepos k
+			WHERE NOT EXISTS (
+				SELECT 1 FROM public.opr_m_earea a 
+				WHERE UPPER(TRIM(%s::text)) = UPPER(TRIM(k.desakelurahan))
+				  AND UPPER(TRIM(%s::text)) = UPPER(TRIM(k.kecamatandistrik))
+			)
+			ORDER BY k.kecamatandistrik ASC LIMIT 200`, kelCol, kecCol)
+	} else {
+		// Fallback query jika belum ada mapping kolom kelurahan/kecamatan
+		queryRaw = `
+			SELECT 
+				COALESCE(k.kecamatandistrik, '') AS kecamatan,
+				COALESCE(k.desakelurahan, '') AS kelurahan,
+				COALESCE(k.kotakabupaten, '') AS kabupaten,
+				COALESCE(k.propinsi, '') AS propinsi
+			FROM public.glb_m_kodepos k
+			ORDER BY k.kecamatandistrik ASC LIMIT 200`
+	}
 
 	if err := database.Raw(queryRaw).Scan(&hasil).Error; err != nil {
-		log.Printf("❌ ERROR SQL NOT EXISTS LAPIS BAJA: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal sinkronisasi data master wilayah, pastikan tabel glb_m_kodepos sudah di-import ke DB DLI!"})
+		log.Printf("❌ ERROR SQL UNREGISTERED AREA: %v", err)
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []models.WilayahBelumTerdaftar{}})
 		return
 	}
 
@@ -128,22 +191,22 @@ func GetAgenDetailByID(c *gin.Context) {
 	ptID, _ := c.Get("pt_id")
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung bray"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung"})
 		return
 	}
 
 	var hasilMap map[string]interface{}
 	err := database.Table("public.glb_m_agen").
-		Select("agen_kode, agen_nama, agen_alamat, agen_kota, agen_phone1").
-		Where("TRIM(agen_kode) = ?", kode).Limit(1).Scan(&hasilMap).Error
+		Select("agen_kode, agen_nama, agen_alamat, agen_kota, COALESCE(agen_telp, '') AS agen_phone").
+		Where("TRIM(agen_kode::text) = TRIM(?)", kode).Limit(1).Scan(&hasilMap).Error
 
 	if err != nil || len(hasilMap) == 0 {
-		err = database.Table("public.glb_m_agen").
-			Select("agen_kode, agen_nama, agen_alamat, agen_kota, agen_phone1").
-			Where("agen_kode LIKE ?", "%"+kode+"%").Limit(1).Scan(&hasilMap).Error
+		database.Table("public.glb_m_agen").
+			Select("agen_kode, agen_nama, agen_alamat, agen_kota, COALESCE(agen_telp, '') AS agen_phone").
+			Where("agen_kode ILIKE ?", "%"+kode+"%").Limit(1).Scan(&hasilMap)
 	}
 
-	if err != nil || len(hasilMap) == 0 {
+	if len(hasilMap) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Profil Agen tidak ditemukan"})
 		return
 	}
@@ -155,7 +218,7 @@ func GetAgenDetailByID(c *gin.Context) {
 			"agen_nama":   hasilMap["agen_nama"],
 			"agen_alamat": hasilMap["agen_alamat"],
 			"agen_kota":   hasilMap["agen_kota"],
-			"agen_phone":  hasilMap["agen_phone1"],
+			"agen_phone":  hasilMap["agen_phone"],
 		},
 	})
 }
@@ -170,11 +233,10 @@ func GetAreaLoperTerpilihByAgen(c *gin.Context) {
 		return
 	}
 
-	var listArea []models.AreaLoper
+	var listArea []map[string]interface{}
 	err := database.Table("public.opr_m_earea").
-		Where("TRIM(area_agenid::text) = ?", kodeAgen).
-		Order("tujuan_propinsi ASC, tujuan_kabupaten ASC, tujuan_kecamatan ASC").
-		Find(&listArea).Error
+		Where("TRIM(area_agenid::text) = TRIM(?::text)", kodeAgen).
+		Scan(&listArea).Error
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
@@ -201,7 +263,7 @@ func SearchMasterWilayah(c *gin.Context) {
 	var listLokasi []map[string]interface{}
 	query := database.Table("public.glb_m_kodepos").
 		Select("TRIM(propinsi) AS propinsi, TRIM(kotakabupaten) AS kabupaten, TRIM(kecamatandistrik) AS kecamatan, TRIM(desakelurahan) AS kelurahan").
-		Limit(15)
+		Limit(25)
 
 	if propinsi != "" {
 		query = query.Where("propinsi ILIKE ?", "%"+propinsi+"%")
@@ -252,18 +314,23 @@ func AssignWilayahMassalKeAgen(c *gin.Context) {
 	for _, w := range input.Wilayahs {
 		deleteQuery := `
 			DELETE FROM public.opr_m_earea 
-			WHERE UPPER(TRIM(tujuan_propinsi)) = UPPER(TRIM(?)) 
-			  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?)) 
-			  AND UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?)) 
-			  AND UPPER(TRIM(tujuan_kelurahan)) = UPPER(TRIM(?))`
+			WHERE (
+				UPPER(TRIM(COALESCE(area_propinsi, tujuan_propinsi, ''))) = UPPER(TRIM(?)) 
+				AND UPPER(TRIM(COALESCE(area_kota, tujuan_kabupaten, ''))) = UPPER(TRIM(?)) 
+				AND UPPER(TRIM(COALESCE(area_kecamatan, tujuan_kecamatan, ''))) = UPPER(TRIM(?)) 
+				AND UPPER(TRIM(COALESCE(area_kelurahan, tujuan_kelurahan, ''))) = UPPER(TRIM(?))
+			)`
 		tx.Exec(deleteQuery, w.Propinsi, w.Kabupaten, w.Kecamatan, w.Kelurahan)
 
 		insertQuery := `
-			INSERT INTO public.opr_m_earea (area_agenid, tujuan_propinsi, tujuan_kabupaten, tujuan_kecamatan, tujuan_kelurahan, penerusyn, kgmin, hrgpenerus, leadtime, prosentasebykirimyn)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'N')`
-		if err := tx.Exec(insertQuery, input.AgenKode, w.Propinsi, w.Kabupaten, w.Kecamatan, w.Kelurahan, w.PenerusYN, w.KgMin, w.HrgPenerus, w.LeadTime).Error; err != nil {
+			INSERT INTO public.opr_m_earea (
+				area_agenid, area_propinsi, area_kota, area_kecamatan, area_kelurahan,
+				tujuan_propinsi, tujuan_kabupaten, tujuan_kecamatan, tujuan_kelurahan,
+				penerusyn, kgmin, hrgpenerus, leadtime, prosentasebykirimyn
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'N')`
+		if err := tx.Exec(insertQuery, input.AgenKode, w.Propinsi, w.Kabupaten, w.Kecamatan, w.Kelurahan, w.Propinsi, w.Kabupaten, w.Kecamatan, w.Kelurahan, w.PenerusYN, w.KgMin, w.HrgPenerus, w.LeadTime).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan kluster wilayah massal"})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan kluster wilayah massal: " + err.Error()})
 			return
 		}
 	}
@@ -294,14 +361,15 @@ func ProcessBatchAreaLoper(c *gin.Context) {
 		return
 	}
 
-	query := database.Table("public.opr_m_earea").Where("UPPER(TRIM(tujuan_propinsi)) = UPPER(TRIM(?))", input.Propinsi)
+	query := database.Table("public.opr_m_earea").
+		Where("(UPPER(TRIM(COALESCE(area_propinsi, tujuan_propinsi, ''))) = UPPER(TRIM(?)))", input.Propinsi)
 
 	if input.Level == "kabupaten" || input.Level == "kecamatan" || input.Level == "kelurahan" {
-		query = query.Where("UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))", input.Kabupaten)
+		query = query.Where("(UPPER(TRIM(COALESCE(area_kota, tujuan_kabupaten, ''))) = UPPER(TRIM(?)))", input.Kabupaten)
 		if input.Level == "kecamatan" || input.Level == "kelurahan" {
-			query = query.Where("UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?))", input.Kecamatan)
+			query = query.Where("(UPPER(TRIM(COALESCE(area_kecamatan, tujuan_kecamatan, ''))) = UPPER(TRIM(?)))", input.Kecamatan)
 			if input.Level == "kelurahan" {
-				query = query.Where("UPPER(TRIM(tujuan_kelurahan)) = UPPER(TRIM(?))", input.Kelurahan)
+				query = query.Where("(UPPER(TRIM(COALESCE(area_kelurahan, tujuan_kelurahan, ''))) = UPPER(TRIM(?)))", input.Kelurahan)
 			}
 		}
 	}

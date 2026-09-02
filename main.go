@@ -476,6 +476,119 @@ func main() {
 			authorized.DELETE("/gl/setoran-cod/:id", handler.DeleteSetoranCODHandler)
 
 			authorized.GET("/gl/setoran-cod/btt-options", handler.GetBTTCODOptionsHandler)
+
+			authorized.GET("/piutang/aging", handler.GetAgingPiutangHandler)
+			authorized.GET("/gl/customers", handler.GetCustomerOptionsHandler)
+
+			authorized.GET("/piutang/approval-customer", handler.GetApprovalCustomerListHandler)
+			authorized.GET("/piutang/approval-customer/detail/:id", handler.GetApprovalCustomerDetailHandler)
+			authorized.POST("/piutang/approval-customer/save", handler.SaveApprovalCustomerHandler)
+			authorized.DELETE("/piutang/approval-customer/:id", handler.DeleteApprovalCustomerHandler)
+			authorized.GET("/marketing/cities", handler.GetKotaOptionsHandler)
+
+			authorized.GET("/piutang/btt-tagih-tujuan", handler.GetBTTTagihTujuanListHandler)
+			authorized.GET("/piutang/btt-tagih-tujuan/detail/:id", handler.GetBTTTagihTujuanDetailHandler)
+			authorized.POST("/piutang/btt-tagih-tujuan/save", handler.SaveBTTTagihTujuanHandler)
+
+			// Credit Note (Piutang)
+			authorized.GET("/piutang/credit-note", handler.GetCreditNoteListHandler)
+			authorized.GET("/piutang/credit-note/detail/:no", handler.GetCreditNoteDetailHandler)
+			authorized.GET("/piutang/credit-note/invoices-outstanding", handler.GetInvoicesOutstandingHandler)
+			authorized.POST("/piutang/credit-note/save", handler.SaveCreditNoteHandler)
+			authorized.POST("/piutang/credit-note/posting", handler.PostingCreditNoteHandler)
+			authorized.POST("/piutang/credit-note/unposting", handler.UnpostingCreditNoteHandler)
+			authorized.DELETE("/piutang/credit-note/:no", handler.DeleteCreditNoteHandler)
+
+			// Invoice (Piutang Penagihan)
+			authorized.GET("/piutang/invoice", handler.GetInvoiceListHandler)
+			authorized.GET("/piutang/invoice/detail", handler.GetInvoiceDetailHandler)
+			authorized.GET("/piutang/invoice/detail/*id", handler.GetInvoiceDetailHandler)
+			authorized.GET("/piutang/invoice/unbilled-btt", handler.GetUnbilledBTTHandler)
+			authorized.POST("/piutang/invoice/save", handler.SaveInvoiceHandler)
+			authorized.POST("/piutang/invoice/acc", handler.UpdateTglACCInvoiceHandler)
+			authorized.DELETE("/piutang/invoice", handler.DeleteInvoiceHandler)
+			authorized.DELETE("/piutang/invoice/*id", handler.DeleteInvoiceHandler)
+			authorized.POST("/piutang/invoice/update", handler.UpdateInvoiceFullHandler)
+
+			// Kondisi BTT dan Order Jemput
+			authorized.GET("/piutang/kondisi-btt/options", handler.GetKondisiBTTOptionsHandler)
+			authorized.GET("/piutang/kondisi-btt", handler.GetKondisiBTTListHandler)
+
+			// Master Faktur Pajak Berjalan
+			authorized.GET("/piutang/faktur-pajak", handler.GetFakturPajakHandler)
+			authorized.POST("/piutang/faktur-pajak/update", handler.UpdateFakturPajakHandler)
+
+			authorized.GET("/piutang/mutasi-piutang", handler.GetMutasiPiutangHandler)
+			authorized.GET("/marketing/customers", handler.GetCustomerDropdownHandler)
+			authorized.GET("/customers", handler.GetCustomerDropdownHandler)
+
+			// Penagihan Invoice oleh Kolektor
+			authorized.GET("/piutang/tagih-invoice", handler.GetTagihInvoiceListHandler)
+			authorized.GET("/piutang/tagih-invoice/available-invoices", handler.GetAvailableInvoicesForTagih)
+			authorized.GET("/piutang/tagih-invoice/detail", handler.GetTagihInvoiceDetailByID)
+			authorized.POST("/piutang/tagih-invoice", handler.CreateTagihInvoiceHandler)
+			authorized.PUT("/piutang/tagih-invoice/batal", handler.CancelTagihInvoiceHandler)
+			authorized.GET("/karyawan/kolektor-dropdown", handler.GetKolektorDropdownHandler)
+
+			// PENERIMAAN PEMBAYARAN KREDIT
+			authorized.GET("/piutang/penerimaan-pembayaran-kredit", handler.GetPenerimaanPembayaranKreditListHandler)
+			authorized.GET("/piutang/penerimaan-pembayaran-kredit/detail", handler.GetPenerimaanPembayaranKreditDetailHandler)
+			authorized.POST("/piutang/penerimaan-pembayaran-kredit", handler.CreatePenerimaanPembayaranKreditHandler)
+			authorized.PUT("/piutang/penerimaan-pembayaran-kredit/batal", handler.CancelPenerimaanPembayaranKreditHandler)
+			authorized.GET("/akun/kas-bank-dropdown", handler.GetKasBankAccountsHandler)
+
+			// Alias / Fallback Endpoint
+			authorized.GET("/piutang/receipt", handler.GetPenerimaanPembayaranKreditListHandler)
+			authorized.GET("/piutang/receipt/detail", handler.GetPenerimaanPembayaranKreditDetailHandler)
+			authorized.POST("/piutang/receipt", handler.CreatePenerimaanPembayaranKreditHandler)
+			authorized.PUT("/piutang/receipt/batal", handler.CancelPenerimaanPembayaranKreditHandler)
+
+			// PENERIMAAN PENAGIHAN KOLEKTOR
+			authorized.GET("/piutang/penerimaan-penagihan-kolektor", handler.GetPenerimaanPenagihanListHandler)
+			authorized.GET("/piutang/penerimaan-penagihan-kolektor/detail", handler.GetPenerimaanPenagihanDetailHandler)
+			authorized.POST("/piutang/penerimaan-penagihan-kolektor/konfirmasi", handler.ConfirmPenerimaanPenagihanHandler)
+
+			// PENERIMAAN SETORAN AGEN
+			authorized.GET("/piutang/penerimaan-setoran-agen", handler.GetPenerimaanSetoranAgenListHandler)
+			authorized.GET("/piutang/penerimaan-setoran-agen/detail", handler.GetPenerimaanSetoranAgenDetailHandler)
+			authorized.POST("/piutang/penerimaan-setoran-agen/proses", handler.ProcessSetoranAgenHandler)
+
+			// PROFORMA INVOICE
+			authorized.GET("/piutang/proforma-invoice", handler.GetProformaInvoiceListHandler)
+			authorized.GET("/piutang/proforma-invoice/detail", handler.GetProformaInvoiceDetailHandler)
+			authorized.POST("/piutang/proforma-invoice/create", handler.CreateProformaInvoiceHandler)
+			authorized.POST("/piutang/proforma-invoice/cancel", handler.CancelProformaInvoiceHandler)
+			authorized.POST("/piutang/proforma-invoice/update", handler.UpdateProformaInvoiceHandler)
+			authorized.GET("/pelanggan", handler.GetPelangganDropdownHandler)
+
+			// PROSES PIUTANG
+			authorized.POST("/piutang/proses-piutang/eksekusi", handler.ExecuteProsesPiutangHandler)
+			authorized.GET("/piutang/proses-piutang/histori", handler.GetHistoriSaldoPiutangHandler)
+			authorized.GET("/piutang/proses-piutang/detail-customer", handler.GetDetailProsesPiutangCustomerHandler)
+			authorized.GET("/piutang/proses-piutang/preview", handler.PreviewProsesPiutangHandler)
+
+			// REVISI BTT APL (HARGA)
+			authorized.GET("/piutang/revisi-btt/search", handler.SearchBTTForRevisiHandler)
+			authorized.POST("/piutang/revisi-btt/submit", handler.SubmitRevisiBTTHargaHandler)
+			authorized.GET("/piutang/revisi-btt/history", handler.GetHistoryRevisiBTTHargaHandler)
+
+			// SET SALDO AWAL PIUTANG
+			authorized.GET("/piutang/saldo-awal/list", handler.GetListSaldoAwalPiutangHandler)
+			authorized.POST("/piutang/saldo-awal/save", handler.SaveSaldoAwalPiutangHandler)
+
+			// TUKAR FAKTUR
+			authorized.GET("/piutang/tukar-faktur/list", handler.GetListTukarFakturHandler)
+			authorized.GET("/piutang/tukar-faktur/available-invoices", handler.GetAvailableInvoicesForTFHandler)
+			authorized.POST("/piutang/tukar-faktur/save", handler.SaveTukarFakturHandler)
+			authorized.DELETE("/piutang/tukar-faktur/delete", handler.DeleteTukarFakturHandler)
+
+			// AGING HUTANG VENDOR
+			authorized.GET("/hutang/aging-vendor/list", handler.GetAgingHutangVendorHandler)
+			// INVOICE VENDOR (HUTANG)
+			authorized.GET("/hutang/invoice-vendor/list", handler.GetListInvoiceVendorHandler)
+			authorized.POST("/hutang/invoice-vendor/save", handler.SaveInvoiceVendorHandler)
+			authorized.DELETE("/hutang/invoice-vendor/delete", handler.DeleteInvoiceVendorHandler)
+
 		}
 	}
 

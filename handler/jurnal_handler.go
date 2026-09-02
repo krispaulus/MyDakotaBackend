@@ -71,6 +71,16 @@ func getJurnalDB(c *gin.Context) *gorm.DB {
 		return dliDB
 	}
 
+	if dbVal, exists := c.Get("db_corp"); exists && dbVal != nil {
+		return dbVal.(*gorm.DB)
+	}
+
+	if dbVal, exists := c.Get("db"); exists && dbVal != nil {
+		return dbVal.(*gorm.DB)
+	}
+
+	//return config.DB
+
 	return db.GetDB()
 }
 
