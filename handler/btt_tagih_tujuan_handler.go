@@ -58,87 +58,105 @@ type UpdateBTTTagihReq struct {
 	BTTTurunCustomerID string `json:"btt_turun_customer_id" binding:"required"`
 }
 
-// 1. GET /api/piutang/btt-tagih-tujuan (List BTT Tagih Turun)
+// 1. GET /api/piutang/btt-tagih-tujuan (List BTT Tagih Turun / Tujuan)
 func GetBTTTagihTujuanListHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":  "error",
+			"message": "Database corporate tidak terhubung",
+		})
 		return
 	}
 
 	startDate := strings.TrimSpace(c.Query("start_date"))
 	endDate := strings.TrimSpace(c.Query("end_date"))
+	bypassTanggal := c.Query("bypass_tanggal") == "true" || c.Query("bypass_tanggal") == "1"
 	tujuanAgenID := strings.TrimSpace(c.Query("tujuan_agen_id"))
+	terbayarYN := strings.TrimSpace(c.Query("terbayar_yn"))
 	customerName := strings.TrimSpace(c.Query("customer_name"))
 	noBTT := strings.TrimSpace(c.Query("no_btt"))
 	noSuratJalan := strings.TrimSpace(c.Query("no_surat_jalan"))
-	terbayarYN := strings.TrimSpace(c.Query("terbayar_yn"))
-	bypassTanggal := c.Query("bypass_tanggal") == "true" || c.Query("bypass_tanggal") == "1"
 
-	query := database.Table("public.mkt_t_econote_tagih tt").
+	query := database.Table("public.mkt_t_econote e").
 		Select(`
-			tt.btt_turun_id,
-			tt.btt_turun_tanggal,
-			tt.btt_turun_customerid AS btt_turun_customer_id,
-			COALESCE(ct.cust_name, '') AS cust_tagih_name,
-			COALESCE(tt.btt_turun_terbayaryn, 'N') AS btt_turun_terbayar_yn,
-			COALESCE(tt.btt_turun_nojurnal, '') AS btt_turun_no_jurnal,
-			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
-			COALESCE(a.agen_nama, 'DLI PUSAT') AS asal_agen_nama,
-			COALESCE(e.bttt_asalcustid, '') AS asal_cust_id,
-			COALESCE(e.bttt_asalname, '') AS asal_cust_nama,
-			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id,
-			COALESCE(e.bttt_tujuannama, '') AS tujuan_nama,
-			COALESCE(e.bttt_ket, '') AS ket,
-			COALESCE(e.bttt_nosuratjalan, '') AS no_surat_jalan,
-			COALESCE(e.bttt_namabarang, '') AS nama_barang,
-			COALESCE(e.bttt_jmlunit, 0) AS jml_unit,
-			COALESCE(e.bttt_jmlpck, 0) AS jml_pck,
-			COALESCE(e.bttt_berat, 0) AS berat,
-			COALESCE(e.bttt_beratvol, 0) AS berat_vol,
-			COALESCE(e.bttt_ukuran, 0) AS ukuran,
-			COALESCE(e.bttt_harga, 0) AS harga,
-			COALESCE(e.bttt_biayapenerus, 0) AS biaya_penerus,
-			COALESCE(e.bttt_packingid, 0) AS packing_id,
-			(COALESCE(e.bttt_harga, 0) + COALESCE(e.bttt_biayapenerus, 0) + COALESCE(e.bttt_packingid, 0)) AS total_tagih
+			e.bttt_id::varchar AS btt_turun_id,
+			COALESCE(e.bttt_tanggal, NOW()) AS btt_turun_tanggal,
+			COALESCE(tt.btt_turun_customerid::varchar, '') AS btt_turun_customer_id,
+			COALESCE(c_tagih.cust_name, e.bttt_tujuannama, '') AS cust_tagih_name,
+			COALESCE(a_asal.agen_nama, 'DLI PUSAT') AS asal_agen_nama,
+			COALESCE(e.bttt_asalname::varchar, '') AS asal_cust_nama,
+			COALESCE(e.bttt_asalcustid::varchar, '') AS asal_cust_id,
+			COALESCE(e.bttt_tujuannama::varchar, '') AS tujuan_nama,
+			COALESCE(e.bttt_tujuankota::varchar, '') AS tujuan_kota,
+			COALESCE(e.bttt_nosuratjalan::varchar, '') AS no_surat_jalan,
+			COALESCE(e.bttt_namabarang::varchar, '') AS nama_barang,
+			COALESCE(e.bttt_jmlunit::numeric, 0) AS jml_unit,
+			COALESCE(e.bttt_berat::numeric, 0) AS berat,
+			(COALESCE(e.bttt_harga::numeric, 0) + COALESCE(e.bttt_biayapenerus::numeric, 0) + COALESCE(p.pck_biaya::numeric, 0)) AS total_tagih,
+			CASE WHEN COALESCE(rp.total_terbayar, 0) >= (COALESCE(e.bttt_harga::numeric, 0) + COALESCE(e.bttt_biayapenerus::numeric, 0) + COALESCE(p.pck_biaya::numeric, 0)) THEN 'Y' ELSE 'N' END AS btt_turun_terbayar_yn,
+			COALESCE(e.bttt_cbyn, 'N') AS cb_yn,
+			CASE WHEN invd.artid_bttid IS NOT NULL THEN true ELSE false END AS sudah_invoice
 		`).
-		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = TRIM(tt.btt_turun_id)").
-		Joins("LEFT JOIN public.glb_m_agen a ON (TRIM(a.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar) OR a.agen_id::varchar = LPAD(LEFT(e.bttt_id, 3), 3, '0'))").
-		Joins("LEFT JOIN public.mkt_m_customer ct ON TRIM(ct.cust_id) = TRIM(tt.btt_turun_customerid)")
+		Joins("LEFT JOIN public.mkt_t_econote_tagih tt ON TRIM(tt.btt_turun_id::varchar) = TRIM(e.bttt_id::varchar)").
+		Joins("LEFT JOIN public.mkt_m_customer c_tagih ON TRIM(c_tagih.cust_id::varchar) = TRIM(tt.btt_turun_customerid::varchar)").
+		Joins("LEFT JOIN public.glb_m_agen a_asal ON a_asal.agen_id::varchar = LPAD(LEFT(e.bttt_id::varchar, 3), 3, '0')").
+		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
+		Joins(`LEFT JOIN (
+			SELECT r.trectddd_nobtt, SUM(r.trectddd_bayar) AS total_terbayar
+			FROM public.art_t_receiptdddd r
+			GROUP BY r.trectddd_nobtt
+		) rp ON TRIM(rp.trectddd_nobtt::varchar) = TRIM(e.bttt_id::varchar)`).
+		Joins("LEFT JOIN public.art_t_invoiced invd ON TRIM(invd.artid_bttid::varchar) = TRIM(e.bttt_id::varchar)").
+		//Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'").
+		//Where("TRIM(UPPER(COALESCE(e.bttt_bayaryn, ''))) = 'T'")
+
+		Where("COALESCE(e.bttt_aktifyn, 'Y') <> 'N'").
+		Where("(TRIM(UPPER(COALESCE(e.bttt_bayaryn, ''))) IN ('T', 'TT', '3', 'TAGIH') OR TRIM(UPPER(COALESCE(e.bttt_servid, ''))) IN ('T', 'TT', '3'))")
 
 	if !bypassTanggal && startDate != "" && endDate != "" {
-		query = query.Where("tt.btt_turun_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
+		query = query.Where("e.bttt_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
 	}
 
 	if tujuanAgenID != "" && tujuanAgenID != "ALL" {
-		query = query.Where("(e.bttt_tujuanagenid = ? OR LPAD(e.bttt_tujuanagenid, 3, '0') = LPAD(?, 3, '0'))", tujuanAgenID, tujuanAgenID)
-	}
-
-	if terbayarYN != "" {
-		query = query.Where("COALESCE(tt.btt_turun_terbayaryn, 'N') = ?", terbayarYN)
+		query = query.Where("(TRIM(e.bttt_tujuanagenid::varchar) = TRIM(?::varchar) OR LPAD(TRIM(e.bttt_tujuanagenid::varchar), 3, '0') = LPAD(?::varchar, 3, '0'))", tujuanAgenID, tujuanAgenID)
 	}
 
 	if customerName != "" {
-		query = query.Where("(ct.cust_name ILIKE ? OR e.bttt_asalname ILIKE ? OR e.bttt_tujuannama ILIKE ?)", "%"+customerName+"%", "%"+customerName+"%", "%"+customerName+"%")
+		query = query.Where("(c_tagih.cust_name ILIKE ? OR e.bttt_asalname ILIKE ? OR e.bttt_tujuannama ILIKE ?)", "%"+customerName+"%", "%"+customerName+"%", "%"+customerName+"%")
 	}
 
 	if noBTT != "" {
-		query = query.Where("tt.btt_turun_id ILIKE ?", "%"+noBTT+"%")
+		query = query.Where("e.bttt_id ILIKE ?", "%"+noBTT+"%")
 	}
 
 	if noSuratJalan != "" {
 		query = query.Where("e.bttt_nosuratjalan ILIKE ?", "%"+noSuratJalan+"%")
 	}
 
-	var list []BTTTagihTujuanRow
-	if err := query.Order("tt.btt_turun_tanggal DESC, tt.btt_turun_id DESC").Limit(500).Scan(&list).Error; err != nil {
+	var result []map[string]interface{}
+	if err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Limit(500).Scan(&result).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
 	}
 
+	if result == nil {
+		result = []map[string]interface{}{}
+	}
+
+	if terbayarYN != "" && terbayarYN != "ALL" {
+		var filtered []map[string]interface{}
+		for _, row := range result {
+			if row["btt_turun_terbayar_yn"] == terbayarYN {
+				filtered = append(filtered, row)
+			}
+		}
+		result = filtered
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
-		"data":   list,
+		"data":   result,
 	})
 }
 
@@ -206,7 +224,7 @@ func GetBTTTagihTujuanDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// Pengecekan apakah sudah dibuat invoice
+	// Cek apakah sudah dibuat invoice
 	var invCount int64
 	database.Table("public.art_t_invoiced d").
 		Joins("LEFT JOIN public.art_t_invoiceh h ON TRIM(h.artih_id) = TRIM(d.artid_artihid)").
@@ -239,7 +257,6 @@ func SaveBTTTagihTujuanHandler(c *gin.Context) {
 	bttID := strings.TrimSpace(req.BTTTurunID)
 	custID := strings.TrimSpace(req.BTTTurunCustomerID)
 
-	// Validasi apakah BTT sudah closing buku kas
 	var cbYN string
 	database.Table("public.mkt_t_econote").Select("COALESCE(bttt_cbyn, 'N')").Where("TRIM(bttt_id) = TRIM(?)", bttID).Scan(&cbYN)
 	if cbYN == "Y" {
@@ -247,7 +264,6 @@ func SaveBTTTagihTujuanHandler(c *gin.Context) {
 		return
 	}
 
-	// Validasi apakah BTT sudah dibuatkan Invoice
 	var invCount int64
 	database.Table("public.art_t_invoiced d").
 		Joins("LEFT JOIN public.art_t_invoiceh h ON TRIM(h.artih_id) = TRIM(d.artid_artihid)").
@@ -258,7 +274,6 @@ func SaveBTTTagihTujuanHandler(c *gin.Context) {
 		return
 	}
 
-	// Update / Insert ke mkt_t_econote_tagih
 	var exists int64
 	database.Table("public.mkt_t_econote_tagih").Where("TRIM(btt_turun_id) = TRIM(?)", bttID).Count(&exists)
 
