@@ -589,6 +589,21 @@ func main() {
 			authorized.POST("/hutang/invoice-vendor/save", handler.SaveInvoiceVendorHandler)
 			authorized.DELETE("/hutang/invoice-vendor/delete", handler.DeleteInvoiceVendorHandler)
 
+			// 👥 MASTER KARYAWAN (HRD)
+			authorized.GET("/hrd/karyawan", handler.GetKaryawanListHandler)
+			authorized.GET("/hrd/karyawan/:nip", handler.GetKaryawanDetailHandler)
+			authorized.POST("/hrd/karyawan/save", handler.SaveKaryawanHandler)
+			authorized.DELETE("/hrd/karyawan/:nip", handler.DeleteKaryawanHandler)
+			authorized.GET("/hrd/divisi-options", handler.GetDivisiOptionsHandler)
+			authorized.GET("/hrd/jabatan-options", handler.GetJabatanOptionsHandler)
+
+			// 📑 FORM HRD & DOKUMEN DOWNLOAD
+			authorized.GET("/hrd/form/list", handler.GetListFormHRD)
+			authorized.POST("/hrd/form/upload", handler.UploadFormHRD)
+			authorized.GET("/hrd/form/download/:id", handler.DownloadFormHRD)
+			authorized.DELETE("/hrd/form/delete/:id", handler.DeleteFormHRD)
+			authorized.GET("/hrd/form/view/:id", handler.ViewFormHRD)
+
 		}
 	}
 
