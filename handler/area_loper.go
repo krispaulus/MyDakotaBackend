@@ -12,8 +12,9 @@ import (
 )
 
 // GET /api/area-loper (Rekap Agen & Jumlah Wilayah Loper)
+// GET /api/area-loper (Rekap Agen & Jumlah Wilayah Loper)
 func GetAreaLopers(c *gin.Context) {
-	search := c.Query("search")
+	search := strings.TrimSpace(c.Query("search"))
 	ptID, _ := c.Get("pt_id")
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
@@ -29,20 +30,22 @@ func GetAreaLopers(c *gin.Context) {
 			COALESCE(a.agen_nama, '') AS agen_nama,
 			COALESCE(a.agen_alamat, '') AS agen_alamat,
 			COALESCE(a.agen_kota, '') AS agen_kota,
-			COALESCE(a.agen_telp, a.agen_hp, '') AS agen_phone,
-			COUNT(w.id) AS jumlah_wilayah
+			COALESCE(NULLIF(TRIM(a.agen_telp), ''), a.agen_hp, '') AS agen_phone,
+			COUNT(w.area_agenid) AS jumlah_wilayah
 		FROM public.glb_m_agen a
 		LEFT JOIN public.opr_m_earea w ON (
-			TRIM(w.area_agenid::text) = TRIM(a.agen_kode::text) OR 
-			TRIM(w.area_agenid::text) = TRIM(a.agen_id::text)
+			TRIM(w.area_agenid::text) = TRIM(a.agen_id::text) OR 
+			(NULLIF(TRIM(a.agen_kode), '') IS NOT NULL AND TRIM(w.area_agenid::text) = TRIM(a.agen_kode::text))
 		)
+		WHERE a.agen_aktifyn = 'Y'
 	`
 
 	if search != "" {
-		queryRaw += ` WHERE a.agen_nama ILIKE '%` + search + `%' OR a.agen_kode ILIKE '%` + search + `%' OR a.agen_id::varchar ILIKE '%` + search + `%' OR a.agen_kota ILIKE '%` + search + `%' `
+		s := "%" + search + "%"
+		queryRaw += fmt.Sprintf(` AND (a.agen_nama ILIKE '%s' OR a.agen_kode ILIKE '%s' OR a.agen_id::varchar ILIKE '%s' OR a.agen_kota ILIKE '%s') `, s, s, s, s)
 	}
 
-	queryRaw += ` GROUP BY a.agen_id, a.agen_kode, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_telp, a.agen_hp ORDER BY a.agen_id ASC`
+	queryRaw += ` GROUP BY a.agen_id, a.agen_kode, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_telp, a.agen_hp ORDER BY a.agen_nama ASC`
 
 	if err := database.Raw(queryRaw).Scan(&listRekap).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat rekap data agen: " + err.Error()})
@@ -224,8 +227,9 @@ func GetAgenDetailByID(c *gin.Context) {
 }
 
 // GET /api/area-lopers/terpilih/:kode
+// GET /api/area-lopers/terpilih/:kode
 func GetAreaLoperTerpilihByAgen(c *gin.Context) {
-	kodeAgen := c.Param("kode")
+	kodeAgen := strings.TrimSpace(c.Param("kode"))
 	ptID, _ := c.Get("pt_id")
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
@@ -233,9 +237,27 @@ func GetAreaLoperTerpilihByAgen(c *gin.Context) {
 		return
 	}
 
+	// 1. Ambil agen_id dan agen_kode yang valid dari glb_m_agen
+	var agen struct {
+		AgenID   string `gorm:"column:agen_id"`
+		AgenKode string `gorm:"column:agen_kode"`
+	}
+	database.Table("public.glb_m_agen").
+		Select("agen_id::varchar, COALESCE(agen_kode, '') as agen_kode").
+		Where("agen_id::varchar = ? OR agen_kode = ?", kodeAgen, kodeAgen).
+		Take(&agen)
+
+	targetID := kodeAgen
+	if agen.AgenID != "" {
+		targetID = agen.AgenID
+	}
+	targetKode := agen.AgenKode
+
+	// 2. Query list area terpilih dengan fallback ID & Kode
 	var listArea []map[string]interface{}
 	err := database.Table("public.opr_m_earea").
-		Where("TRIM(area_agenid::text) = TRIM(?::text)", kodeAgen).
+		Where("TRIM(area_agenid::text) = ? OR (NULLIF(?, '') IS NOT NULL AND TRIM(area_agenid::text) = ?)", targetID, targetKode, targetKode).
+		Order("tujuan_propinsi ASC, tujuan_kabupaten ASC, tujuan_kecamatan ASC, tujuan_kelurahan ASC").
 		Scan(&listArea).Error
 
 	if err != nil {

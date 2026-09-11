@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"dakotagroup/business-insight-be/db"
@@ -128,7 +129,7 @@ func SaveTrayekFull(c *gin.Context) {
 // 📱 1. API GET: Ambil Semua Daftar Rute Utama (Header) dengan Filter Nama
 func GetTrayekList(c *gin.Context) {
 	var trayek []models.OprMTrayekH
-	searchName := c.Query("nama")
+	searchName := strings.TrimSpace(c.Query("nama"))
 
 	ptID, _ := c.Get("pt_id")
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
@@ -137,16 +138,39 @@ func GetTrayekList(c *gin.Context) {
 		return
 	}
 
-	query := database.Model(&models.OprMTrayekH{}).Where("trh_aktif_yn = 'Y'")
+	query := database.Table("public.opr_m_trayekh")
+
+	// 1. Cek kolom status aktif yang benar-benar ada di tabel opr_m_trayekh
+	var hasAktifCol bool
+	database.Raw(`
+		SELECT EXISTS (
+			SELECT 1 
+			FROM information_schema.columns 
+			WHERE table_schema = 'public' 
+			  AND table_name = 'opr_m_trayekh' 
+			  AND column_name = 'trh_aktifyn'
+		)
+	`).Scan(&hasAktifCol)
+
+	if hasAktifCol {
+		query = query.Where("trh_aktifyn = 'Y'")
+	}
+
+	// 2. Filter nama jika ada input pencarian
 	if searchName != "" {
 		query = query.Where("trh_name ILIKE ?", "%"+searchName+"%")
 	}
 
+	// 3. Eksekusi query
 	err := query.Order("trh_id DESC").Find(&trayek).Error
 	if err != nil {
 		log.Println("❌ ERROR GetTrayekList:", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal memuat jalur rute"})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal memuat jalur rute: " + err.Error()})
 		return
+	}
+
+	if trayek == nil {
+		trayek = []models.OprMTrayekH{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": trayek})

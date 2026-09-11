@@ -2,13 +2,12 @@ package models
 
 import "time"
 
-// OprMTrayekH memetakan tabel induk header induk trayek
 type OprMTrayekH struct {
 	TrhID         string    `gorm:"column:trh_id;primaryKey" json:"trh_id"`
 	TrhName       string    `gorm:"column:trh_name" json:"trh_name"`
-	TrhUpdateID   *string   `gorm:"column:trh_update_id" json:"trh_update_id"`
-	TrhUpdateTime time.Time `gorm:"column:trh_update_time;default:now()" json:"trh_update_time"`
-	TrhAktifYN    string    `gorm:"column:trh_aktif_yn;default:Y" json:"trh_aktif_yn"`
+	TrhUpdateID   *string   `gorm:"column:trh_updateid" json:"trh_update_id"`
+	TrhUpdateTime time.Time `gorm:"column:trh_updatetime;default:now()" json:"trh_update_time"`
+	TrhAktifYN    string    `gorm:"column:trh_aktifyn;default:Y" json:"trh_aktif_yn"`
 	TrhJnsKend    *string   `gorm:"column:trh_jns_kend" json:"trh_jns_kend"`
 	TrhTarifB     float64   `gorm:"column:trh_tarif_b;default:0.00" json:"trh_tarif_b"`
 	TrhTarifP     float64   `gorm:"column:trh_tarif_p;default:0.00" json:"trh_tarif_p"`
@@ -18,10 +17,10 @@ type OprMTrayekH struct {
 }
 
 func (OprMTrayekH) TableName() string {
-	return "opr_m_trayek_h"
+	return "public.opr_m_trayekh"
 }
 
-// OprMTrayekD memetakan detail urutan kota singgah (Primary Key diganti Serial ID)
+// OprMTrayekD memetakan detail urutan kota singgah
 type OprMTrayekD struct {
 	ID        int64   `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	TrdHid    string  `gorm:"column:trd_hid" json:"trd_hid"`
@@ -32,12 +31,11 @@ type OprMTrayekD struct {
 	TrdKm     float64 `gorm:"column:trd_km;default:0.00" json:"trd_km"`
 	TrdET     int     `gorm:"column:trd_et;default:0" json:"trd_et"`
 
-	// Field penampung join nama agen saat ditarik ke frontend
 	AgenNama string `gorm:"-" json:"agen_nama"`
 }
 
 func (OprMTrayekD) TableName() string {
-	return "opr_m_trayek_d"
+	return "public.opr_m_trayekd"
 }
 
 // OprMTrayekBplk memetakan komponen biaya jalan driver (BPLK)
@@ -51,7 +49,7 @@ type OprMTrayekBplk struct {
 }
 
 func (OprMTrayekBplk) TableName() string {
-	return "opr_m_trayek_bplk"
+	return "public.opr_m_trayekbplk"
 }
 
 // OprMTrayekVoucher memetakan jatah kuota voucher BBM solar SPBU
@@ -65,5 +63,5 @@ type OprMTrayekVoucher struct {
 }
 
 func (OprMTrayekVoucher) TableName() string {
-	return "opr_m_trayek_voucher"
+	return "public.opr_m_trayekvoucher"
 }

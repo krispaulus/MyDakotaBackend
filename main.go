@@ -225,8 +225,12 @@ func main() {
 			authorized.PUT("/operasional/ambil-update", handler.UpdateAmbil)
 			authorized.DELETE("/operasional/ambil-delete", handler.DeleteAmbil)
 
-			authorized.GET("/marketing/bdb/list", handler.GetBDBListHandler)
-			authorized.GET("/marketing/monitoring-btt", handler.GetMonitoringBTT)
+			// authorized.GET("/marketing/bdb/list", handler.GetBDBListHandler)
+			// authorized.GET("/marketing/monitoring-btt", handler.GetMonitoringBTT)
+
+			authorized.GET("/marketing/monitoring-btt/data", handler.GetMonitoringBtt)
+			authorized.GET("/marketing/monitoring-btt/combo-customer", handler.GetComboCustomerMonitoring)
+
 			authorized.GET("/marketing/kembali-sj", handler.GetKembaliSJList)
 			authorized.GET("/marketing/proses-packing", handler.GetProsesPackingList)
 			authorized.POST("/marketing/proses-packing/add", handler.SimpanProsesPacking)
@@ -509,6 +513,8 @@ func main() {
 			authorized.DELETE("/piutang/invoice", handler.DeleteInvoiceHandler)
 			authorized.DELETE("/piutang/invoice/*id", handler.DeleteInvoiceHandler)
 			authorized.POST("/piutang/invoice/update", handler.UpdateInvoiceFullHandler)
+			authorized.POST("/piutang/invoice/unposting", handler.UnpostingInvoiceHandler)
+			authorized.POST("/piutang/invoice/posting", handler.PostingInvoiceHandler)
 
 			// Kondisi BTT dan Order Jemput
 			authorized.GET("/piutang/kondisi-btt/options", handler.GetKondisiBTTOptionsHandler)
@@ -604,6 +610,53 @@ func main() {
 			authorized.DELETE("/hrd/form/delete/:id", handler.DeleteFormHRD)
 			authorized.GET("/hrd/form/view/:id", handler.ViewFormHRD)
 
+			// 📍 MASTER DALAM KOTA (MKT)
+			authorized.GET("/mkt/dalam-kota/list", handler.GetMasterDalamKota)
+			authorized.GET("/mkt/dalam-kota/suggest", handler.GetMasterDalamKotaSuggest)
+			authorized.POST("/mkt/dalam-kota/save", handler.SaveMasterDalamKota)
+			authorized.DELETE("/mkt/dalam-kota/delete/:id", handler.DeleteMasterDalamKota)
+
+			authorized.GET("/econote/cek-btt", handler.CekBTTManualAtauBarcode)
+
+			authorized.GET("/laporan/handling/kendaraan", handler.GetKendaraanComboHandling)
+			authorized.GET("/laporan/handling/data", handler.GetLaporanHandlingBarang)
+
+			authorized.GET("/handling/kendaraan", handler.GetKendaraanComboHandling)
+			authorized.GET("/handling/data", handler.GetLaporanHandlingBarang)
+
+			authorized.GET("/laporan/btt-counter/combo-cabang", handler.GetCabangComboCounter)
+			authorized.GET("/laporan/btt-counter/combo-kota", handler.GetKotaComboCounter)
+			authorized.GET("/laporan/btt-counter/data", handler.GetLaporanBTTCounter)
+
+			// Modul Laporan Penjualan BTT Harian (LPH)
+			authorized.GET("/laporan/penjualan-harian/data", handler.GetLaporanPenjualanHarian)
+			authorized.GET("/laporan/penjualan-harian/detail/:id", handler.GetDetailLaporanPenjualanHarian)
+			authorized.GET("/laporan/penjualan-harian/btt-tersedia", handler.GetBTTTersediaUntukLaporan)
+			authorized.POST("/laporan/penjualan-harian/create", handler.CreateLaporanPenjualanHarian)
+			authorized.POST("/laporan/penjualan-harian/toggle-posting", handler.TogglePostingPenjualanHarian)
+
+			authorized.GET("/laporan/penjualan/data", handler.GetLaporanPenjualan)
+			authorized.GET("/laporan/penjualan/combo-kota", handler.GetComboKotaPenjualan)
+
+			authorized.GET("/laporan/btt-outstanding/data", handler.GetBttOutstanding)
+
+			authorized.GET("/marketing/packing-list/data", handler.GetPackingListData)
+			authorized.GET("/marketing/packing-list/detail/:id", handler.GetPackingListDetail)
+			authorized.POST("/marketing/packing-list/process-btt", handler.ProcessPackingListToBTT)
+			authorized.POST("/marketing/packing-list/upload-csv", handler.UploadPackingListCSV)
+
+			authorized.GET("/marketing/asuransi/data", handler.GetAsuransiList)
+			authorized.POST("/marketing/asuransi/save", handler.SaveAsuransi)
+			authorized.DELETE("/marketing/asuransi/:id", handler.DeleteAsuransi)
+
+			authorized.GET("/marketing/order-jemput/data", handler.GetOrderJemputList)
+			authorized.POST("/marketing/order-jemput/save", handler.SaveOrderJemput)
+			authorized.DELETE("/marketing/order-jemput/:id", handler.DeleteOrderJemput)
+
+			authorized.GET("/terima-btt/data", handler.GetTerimaBTTList)
+			authorized.POST("/terima-btt/save", handler.SaveTerimaBTT)
+			authorized.DELETE("/terima-btt/:id", handler.DeleteTerimaBTT)
+			authorized.GET("/terima-btt/combo-kota", handler.GetComboKota)
 		}
 	}
 

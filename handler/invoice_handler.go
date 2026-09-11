@@ -42,6 +42,8 @@ type InvoiceBTTDetailRow struct {
 	BTTTHarga        float64   `json:"bttt_harga" gorm:"column:bttt_harga"`
 	BTTTBiayaPenerus float64   `json:"bttt_biayapenerus" gorm:"column:bttt_biayapenerus"`
 	BiayaPacking     float64   `json:"biaya_packing" gorm:"column:biaya_packing"`
+	BiayaAsuransi    float64   `json:"biaya_asuransi" gorm:"column:biaya_asuransi"`
+	NoSKB            string    `json:"no_skb" gorm:"column:no_skb"`
 	Subtotal         float64   `json:"subtotal" gorm:"column:subtotal"`
 }
 
@@ -182,7 +184,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// Query Rincian BTT yang sudah masuk invoice (ORDER BY diubah ke e.bttt_tanggal dan d.artid_bttid)
+	// Query Rincian BTT yang sudah masuk invoice dilengkapi Asuransi dan Fallback No. SKB
 	var bttList []InvoiceBTTDetailRow
 	err = database.Table("public.art_t_invoiced d").
 		Select(`
@@ -200,10 +202,13 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			COALESCE(e.bttt_harga::numeric, 0) AS bttt_harga,
 			COALESCE(e.bttt_biayapenerus::numeric, 0) AS bttt_biayapenerus,
 			COALESCE(p.pck_biaya::numeric, 0) AS biaya_packing,
-			(COALESCE(e.bttt_harga::numeric, 0) + COALESCE(e.bttt_biayapenerus::numeric, 0) + COALESCE(p.pck_biaya::numeric, 0)) AS subtotal
+			COALESCE(asr.totalbiaya::numeric, 0) AS biaya_asuransi,
+			COALESCE(e.bttt_nosuratjalan::varchar, '') AS no_skb,
+			(COALESCE(e.bttt_harga::numeric, 0) + COALESCE(e.bttt_biayapenerus::numeric, 0) + COALESCE(p.pck_biaya::numeric, 0) + COALESCE(asr.totalbiaya::numeric, 0)) AS subtotal
 		`).
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(LOWER(e.bttt_id::varchar)) = TRIM(LOWER(d.artid_bttid::varchar))").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
+		Joins("LEFT JOIN public.mkt_t_asuransi asr ON TRIM(asr.bttt_id::varchar) = TRIM(d.artid_bttid::varchar)").
 		Where("TRIM(LOWER(d.artid_artihid::varchar)) = TRIM(LOWER(?))", invoiceID).
 		Order("COALESCE(e.bttt_tanggal, NOW()) ASC, d.artid_bttid ASC").
 		Scan(&bttList).Error
@@ -332,18 +337,34 @@ func SaveInvoiceHandler(c *gin.Context) {
 	noKW := fmt.Sprintf("%04d/DLI/%s/%s/%s", urut, agenIDPad, tgl.Format("01"), tgl.Format("06"))
 
 	// 2. Hitung Total Tagihan dari BTT Terpilih
-	var totalInvoice float64 = 0
+	var jbttTotal float64 = 0
+	var bpckTotal float64 = 0
+	var basrTotal float64 = 0
+
 	for _, bttID := range req.BTTList {
-		var bttSubtotal float64
+		var row struct {
+			Harga        float64
+			BiayaPenerus float64
+			Packing      float64
+			Asuransi     float64
+		}
 		tx.Table("public.mkt_t_econote e").
-			Select("(COALESCE(e.bttt_harga, 0) + COALESCE(e.bttt_biayapenerus, 0) + COALESCE(p.pck_biaya, 0))").
+			Select(`
+				COALESCE(e.bttt_harga, 0) AS harga,
+				COALESCE(e.bttt_biayapenerus, 0) AS biaya_penerus,
+				COALESCE(p.pck_biaya, 0) AS packing,
+				COALESCE(asr.totalbiaya, 0) AS asuransi
+			`).
 			Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id) = TRIM(e.bttt_packingid::varchar)").
+			Joins("LEFT JOIN public.mkt_t_asuransi asr ON TRIM(asr.bttt_id) = TRIM(e.bttt_id)").
 			Where("TRIM(e.bttt_id) = TRIM(?)", bttID).
-			Scan(&bttSubtotal)
+			Scan(&row)
 
-		totalInvoice += bttSubtotal
+		jbttTotal += (row.Harga + row.BiayaPenerus)
+		bpckTotal += row.Packing
+		basrTotal += row.Asuransi
 
-		// Insert Detail (hanya relasi invoice ID dan BTT ID)
+		// Insert Detail
 		detailMap := map[string]interface{}{
 			"artid_artihid": newInvoiceID,
 			"artid_bttid":   strings.TrimSpace(bttID),
@@ -355,6 +376,19 @@ func SaveInvoiceHandler(c *gin.Context) {
 		}
 	}
 
+	// Aturan PPN Dakota Multi-Tahun
+	subtotalKenaPajak := jbttTotal + bpckTotal
+	var dppNilai float64 = subtotalKenaPajak
+	var ppnNilai float64 = 0
+
+	if tgl.Year() >= 2025 {
+		ppnNilai = dppNilai * 0.012 // Tarif PPN 1.2%
+	} else {
+		ppnNilai = subtotalKenaPajak * 0.011 // Default 1.1% jika masa pajak lama
+	}
+
+	grandTotalInvoice := subtotalKenaPajak + ppnNilai + basrTotal
+
 	// 3. Insert Header Invoice
 	headerMap := map[string]interface{}{
 		"artih_id":         newInvoiceID,
@@ -363,7 +397,9 @@ func SaveInvoiceHandler(c *gin.Context) {
 		"artih_custid":     strings.TrimSpace(req.ARTIHCustID),
 		"artih_custname":   strings.TrimSpace(req.ARTIHCustName),
 		"artih_keterangan": strings.TrimSpace(req.ARTIHKeterangan),
-		"artih_total":      totalInvoice,
+		"artih_dpp":        dppNilai,
+		"artih_ppn":        ppnNilai,
+		"artih_total":      grandTotalInvoice,
 		"artih_fktpajak":   strings.TrimSpace(req.ARTIHFktPajak),
 		"artih_jenis":      strings.TrimSpace(req.ARTIHJenis),
 		"artih_terbayar":   "N",
@@ -576,5 +612,277 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": fmt.Sprintf("Invoice %s berhasil diperbarui. Total baru: Rp %v", invoiceID, newTotal),
+	})
+}
+
+// POST /api/piutang/invoice/unposting
+func UnpostingInvoiceHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung"})
+		return
+	}
+
+	userID, _ := c.Get("username")
+
+	var req struct {
+		InvoiceID string `json:"invoice_id" binding:"required"`
+		AgenID    string `json:"agen_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	invoiceID := strings.TrimSpace(req.InvoiceID)
+
+	// 1. Ambil data Header Invoice
+	var inv struct {
+		ARTIHID        string    `gorm:"column:artih_id"`
+		ARTIHTanggal   time.Time `gorm:"column:artih_tanggal"`
+		ARTIHJournalID *string   `gorm:"column:artih_journalid"`
+		ARTIHPostingYN string    `gorm:"column:artih_postingyn"`
+	}
+	err := database.Table("public.art_t_invoiceh").
+		Select("artih_id, artih_tanggal, artih_journalid, artih_postingyn").
+		Where("TRIM(artih_id) = TRIM(?)", invoiceID).
+		Take(&inv).Error
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data Invoice tidak ditemukan"})
+		return
+	}
+
+	if inv.ARTIHPostingYN != "Y" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice ini belum diposting (Draft)"})
+		return
+	}
+
+	// 2. Validasi Periode Closing Bulanan
+	bulan := int(inv.ARTIHTanggal.Month())
+	tahun := inv.ARTIHTanggal.Year()
+
+	var closingCount int64
+	database.Table("public.glb_m_closing").
+		Where("bulan = ? AND tahun = ? AND (agenid = ? OR agenid = '001')", bulan, tahun, req.AgenID).
+		Count(&closingCount)
+
+	if closingCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": fmt.Sprintf("Transaksi periode %02d/%d sudah diclosing! Unposting ditolak.", bulan, tahun),
+		})
+		return
+	}
+
+	tx := database.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 3. Batalkan Jurnal Akuntansi jika ada
+	if inv.ARTIHJournalID != nil && strings.TrimSpace(*inv.ARTIHJournalID) != "" {
+		journalNo := strings.TrimSpace(*inv.ARTIHJournalID)
+
+		// Hapus Detail Jurnal
+		if err := tx.Exec("DELETE FROM public.gl_t_jurnald WHERE TRIM(tjurd_tjurhno) = TRIM(?)", journalNo).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus jurnal detail: " + err.Error()})
+			return
+		}
+
+		// Soft delete Header Jurnal
+		if err := tx.Exec("UPDATE public.gl_t_jurnalh SET tjurh_deleteyn = 'Y' WHERE TRIM(tjurh_no) = TRIM(?)", journalNo).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update jurnal header: " + err.Error()})
+			return
+		}
+	}
+
+	// 4. Update Status Invoice kembali ke Draft
+	updateSQL := `
+		UPDATE public.art_t_invoiceh SET 
+			artih_postingyn = 'N', 
+			artih_journalid = NULL,
+			artih_updateid = ?, 
+			artih_updatetime = NOW() 
+		WHERE TRIM(artih_id) = TRIM(?)
+	`
+	if err := tx.Exec(updateSQL, fmt.Sprintf("%v", userID), invoiceID).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal unposting invoice: " + err.Error()})
+		return
+	}
+
+	tx.Commit()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("Invoice %s berhasil di-Unposting. Status kembali menjadi Draft.", invoiceID),
+	})
+}
+
+// POST /api/piutang/invoice/posting
+func PostingInvoiceHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung"})
+		return
+	}
+
+	userID, _ := c.Get("username")
+
+	var req struct {
+		InvoiceID string `json:"invoice_id" binding:"required"`
+		AgenID    string `json:"agen_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	invoiceID := strings.TrimSpace(req.InvoiceID)
+
+	// 1. Ambil Header Invoice
+	var inv struct {
+		ARTIHID        string    `gorm:"column:artih_id"`
+		ARTIHTanggal   time.Time `gorm:"column:artih_tanggal"`
+		ARTIHCustID    string    `gorm:"column:artih_custid"`
+		ARTIHCustName  string    `gorm:"column:artih_custname"`
+		ARTIHPostingYN string    `gorm:"column:artih_postingyn"`
+		ARTIHDelete    string    `gorm:"column:artih_delete"`
+	}
+	if err := database.Table("public.art_t_invoiceh").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Take(&inv).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Invoice tidak ditemukan"})
+		return
+	}
+
+	if inv.ARTIHPostingYN == "Y" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice sudah berstatus POSTED"})
+		return
+	}
+
+	// 2. Validasi Closing Bulanan
+	bulan := int(inv.ARTIHTanggal.Month())
+	tahun := inv.ARTIHTanggal.Year()
+
+	var closingCount int64
+	database.Table("public.glb_m_closing").
+		Where("bulan = ? AND tahun = ? AND (agenid = ? OR agenid = '001')", bulan, tahun, req.AgenID).
+		Count(&closingCount)
+
+	if closingCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": fmt.Sprintf("Transaksi periode %02d/%d sudah diclosing! Posting ditolak.", bulan, tahun),
+		})
+		return
+	}
+
+	// 3. Hitung Komponen Biaya untuk Jurnal Akuntansi
+	var summary struct {
+		JbttTotal float64
+		BpckTotal float64
+	}
+	database.Table("public.art_t_invoiced d").
+		Select(`
+			COALESCE(SUM(COALESCE(e.bttt_harga, 0) + COALESCE(e.bttt_biayapenerus, 0)), 0) AS jbtt_total,
+			COALESCE(SUM(COALESCE(p.pck_biaya, 0)), 0) AS bpck_total
+		`).
+		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = TRIM(d.artid_bttid)").
+		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id) = TRIM(e.bttt_packingid::varchar)").
+		Where("TRIM(d.artid_artihid) = TRIM(?)", invoiceID).
+		Scan(&summary)
+
+	subtotalDPP := summary.JbttTotal + summary.BpckTotal
+	ppn := subtotalDPP * 0.012
+	if tahun < 2025 {
+		ppn = subtotalDPP * 0.011
+	}
+	totalPiutang := subtotalDPP + ppn
+
+	tx := database.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 4. Generate Nomor Voucher Jurnal Memorial
+	blTh := inv.ARTIHTanggal.Format("0106")
+	var maxJur string
+	tx.Raw("SELECT tjurh_no FROM public.gl_t_jurnalh WHERE tjurh_no LIKE ? ORDER BY tjurh_no DESC LIMIT 1 FOR UPDATE", "MEM"+blTh+"%").Scan(&maxJur)
+
+	urutJur := 1
+	if len(maxJur) >= 11 {
+		fmt.Sscanf(maxJur[7:], "%d", &urutJur)
+		urutJur++
+	}
+	noJurnal := fmt.Sprintf("MEM%s%04d", blTh, urutJur)
+	ketJurnal := fmt.Sprintf("Penjualan Kredit (Invoice %s) — %s", invoiceID, inv.ARTIHCustName)
+
+	// 5. Insert Header Jurnal
+	if err := tx.Table("public.gl_t_jurnalh").Create(map[string]interface{}{
+		"tjurh_no":          noJurnal,
+		"tjurh_tgl":         inv.ARTIHTanggal,
+		"tjurh_keterangan":  ketJurnal,
+		"tjurh_totaldebet":  totalPiutang,
+		"tjurh_totalkredit": totalPiutang,
+		"tjurh_deleteyn":    "N",
+		"tjurh_createid":    fmt.Sprintf("%v", userID),
+		"tjurh_createtime":  time.Now(),
+	}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal buat header jurnal: " + err.Error()})
+		return
+	}
+
+	// 6. Insert 4 Detail Baris Jurnal
+	lines := []map[string]interface{}{
+		// Debet: Piutang Usaha
+		{"tjurd_tjurhno": noJurnal, "tjurd_nourut": 1, "tjurd_sakunno": "A102010100", "tjurd_cc": "1", "tjurd_keterangan": ketJurnal, "tjurd_debet": totalPiutang, "tjurd_kredit": 0},
+		// Kredit: Utang PPN
+		{"tjurd_tjurhno": noJurnal, "tjurd_nourut": 2, "tjurd_sakunno": "B102010600", "tjurd_cc": "1", "tjurd_keterangan": "Utang PPN Keluaran (" + invoiceID + ")", "tjurd_debet": 0, "tjurd_kredit": ppn},
+		// Kredit: Pendapatan Kirim
+		{"tjurd_tjurhno": noJurnal, "tjurd_nourut": 3, "tjurd_sakunno": "D101010200", "tjurd_cc": "1", "tjurd_keterangan": "Pendapatan Angkut (" + invoiceID + ")", "tjurd_debet": 0, "tjurd_kredit": summary.JbttTotal},
+	}
+	if summary.BpckTotal > 0 {
+		// Kredit: Pendapatan Packing
+		lines = append(lines, map[string]interface{}{
+			"tjurd_tjurhno": noJurnal, "tjurd_nourut": 4, "tjurd_sakunno": "D101010300", "tjurd_cc": "1", "tjurd_keterangan": "Pendapatan Jasa Packing (" + invoiceID + ")", "tjurd_debet": 0, "tjurd_kredit": summary.BpckTotal,
+		})
+	}
+
+	for _, l := range lines {
+		if err := tx.Table("public.gl_t_jurnald").Create(&l).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal buat detail jurnal: " + err.Error()})
+			return
+		}
+	}
+
+	// 7. Update Status Invoice
+	if err := tx.Table("public.art_t_invoiceh").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Updates(map[string]interface{}{
+		"artih_postingyn":  "Y",
+		"artih_journalid":  noJurnal,
+		"artih_dpp":        subtotalDPP,
+		"artih_ppn":        ppn,
+		"artih_total":      totalPiutang,
+		"artih_updateid":   fmt.Sprintf("%v", userID),
+		"artih_updatetime": time.Now(),
+	}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update status invoice: " + err.Error()})
+		return
+	}
+
+	tx.Commit()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "success",
+		"message":    fmt.Sprintf("Invoice %s berhasil diposting. Jurnal: %s", invoiceID, noJurnal),
+		"journal_id": noJurnal,
 	})
 }
