@@ -515,6 +515,7 @@ func main() {
 			authorized.POST("/piutang/invoice/update", handler.UpdateInvoiceFullHandler)
 			authorized.POST("/piutang/invoice/unposting", handler.UnpostingInvoiceHandler)
 			authorized.POST("/piutang/invoice/posting", handler.PostingInvoiceHandler)
+			//authorized.GET("/gl/jurnal/detail/:id", handler.GetJurnalDetailHandler)
 
 			// Kondisi BTT dan Order Jemput
 			authorized.GET("/piutang/kondisi-btt/options", handler.GetKondisiBTTOptionsHandler)

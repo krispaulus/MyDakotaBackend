@@ -165,55 +165,66 @@ func GetJurnalListHandler(c *gin.Context) {
 }
 
 // GET /api/gl/jurnal/detail/:id (AMBIL HEADER & RINCIAN JURNAL LENGKAP)
+// GET /api/gl/jurnal/detail/:id
 func GetJurnalDetailHandler(c *gin.Context) {
-	noJurnal := strings.TrimSpace(strings.TrimPrefix(c.Param("id"), "/"))
 	database := getJurnalDB(c)
-
-	var currentDB string
-	database.Raw("SELECT current_database()").Scan(&currentDB)
-
-	var header JurnalListModel
-	errHeader := database.Table("public.gl_t_jurnalh jh").
-		Select(`
-			jh.tjurh_no, 
-			TO_CHAR(jh.tjurh_tanggal, 'YYYY-MM-DD') AS tjurh_tanggal, 
-			jh.tjurh_type, 
-			COALESCE(jh.tjurh_keterangan, '-') AS tjurh_keterangan, 
-			COALESCE(jh.tjurh_deleteyn, 'N') AS tjurh_deleteyn, 
-			COALESCE(jh.tjurh_postyn, 'N') AS tjurh_postyn, 
-			COALESCE(a.agen_nama, '-') AS agen_nama
-		`).
-		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM a.agen_id::varchar) = TRIM(BOTH FROM SUBSTRING(jh.tjurh_no FROM 5 FOR 3))").
-		Where("TRIM(UPPER(jh.tjurh_no)) = TRIM(UPPER(?))", noJurnal).
-		Scan(&header).Error
-
-	if errHeader != nil || header.TJurHNo == "" {
-		fmt.Printf("❌ [JURNAL DETAIL] Header Jurnal %s TIDAK DITEMUKAN di database: %s\n", noJurnal, currentDB)
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Jurnal tidak ditemukan"})
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung"})
 		return
 	}
 
-	details := make([]JurnalDetailItem, 0)
-	rawQuery := `
-		SELECT 
-			jd.tjurd_acccode,
-			COALESCE(ca.ca_name, b.bank_name, it.item_name, 'Akun Perkiraan') AS ca_name,
-			COALESCE(jd.tjurd_agenid, '1') AS tjurd_agenid,
-			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
-			COALESCE(jd.tjurd_keterangan, '-') AS tjurd_keterangan,
-			COALESCE(jd.tjurd_debet, 0) AS tjurd_debet,
-			COALESCE(jd.tjurd_kredit, 0) AS tjurd_kredit
-		FROM public.gl_t_jurnald jd
-		LEFT JOIN public.gl_m_chartaccount ca ON TRIM(BOTH FROM jd.tjurd_acccode::varchar) = TRIM(BOTH FROM ca.ca_id::varchar)
-		LEFT JOIN public.gl_m_bank b ON TRIM(BOTH FROM jd.tjurd_acccode::varchar) = TRIM(BOTH FROM b.bank_acccode::varchar)
-		LEFT JOIN public.gl_m_item it ON TRIM(BOTH FROM jd.tjurd_acccode::varchar) = TRIM(BOTH FROM it.item_id::varchar)
-		LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM jd.tjurd_agenid::varchar) = TRIM(BOTH FROM a.agen_id::varchar)
-		WHERE TRIM(UPPER(jd.tjurd_tjurhno::varchar)) = TRIM(UPPER(?::varchar))
-		ORDER BY jd.tjurd_acccode ASC
-	`
-	database.Raw(rawQuery, noJurnal).Scan(&details)
+	jurnalNo := strings.TrimSpace(c.Param("id"))
 
-	fmt.Printf("🔍 [DEBUG JURNAL DETAIL] DB: [%s] | No Jurnal: %s | Ditemukan: %d baris detail\n", currentDB, noJurnal, len(details))
+	// 1. Ambil Header Jurnal
+	var header struct {
+		TjurhNo         string    `json:"tjurh_no" gorm:"column:tjurh_no"`
+		TjurhTanggal    time.Time `json:"tjurh_tanggal" gorm:"column:tjurh_tanggal"`
+		TjurhKeterangan string    `json:"tjurh_keterangan" gorm:"column:tjurh_keterangan"`
+		TjurhType       string    `json:"tjurh_type" gorm:"column:tjurh_type"`
+		TjurhUpdateID   string    `json:"tjurh_updateid" gorm:"column:tjurh_updateid"`
+	}
+
+	if err := database.Table("public.gl_t_jurnalh").
+		Where("TRIM(tjurh_no) = TRIM(?)", jurnalNo).
+		Take(&header).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Jurnal header tidak ditemukan"})
+		return
+	}
+
+	// 2. Ambil Detail Baris Jurnal
+	type JurnalDetailItem struct {
+		AccCode    string  `json:"tjurd_acccode" gorm:"column:tjurd_acccode"`
+		AccName    string  `json:"sakun_nama" gorm:"column:sakun_nama"`
+		Keterangan string  `json:"tjurd_keterangan" gorm:"column:tjurd_keterangan"`
+		Debet      float64 `json:"tjurd_debet" gorm:"column:tjurd_debet"`
+		Kredit     float64 `json:"tjurd_kredit" gorm:"column:tjurd_kredit"`
+	}
+
+	var details []JurnalDetailItem
+	query := `
+		SELECT 
+			d.tjurd_acccode,
+			CASE 
+				WHEN TRIM(d.tjurd_acccode) = 'A102010100' THEN 'PIUTANG USAHA'
+				WHEN TRIM(d.tjurd_acccode) = 'B102010600' THEN 'UTANG PPN KELUARAN'
+				WHEN TRIM(d.tjurd_acccode) = 'D101010200' THEN 'PENDAPATAN JASA ANGKUT'
+				WHEN TRIM(d.tjurd_acccode) = 'D101010300' THEN 'PENDAPATAN JASA PACKING'
+				WHEN TRIM(d.tjurd_acccode) LIKE 'A%' THEN 'ASET / PIUTANG'
+				WHEN TRIM(d.tjurd_acccode) LIKE 'B%' THEN 'KEWAJIBAN / HUTANG'
+				WHEN TRIM(d.tjurd_acccode) LIKE 'D%' THEN 'PENDAPATAN'
+				ELSE d.tjurd_acccode
+			END AS sakun_nama,
+			d.tjurd_keterangan,
+			COALESCE(d.tjurd_debet, 0) AS tjurd_debet,
+			COALESCE(d.tjurd_kredit, 0) AS tjurd_kredit
+		FROM public.gl_t_jurnald d
+		WHERE TRIM(d.tjurd_tjurhno) = TRIM(?)
+		ORDER BY d.tjurd_debet DESC, d.tjurd_acccode ASC
+	`
+	if err := database.Raw(query, jurnalNo).Scan(&details).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal ambil detail jurnal: " + err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",

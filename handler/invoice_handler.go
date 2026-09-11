@@ -23,6 +23,7 @@ type InvoiceListRow struct {
 	Terbayar        float64    `json:"terbayar" gorm:"column:terbayar"`
 	ARTIHJenis      string     `json:"artih_jenis" gorm:"column:artih_jenis"`
 	ARTIHPostingYN  string     `json:"artih_postingyn" gorm:"column:artih_postingyn"`
+	ARTIHJournalID  *string    `json:"artih_journalid" gorm:"column:artih_journalid"` // <-- Tambahkan ini
 	ARTIHTglACC     *time.Time `json:"artih_tglacc" gorm:"column:artih_tglacc"`
 	AgenNama        string     `json:"agen_nama" gorm:"column:agen_nama"`
 }
@@ -92,6 +93,7 @@ func GetInvoiceListHandler(c *gin.Context) {
 			COALESCE(rp.total_terbayar, 0) AS terbayar,
 			COALESCE(h.artih_jenis, 'K') AS artih_jenis,
 			COALESCE(h.artih_postingyn, 'N') AS artih_postingyn,
+			COALESCE(h.artih_journalid, '') AS artih_journalid,
 			h.artih_tglacc,
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama
 		`).
@@ -171,6 +173,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			COALESCE(h.artih_total::numeric, 0) AS artih_total,
 			COALESCE(h.artih_jenis, 'K') AS artih_jenis,
 			COALESCE(h.artih_postingyn, 'N') AS artih_postingyn,
+			COALESCE(h.artih_journalid, '') AS artih_journalid,
 			h.artih_tglacc,
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama
 		`).
@@ -823,35 +826,76 @@ func PostingInvoiceHandler(c *gin.Context) {
 	noJurnal := fmt.Sprintf("MEM%s%04d", blTh, urutJur)
 	ketJurnal := fmt.Sprintf("Penjualan Kredit (Invoice %s) — %s", invoiceID, inv.ARTIHCustName)
 
-	// 5. Insert Header Jurnal
-	if err := tx.Table("public.gl_t_jurnalh").Create(map[string]interface{}{
-		"tjurh_no":          noJurnal,
-		"tjurh_tgl":         inv.ARTIHTanggal,
-		"tjurh_keterangan":  ketJurnal,
-		"tjurh_totaldebet":  totalPiutang,
-		"tjurh_totalkredit": totalPiutang,
-		"tjurh_deleteyn":    "N",
-		"tjurh_createid":    fmt.Sprintf("%v", userID),
-		"tjurh_createtime":  time.Now(),
-	}).Error; err != nil {
+	// 5. Insert Header Jurnal (Sesuai 11 kolom tabel public.gl_t_jurnalh)
+	headerJurnal := map[string]interface{}{
+		"tjurh_no":         noJurnal,
+		"tjurh_tanggal":    inv.ARTIHTanggal,
+		"tjurh_keterangan": ketJurnal,
+		"tjurh_type":       "M", // M = Memorial
+		"tjurh_deleteyn":   "N",
+		"tjurh_postyn":     "Y",
+		"tjurh_susutyn":    "N",
+		"tjurh_postingyn":  "Y",
+		"tjurh_updateid":   fmt.Sprintf("%v", userID),
+		"tjurh_updatetime": time.Now(),
+	}
+
+	if err := tx.Table("public.gl_t_jurnalh").Create(&headerJurnal).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal buat header jurnal: " + err.Error()})
 		return
 	}
 
-	// 6. Insert 4 Detail Baris Jurnal
+	// Pastikan agen id terformat standar
+	currentAgen := strings.TrimSpace(req.AgenID)
+	if currentAgen == "" || strings.Contains(strings.ToUpper(currentAgen), "PUSAT") {
+		currentAgen = "001"
+	}
+
+	// 6. Insert Detail Baris Jurnal (Sesuai 7 kolom public.gl_t_jurnald)
 	lines := []map[string]interface{}{
 		// Debet: Piutang Usaha
-		{"tjurd_tjurhno": noJurnal, "tjurd_nourut": 1, "tjurd_sakunno": "A102010100", "tjurd_cc": "1", "tjurd_keterangan": ketJurnal, "tjurd_debet": totalPiutang, "tjurd_kredit": 0},
+		{
+			"tjurd_tjurhno":    noJurnal,
+			"tjurd_acccode":    "A102010100",
+			"tjurd_agenid":     currentAgen,
+			"tjurd_keterangan": ketJurnal,
+			"tjurd_debet":      totalPiutang,
+			"tjurd_kredit":     0,
+			"created_at":       time.Now(),
+		},
 		// Kredit: Utang PPN
-		{"tjurd_tjurhno": noJurnal, "tjurd_nourut": 2, "tjurd_sakunno": "B102010600", "tjurd_cc": "1", "tjurd_keterangan": "Utang PPN Keluaran (" + invoiceID + ")", "tjurd_debet": 0, "tjurd_kredit": ppn},
+		{
+			"tjurd_tjurhno":    noJurnal,
+			"tjurd_acccode":    "B102010600",
+			"tjurd_agenid":     currentAgen,
+			"tjurd_keterangan": "Utang PPN Keluaran (" + invoiceID + ")",
+			"tjurd_debet":      0,
+			"tjurd_kredit":     ppn,
+			"created_at":       time.Now(),
+		},
 		// Kredit: Pendapatan Kirim
-		{"tjurd_tjurhno": noJurnal, "tjurd_nourut": 3, "tjurd_sakunno": "D101010200", "tjurd_cc": "1", "tjurd_keterangan": "Pendapatan Angkut (" + invoiceID + ")", "tjurd_debet": 0, "tjurd_kredit": summary.JbttTotal},
+		{
+			"tjurd_tjurhno":    noJurnal,
+			"tjurd_acccode":    "D101010200",
+			"tjurd_agenid":     currentAgen,
+			"tjurd_keterangan": "Pendapatan Angkut (" + invoiceID + ")",
+			"tjurd_debet":      0,
+			"tjurd_kredit":     summary.JbttTotal,
+			"created_at":       time.Now(),
+		},
 	}
+
 	if summary.BpckTotal > 0 {
 		// Kredit: Pendapatan Packing
 		lines = append(lines, map[string]interface{}{
-			"tjurd_tjurhno": noJurnal, "tjurd_nourut": 4, "tjurd_sakunno": "D101010300", "tjurd_cc": "1", "tjurd_keterangan": "Pendapatan Jasa Packing (" + invoiceID + ")", "tjurd_debet": 0, "tjurd_kredit": summary.BpckTotal,
+			"tjurd_tjurhno":    noJurnal,
+			"tjurd_acccode":    "D101010300",
+			"tjurd_agenid":     currentAgen,
+			"tjurd_keterangan": "Pendapatan Jasa Packing (" + invoiceID + ")",
+			"tjurd_debet":      0,
+			"tjurd_kredit":     summary.BpckTotal,
+			"created_at":       time.Now(),
 		})
 	}
 
