@@ -389,6 +389,7 @@ func main() {
 			authorized.GET("/operasional/stok-gudang", handler.GetStokBarangGudang)
 			authorized.GET("/operasional/voucher-bbm", handler.GetVoucherBBM)
 			authorized.GET("/gl/jurnal-tidak-seimbang", handler.GetJurnalTidakSeimbang)
+			authorized.GET("/gl/jurnal-tidak-seimbang/export-csv", handler.ExportJurnalTidakSeimbangCSVHandler)
 			authorized.GET("/gl/search-coa", handler.SearchCoaHandler)
 			authorized.GET("/gl/buku-besar-report", handler.GetBukuBesarReportHandler)
 			authorized.GET("/gl/export-buku-besar-xls", handler.ExportBukuBesarXlsHandler)

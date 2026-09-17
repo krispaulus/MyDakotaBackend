@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -41,7 +42,26 @@ func GetAgingPiutangHandler(c *gin.Context) {
 	custID := strings.TrimSpace(c.Query("cust_id"))
 	bypassTanggal := c.Query("bypass_tanggal") == "true" || c.Query("bypass_tanggal") == "1"
 
-	// Query mengambil Piutang Outstanding langsung dari tabel art_t_invoiceh
+	// 1. Susun filter tanggal untuk subquery pembayaran agar tidak scan seluruh tabel
+	subqueryDateFilter := ""
+	var subqueryParams []interface{}
+	if !bypassTanggal && startDate != "" && endDate != "" {
+		subqueryDateFilter = " AND inv.artih_tanggal BETWEEN ? AND ?"
+		subqueryParams = append(subqueryParams, startDate+" 00:00:00", endDate+" 23:59:59")
+	}
+
+	subquerySql := fmt.Sprintf(`LEFT JOIN (
+		SELECT 
+			d.artid_artihid, 
+			SUM(COALESCE(r.trectddd_bayar, 0)) AS total_terbayar
+		FROM public.art_t_invoiced d
+		INNER JOIN public.art_t_invoiceh inv ON inv.artih_id = d.artid_artihid
+		LEFT JOIN public.art_t_receiptdddd r ON r.trectddd_nobtt = d.artid_bttid
+		WHERE COALESCE(inv.artih_delete, 'N') = 'N'%s
+		GROUP BY d.artid_artihid
+	) rp ON rp.artid_artihid = h.artih_id`, subqueryDateFilter)
+
+	// 2. Query Utama
 	query := database.Table("public.art_t_invoiceh h").
 		Select(`
 			h.artih_custid AS cust_id,
@@ -55,25 +75,23 @@ func GetAgingPiutangHandler(c *gin.Context) {
 			(COALESCE(h.artih_total, 0) - COALESCE(rp.total_terbayar, 0)) AS sisa_piutang,
 			CURRENT_DATE - (h.artih_tanggal)::date AS umur_hari
 		`).
-		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id) = TRIM(h.artih_custid)").
+		Joins("LEFT JOIN public.mkt_m_customer c ON c.cust_id = h.artih_custid").
 		Joins("LEFT JOIN public.glb_m_agen a ON a.agen_id::varchar = LPAD(LEFT(h.artih_id, 3), 3, '0')").
-		Joins(`LEFT JOIN (
-			SELECT d.artid_artihid, SUM(r.trectddd_bayar) AS total_terbayar
-			FROM public.art_t_invoiced d
-			LEFT JOIN public.art_t_receiptdddd r ON TRIM(r.trectddd_nobtt) = TRIM(d.artid_bttid)
-			GROUP BY d.artid_artihid
-		) rp ON TRIM(rp.artid_artihid) = TRIM(h.artih_id)`).
+		Joins(subquerySql, subqueryParams...).
 		Where("COALESCE(h.artih_delete, 'N') = 'N'").
 		Where("(COALESCE(h.artih_total, 0) - COALESCE(rp.total_terbayar, 0)) > 0")
 
+	// 3. Filter Tanggal Header Invoice
 	if !bypassTanggal && startDate != "" && endDate != "" {
 		query = query.Where("h.artih_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
 	}
 
+	// 4. Filter Cabang
 	if cabangID != "" && cabangID != "ALL" {
 		query = query.Where("LPAD(LEFT(h.artih_id, 3), 3, '0') = LPAD(?, 3, '0')", cabangID)
 	}
 
+	// 5. Filter Customer
 	if custID != "" && custID != "ALL" {
 		query = query.Where("h.artih_custid = ?", custID)
 	}
@@ -84,7 +102,7 @@ func GetAgingPiutangHandler(c *gin.Context) {
 		return
 	}
 
-	// Hitung bucket aging dan ringkasan
+	// 6. Kalkulasi Umur Piutang (Bucketing) & Summary
 	var finalData []AgingPiutangRow
 	var totalCurrent, total31_60, total61_90, totalOver90, grandTotal float64
 

@@ -446,3 +446,147 @@ func DeleteJurnalHandler(c *gin.Context) {
 		"message": fmt.Sprintf("Jurnal Nomor %s berhasil dibatalkan!", noJurnal),
 	})
 }
+
+// GET /api/gl/jurnal-tidak-seimbang/export-csv
+func ExportJurnalTidakSeimbangCSVHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	exportType := strings.TrimSpace(c.Query("type")) // "coa" atau "selisih"
+	tanggalStart := strings.TrimSpace(c.Query("tanggalStart"))
+	tanggalEnd := strings.TrimSpace(c.Query("tanggalEnd"))
+	noJurnal := strings.TrimSpace(c.Query("noJurnal"))
+
+	var conds []string
+	var args []interface{}
+
+	conds = append(conds, "COALESCE(h.tjurh_deleteyn, 'N') = 'N'")
+
+	if tanggalStart != "" && tanggalEnd != "" {
+		conds = append(conds, "h.tjurh_tanggal BETWEEN ? AND ?")
+		args = append(args, tanggalStart+" 00:00:00", tanggalEnd+" 23:59:59")
+	}
+
+	if noJurnal != "" {
+		conds = append(conds, "TRIM(h.tjurh_no) ILIKE ?")
+		args = append(args, "%"+noJurnal+"%")
+	}
+
+	whereClause := ""
+	if len(conds) > 0 {
+		whereClause = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	var csvBuffer strings.Builder
+
+	csvBuffer.WriteString("\xef\xbb\xbfsep=;\n")
+
+	if exportType == "coa" {
+		// Header CSV Jurnal + COA
+		csvBuffer.WriteString("No Jurnal;Tanggal;Type;Keterangan;Status;Posting;Total Debet;Total Kredit;Selisih\n")
+
+		query := fmt.Sprintf(`
+			SELECT 
+				h.tjurh_no,
+				TO_CHAR(h.tjurh_tanggal, 'YYYY-MM-DD') AS tanggal,
+				COALESCE(h.tjurh_keterangan, '') AS tjurh_keterangan,
+				d.tjurd_acccode,
+				CASE 
+					WHEN TRIM(d.tjurd_acccode) = 'A102010100' THEN 'PIUTANG USAHA'
+					WHEN TRIM(d.tjurd_acccode) = 'B102010600' THEN 'UTANG PPN KELUARAN'
+					WHEN TRIM(d.tjurd_acccode) = 'D101010200' THEN 'PENDAPATAN JASA ANGKUT'
+					WHEN TRIM(d.tjurd_acccode) = 'D101010300' THEN 'PENDAPATAN JASA PACKING'
+					ELSE d.tjurd_acccode
+				END AS sakun_nama,
+				COALESCE(d.tjurd_keterangan, '') AS tjurd_keterangan,
+				COALESCE(d.tjurd_debet, 0) AS tjurd_debet,
+				COALESCE(d.tjurd_kredit, 0) AS tjurd_kredit
+			FROM public.gl_t_jurnalh h
+			JOIN public.gl_t_jurnald d ON TRIM(d.tjurd_tjurhno) = TRIM(h.tjurh_no)
+			%s
+			AND TRIM(h.tjurh_no) IN (
+				SELECT d2.tjurd_tjurhno 
+				FROM public.gl_t_jurnald d2 
+				GROUP BY d2.tjurd_tjurhno 
+				HAVING ROUND(SUM(COALESCE(d2.tjurd_debet, 0))::numeric, 2) <> ROUND(SUM(COALESCE(d2.tjurd_kredit, 0))::numeric, 2)
+			)
+			ORDER BY h.tjurh_tanggal DESC, h.tjurh_no DESC, d.tjurd_acccode ASC
+		`, whereClause)
+
+		type RowCOA struct {
+			TjurhNo  string  `gorm:"column:tjurh_no"`
+			Tanggal  string  `gorm:"column:tanggal"`
+			TjurhKet string  `gorm:"column:tjurh_keterangan"`
+			AccCode  string  `gorm:"column:tjurd_acccode"`
+			AccName  string  `gorm:"column:sakun_nama"`
+			LineKet  string  `gorm:"column:tjurd_keterangan"`
+			Debet    float64 `gorm:"column:tjurd_debet"`
+			Kredit   float64 `gorm:"column:tjurd_kredit"`
+		}
+
+		var list []RowCOA
+		database.Raw(query, args...).Scan(&list)
+
+		for _, r := range list {
+			ketH := strings.ReplaceAll(r.TjurhKet, ";", ",")
+			ketL := strings.ReplaceAll(r.LineKet, ";", ",")
+			csvBuffer.WriteString(fmt.Sprintf("%s;%s;%s;%s;%s;%s;%.2f;%.2f\n",
+				r.TjurhNo, r.Tanggal, ketH, r.AccCode, r.AccName, ketL, r.Debet, r.Kredit))
+		}
+
+		filename := fmt.Sprintf("JURNAL_TIDAK_SEIMBANG_COA_%s.csv", time.Now().Format("20060102_150405"))
+		c.Header("Content-Disposition", "attachment; filename="+filename)
+		c.Data(http.StatusOK, "text/csv; charset=utf-8", []byte(csvBuffer.String()))
+		return
+	}
+
+	// Default: Header CSV Jurnal + Selisih
+	csvBuffer.WriteString("No Jurnal;Tanggal;Type;Keterangan;Status;Posting;Total Debet;Total Kredit;Selisih\n")
+
+	querySelisih := fmt.Sprintf(`
+		SELECT 
+			h.tjurh_no,
+			TO_CHAR(h.tjurh_tanggal, 'YYYY-MM-DD') AS tanggal,
+			COALESCE(h.tjurh_type, 'M') AS tipe,
+			COALESCE(h.tjurh_keterangan, '') AS keterangan,
+			CASE WHEN COALESCE(h.tjurh_deleteyn, 'N') = 'Y' THEN 'BATAL' ELSE 'AKTIF' END AS status,
+			CASE WHEN COALESCE(h.tjurh_postyn, 'N') = 'Y' THEN 'POSTING' ELSE 'DRAFT' END AS posting,
+			SUM(COALESCE(d.tjurd_debet, 0)) AS debet,
+			SUM(COALESCE(d.tjurd_kredit, 0)) AS kredit,
+			ABS(SUM(COALESCE(d.tjurd_debet, 0)) - SUM(COALESCE(d.tjurd_kredit, 0))) AS selisih
+		FROM public.gl_t_jurnalh h
+		JOIN public.gl_t_jurnald d ON TRIM(d.tjurd_tjurhno) = TRIM(h.tjurh_no)
+		%s
+		GROUP BY h.tjurh_no, h.tjurh_tanggal, h.tjurh_type, h.tjurh_keterangan, h.tjurh_deleteyn, h.tjurh_postyn
+		HAVING ROUND(SUM(COALESCE(d.tjurd_debet, 0))::numeric, 2) <> ROUND(SUM(COALESCE(d.tjurd_kredit, 0))::numeric, 2)
+		ORDER BY h.tjurh_tanggal DESC, h.tjurh_no DESC
+	`, whereClause)
+
+	type RowSelisih struct {
+		NoJurnal   string  `gorm:"column:tjurh_no"`
+		Tanggal    string  `gorm:"column:tanggal"`
+		Tipe       string  `gorm:"column:tipe"`
+		Keterangan string  `gorm:"column:keterangan"`
+		Status     string  `gorm:"column:status"`
+		Posting    string  `gorm:"column:posting"`
+		Debet      float64 `gorm:"column:debet"`
+		Kredit     float64 `gorm:"column:kredit"`
+		Selisih    float64 `gorm:"column:selisih"`
+	}
+
+	var listSelisih []RowSelisih
+	database.Raw(querySelisih, args...).Scan(&listSelisih)
+
+	for _, r := range listSelisih {
+		ket := strings.ReplaceAll(r.Keterangan, ";", ",")
+		csvBuffer.WriteString(fmt.Sprintf("%s;%s;%s;%s;%s;%s;%.2f;%.2f;%.2f\n",
+			r.NoJurnal, r.Tanggal, r.Tipe, ket, r.Status, r.Posting, r.Debet, r.Kredit, r.Selisih))
+	}
+
+	filename := fmt.Sprintf("JURNAL_TIDAK_SEIMBANG_SELISIH_%s.csv", time.Now().Format("20060102_150405"))
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", []byte(csvBuffer.String()))
+}
