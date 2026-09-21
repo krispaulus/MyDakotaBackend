@@ -662,6 +662,7 @@ func main() {
 
 			authorized.GET("/dashboard/metrics", handler.GetDashboardMetrics)
 			authorized.GET("/dashboard/btt-by-status", handler.GetBTTByStatus)
+			authorized.POST("/ai/chat", handler.AskAI)
 		}
 	}
 
