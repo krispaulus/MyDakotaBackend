@@ -659,6 +659,9 @@ func main() {
 			authorized.POST("/terima-btt/save", handler.SaveTerimaBTT)
 			authorized.DELETE("/terima-btt/:id", handler.DeleteTerimaBTT)
 			authorized.GET("/terima-btt/combo-kota", handler.GetComboKota)
+
+			authorized.GET("/dashboard/metrics", handler.GetDashboardMetrics)
+			authorized.GET("/dashboard/btt-by-status", handler.GetBTTByStatus)
 		}
 	}
 

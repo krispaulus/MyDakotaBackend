@@ -5,16 +5,15 @@ import (
 )
 
 type OprMTarifTransit struct {
-	ID            uint      `gorm:"primaryKey;column:id;autoIncrement" json:"id"`
-	TrKotaAsal    string    `gorm:"column:tr_kotaasal;type:varchar(100);not null" json:"tr_kotaasal"`
-	TrKotaTujuan  string    `gorm:"column:tr_kotatujuan;type:varchar(100);not null" json:"tr_kotatujuan"`
-	TrKategori    int       `gorm:"column:tr_kategori;default:0" json:"tr_kategori"`       // 0: Surat Perintah, 1: Loper
-	TrServiceType int       `gorm:"column:tr_servicetype;default:1" json:"tr_servicetype"` // 1: Darat, 2: Laut, 3: Udara
-	TrNominal     float64   `gorm:"column:tr_nominal;default:0" json:"tr_nominal"`
-	CreatedAt     time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
-	UpdatedAt     time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+	ID            uint       `json:"id" gorm:"column:id;primaryKey"`
+	TrKotaAsal    string     `json:"tr_kotaasal" gorm:"column:tr_kotaasal"`
+	TrKotaTujuan  string     `json:"tr_kotatujuan" gorm:"column:tr_kotatujuan"`
+	TrKategori    float64    `json:"tr_kategori" gorm:"column:tr_kategori"`       // 👈 Wajib float64 karena di Postgres numeric(10,2)
+	TrServiceType float64    `json:"tr_servicetype" gorm:"column:tr_servicetype"` // 👈 Wajib float64 karena di Postgres numeric(10,2)
+	TrNominal     float64    `json:"tr_nominal" gorm:"column:tr_nominal"`         // 👈 numeric(15,2)
+	CreatedAt     *time.Time `json:"created_at,omitempty" gorm:"column:created_at"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty" gorm:"column:updated_at"`
 
-	// Relasi virtual/alias untuk JOIN Provinsi dari GLB_M_eKodePos
 	ProvinsiAsal   string `gorm:"->" json:"provinsi_asal,omitempty"`
 	ProvinsiTujuan string `gorm:"->" json:"provinsi_tujuan,omitempty"`
 }

@@ -23,6 +23,16 @@ type SaveMasterDalamKotaPayload struct {
 	KotaList []string `json:"kota_list" binding:"required"`
 }
 
+type CustomerDalamKotaRow struct {
+	CustID        string `json:"cust_id" gorm:"column:cust_id"`
+	CustName      string `json:"cust_name" gorm:"column:cust_name"`
+	Provinsi      string `json:"provinsi" gorm:"column:provinsi"`
+	KotaKabupaten string `json:"kotakabupaten" gorm:"column:kotakabupaten"`
+	Kecamatan     string `json:"kecamatan" gorm:"column:kecamatan"`
+	Kelurahan     string `json:"kelurahan" gorm:"column:kelurahan"`
+	CustAktifYN   string `json:"cust_aktifyn" gorm:"column:cust_aktifyn"`
+}
+
 // GET /mkt/dalam-kota/list
 func GetMasterDalamKota(c *gin.Context) {
 	database := getJurnalDB(c)
@@ -31,38 +41,57 @@ func GetMasterDalamKota(c *gin.Context) {
 		return
 	}
 
-	search := strings.TrimSpace(c.Query("search"))
-	agenIDStr := strings.TrimSpace(c.Query("agen_id"))
+	custID := strings.TrimSpace(c.Query("cust_id"))
+	custName := strings.TrimSpace(c.Query("cust_name"))
+	kota := strings.TrimSpace(c.Query("kota"))
+	provinsi := strings.TrimSpace(c.Query("provinsi"))
+	kecamatan := strings.TrimSpace(c.Query("kecamatan"))
+	kelurahan := strings.TrimSpace(c.Query("kelurahan"))
+	aktifYN := strings.TrimSpace(c.Query("aktif_yn"))
 
-	query := database.Table("public.mkt_m_areakota a").
+	query := database.Table("public.mkt_m_customer c").
 		Select(`
-			a.area_id, 
-			a.agen_id, 
-			COALESCE(ag.agen_nama, 'CABANG: ' || a.agen_id::text) as agen_nama, 
-			COALESCE(a.cust_id, '') as cust_id, 
-			COALESCE(c.cust_name, 'SEMUA CUSTOMER (GLOBAL)') as cust_name, 
-			a.kotakabupaten
+			c.cust_id,
+			c.cust_name,
+			COALESCE(c.cust_alamat1, '') AS provinsi,
+			COALESCE(c.cust_kotaid, '') AS kotakabupaten,
+			COALESCE(c.cust_alamat2, '') AS kecamatan,
+			COALESCE(c.cust_alamat2, '') AS kelurahan,
+			COALESCE(c.cust_aktifyn, 'Y') AS cust_aktifyn
 		`).
-		Joins("LEFT JOIN public.glb_m_agen ag ON ag.agen_id::text = a.agen_id::text").
-		Joins("LEFT JOIN public.mkt_m_customer c ON c.cust_id::text = a.cust_id::text")
+		Where("c.cust_id IS NOT NULL")
 
-	if agenIDStr != "" && agenIDStr != "ALL" {
-		query = query.Where("a.agen_id::text = ?", agenIDStr)
+	if custID != "" {
+		query = query.Where("c.cust_id ILIKE ?", "%"+custID+"%")
+	}
+	if custName != "" {
+		query = query.Where("c.cust_name ILIKE ?", "%"+custName+"%")
+	}
+	if kota != "" {
+		query = query.Where("c.cust_kotaid ILIKE ?", "%"+kota+"%")
+	}
+	if provinsi != "" {
+		query = query.Where("c.cust_alamat1 ILIKE ?", "%"+provinsi+"%")
+	}
+	if kecamatan != "" || kelurahan != "" {
+		pat := "%" + kecamatan + "%"
+		if kelurahan != "" {
+			pat = "%" + kelurahan + "%"
+		}
+		query = query.Where("c.cust_alamat2 ILIKE ?", pat)
+	}
+	if aktifYN != "" {
+		query = query.Where("c.cust_aktifyn = ?", aktifYN)
 	}
 
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("(a.kotakabupaten ILIKE ? OR ag.agen_nama ILIKE ? OR c.cust_name ILIKE ?)", s, s, s)
-	}
-
-	var results []AreaKotaRow
-	if err := query.Order("a.area_id DESC").Limit(500).Scan(&results).Error; err != nil {
+	var results []CustomerDalamKotaRow
+	if err := query.Order("c.cust_id ASC").Limit(500).Scan(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
 	}
 
 	if results == nil {
-		results = []AreaKotaRow{}
+		results = []CustomerDalamKotaRow{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": results})

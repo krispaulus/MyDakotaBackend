@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 
 	"dakotagroup/business-insight-be/db"
@@ -11,51 +10,90 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 1. GET LIST DATA
-// 1. GET LIST DATA TARIF TRANSIT (Murni Tanpa JOIN)
-func GetTarifTransitList(c *gin.Context) {
-	// Ambil koneksi DB operasional (atau pakai helper getCorporateDB(c))
-	database := db.DB
+type TarifTransitView struct {
+	ID             uint    `json:"id" gorm:"column:id"`
+	ProvinsiAsal   string  `json:"provinsi_asal" gorm:"column:provinsi_asal"`
+	TrKotaAsal     string  `json:"tr_kotaasal" gorm:"column:tr_kotaasal"`
+	ProvinsiTujuan string  `json:"provinsi_tujuan" gorm:"column:provinsi_tujuan"`
+	TrKotaTujuan   string  `json:"tr_kotatujuan" gorm:"column:tr_kotatujuan"`
+	TrKategori     float64 `json:"tr_kategori" gorm:"column:tr_kategori"`
+	TrServiceType  float64 `json:"tr_servicetype" gorm:"column:tr_servicetype"`
+	TrNominal      float64 `json:"tr_nominal" gorm:"column:tr_nominal"`
+}
 
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "15"))
-	offset := (page - 1) * limit
+func GetTarifTransitList(c *gin.Context) {
+	// Arahkan langsung ke koneksi DLI
+	database := db.DLIDB
+
+	var currentDB string
+	database.Raw("SELECT current_database()").Scan(&currentDB)
 
 	kotaAsal := strings.TrimSpace(c.Query("search_kotaAsal"))
 	kotaTuj := strings.TrimSpace(c.Query("search_kotaTujuan"))
-	kategoriStr := strings.TrimSpace(c.Query("search_kategori")) // Contoh: "0,1"
-	serviceStr := strings.TrimSpace(c.Query("search_service"))   // Contoh: "1,2,3"
+	provAsal := strings.TrimSpace(c.Query("search_provinsiAsal"))
+	provTuj := strings.TrimSpace(c.Query("search_provinsiTujuan"))
+	kategoriStr := strings.TrimSpace(c.Query("search_kategori"))
+	serviceStr := strings.TrimSpace(c.Query("search_service"))
 
-	// Query Murni ke Tabel Tarif Transit
-	query := database.Table("opr_m_tariftransit t")
+	sqlQuery := `
+		SELECT 
+			t.id,
+			COALESCE(k1.propinsi, '-') AS provinsi_asal,
+			t.tr_kotaasal,
+			COALESCE(k2.propinsi, '-') AS provinsi_tujuan,
+			t.tr_kotatujuan,
+			COALESCE(t.tr_kategori, 0) AS tr_kategori,
+			COALESCE(t.tr_servicetype, 1) AS tr_servicetype,
+			COALESCE(t.tr_nominal, 0) AS tr_nominal
+		FROM public.opr_m_tariftransit t
+		LEFT JOIN (
+			SELECT DISTINCT UPPER(kotakabupaten) AS kota, propinsi 
+			FROM public.glb_m_ekodepos
+		) k1 ON UPPER(t.tr_kotaasal) = k1.kota
+		LEFT JOIN (
+			SELECT DISTINCT UPPER(kotakabupaten) AS kota, propinsi 
+			FROM public.glb_m_ekodepos
+		) k2 ON UPPER(t.tr_kotatujuan) = k2.kota
+		WHERE 1=1
+	`
+
+	var args []interface{}
 
 	if kotaAsal != "" {
-		query = query.Where("UPPER(t.tr_kotaasal) LIKE UPPER(?)", "%"+kotaAsal+"%")
+		sqlQuery += " AND t.tr_kotaasal ILIKE ?"
+		args = append(args, "%"+kotaAsal+"%")
 	}
 	if kotaTuj != "" {
-		query = query.Where("UPPER(t.tr_kotatujuan) LIKE UPPER(?)", "%"+kotaTuj+"%")
+		sqlQuery += " AND t.tr_kotatujuan ILIKE ?"
+		args = append(args, "%"+kotaTuj+"%")
+	}
+	if provAsal != "" {
+		sqlQuery += " AND k1.propinsi ILIKE ?"
+		args = append(args, "%"+provAsal+"%")
+	}
+	if provTuj != "" {
+		sqlQuery += " AND k2.propinsi ILIKE ?"
+		args = append(args, "%"+provTuj+"%")
 	}
 	if kategoriStr != "" {
 		kats := strings.Split(kategoriStr, ",")
-		query = query.Where("t.tr_kategori IN ?", kats)
+		sqlQuery += " AND t.tr_kategori IN (?)"
+		args = append(args, kats)
 	}
 	if serviceStr != "" {
 		svcs := strings.Split(serviceStr, ",")
-		query = query.Where("t.tr_servicetype IN ?", svcs)
+		sqlQuery += " AND t.tr_servicetype IN (?)"
+		args = append(args, svcs)
 	}
 
-	// Hitung Total Data
-	var totalRecords int64
-	query.Count(&totalRecords)
+	sqlQuery += " ORDER BY t.id DESC LIMIT 2000"
 
-	// Fetch Data dengan Order & Pagination
-	var listData []models.OprMTarifTransit
-	err := query.Order("t.id DESC").Offset(offset).Limit(limit).Find(&listData).Error
-
-	if err != nil {
+	var listData []TarifTransitView
+	if err := database.Raw(sqlQuery, args...).Scan(&listData).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"status":  "error",
-			"message": "Gagal mengambil data tarif transit: " + err.Error(),
+			"status":   "error",
+			"message":  err.Error(),
+			"database": currentDB,
 		})
 		return
 	}
@@ -63,9 +101,8 @@ func GetTarifTransitList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":        "success",
 		"data":          listData,
-		"total_records": totalRecords,
-		"page":          page,
-		"limit":         limit,
+		"total_records": len(listData),
+		"database":      currentDB,
 	})
 }
 
@@ -112,11 +149,11 @@ func CreateTarifTransit(c *gin.Context) {
 		return
 	}
 
-	// Cek Duplikasi Rute
+	// Cek Duplikasi Rute (konversi req.Kategori dan req.Service ke float64)
 	var count int64
 	database.Model(&models.OprMTarifTransit{}).
 		Where("UPPER(tr_kotaasal) = UPPER(?) AND UPPER(tr_kotatujuan) = UPPER(?) AND tr_kategori = ? AND tr_servicetype = ?",
-			req.KotaAsal, req.KotaTujuan, req.Kategori, req.Service).
+			req.KotaAsal, req.KotaTujuan, float64(req.Kategori), float64(req.Service)).
 		Count(&count)
 
 	if count > 0 {
@@ -127,16 +164,17 @@ func CreateTarifTransit(c *gin.Context) {
 		return
 	}
 
+	// Casting eksplisit int ke float64
 	newTarif := models.OprMTarifTransit{
 		TrKotaAsal:    req.KotaAsal,
 		TrKotaTujuan:  req.KotaTujuan,
-		TrKategori:    req.Kategori,
-		TrServiceType: req.Service,
+		TrKategori:    float64(req.Kategori),
+		TrServiceType: float64(req.Service),
 		TrNominal:     req.Nominal,
 	}
 
 	if err := database.Create(&newTarif).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan tarif transit"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan tarif transit: " + err.Error()})
 		return
 	}
 
@@ -150,7 +188,7 @@ func UpdateTarifTransit(c *gin.Context) {
 
 	var req models.TarifTransitRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Input tidak valid"})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Input tidak valid: " + err.Error()})
 		return
 	}
 
@@ -162,12 +200,12 @@ func UpdateTarifTransit(c *gin.Context) {
 
 	existing.TrKotaAsal = req.KotaAsal
 	existing.TrKotaTujuan = req.KotaTujuan
-	existing.TrKategori = req.Kategori
-	existing.TrServiceType = req.Service
+	existing.TrKategori = float64(req.Kategori)   // 👈 casting ke float64
+	existing.TrServiceType = float64(req.Service) // 👈 casting ke float64
 	existing.TrNominal = req.Nominal
 
 	if err := database.Save(&existing).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengupdate tarif transit"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengupdate tarif transit: " + err.Error()})
 		return
 	}
 
