@@ -41,7 +41,7 @@ func GetListKembaliBTT(c *gin.Context) {
 	}
 
 	if noBtt != "" {
-		filterClause += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM public.opr_t_ekembalibttdetil d WHERE (d.kbd_eid = k.kb_eid OR d.kbd_kbeid = k.kb_eid) AND UPPER(d.kbd_bttid) LIKE UPPER('%%%s%%')) `, noBtt)
+		filterClause += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM public.opr_t_ekembalibttdetil d WHERE d.kbd_kbeid = k.kb_eid AND UPPER(d.kbd_bttid) LIKE UPPER('%%%s%%')) `, noBtt)
 	}
 
 	queryStr := fmt.Sprintf(`
@@ -57,7 +57,7 @@ func GetListKembaliBTT(c *gin.Context) {
 			COUNT(d.kbd_bttid) AS jumlah_btt_retur
 		FROM public.opr_t_ekembalibtt k
 		LEFT OUTER JOIN public.glb_m_agen a ON CAST(k.kb_tujuanagenid AS VARCHAR) = CAST(a.agen_id AS VARCHAR)
-		LEFT OUTER JOIN public.opr_t_ekembalibttdetil d ON (k.kb_eid = d.kbd_eid OR k.kb_eid = d.kbd_kbeid)
+		LEFT OUTER JOIN public.opr_t_ekembalibttdetil d ON k.kb_eid = d.kbd_kbeid
 		WHERE 1=1 %s
 		GROUP BY k.kb_eid, k.kb_tanggal, k.kb_agenid, k.kb_tujuanagenid, a.agen_nama, k.kb_bdbid, k.kb_updateid, k.kb_aktifyn
 		ORDER BY k.kb_tanggal DESC, k.kb_eid DESC
@@ -118,7 +118,7 @@ func GetMonitorOutstandingBDB(c *gin.Context) {
 			COALESCE(k.kb_updateid, '-') AS pembuat,
 			COUNT(d.kbd_bttid) AS jumlah_btt
 		FROM public.opr_t_ekembalibtt k
-		LEFT OUTER JOIN public.opr_t_ekembalibttdetil d ON (k.kb_eid = d.kbd_eid OR k.kb_eid = d.kbd_kbeid)
+		LEFT OUTER JOIN public.opr_t_ekembalibttdetil d ON k.kb_eid = d.kbd_kbeid
 		LEFT OUTER JOIN public.glb_m_agen a ON CAST(k.kb_tujuanagenid AS VARCHAR) = CAST(a.agen_id AS VARCHAR)
 		WHERE (k.kb_bdbid IS NULL OR k.kb_bdbid = '') AND COALESCE(k.kb_aktifyn, 'Y') = 'Y'
 		GROUP BY k.kb_eid, k.kb_tanggal, a.agen_nama, k.kb_tujuanagenid, k.kb_updateid
