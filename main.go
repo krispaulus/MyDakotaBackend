@@ -259,9 +259,7 @@ func main() {
 			authorized.GET("/master/korwil", handler.GetKorwilList)
 			authorized.POST("/master/korwil", handler.CreateKorwil)
 			authorized.PUT("/master/korwil/:id", handler.UpdateKorwil)
-			authorized.GET("/master/korwil/detail/:id", handler.GetKorwilDetail)
-			authorized.POST("/master/korwil/detail", handler.AddAgenToKorwil)
-			authorized.DELETE("/master/korwil/detail", handler.RemoveAgenFromKorwil)
+			authorized.DELETE("/master/korwil/:id", handler.DeleteKorwil)
 
 			authorized.GET("/master/sopir", handler.GetSupirList)
 			authorized.GET("/sopir-list", handler.GetSupirList)
@@ -663,6 +661,58 @@ func main() {
 			authorized.GET("/dashboard/metrics", handler.GetDashboardMetrics)
 			authorized.GET("/dashboard/btt-by-status", handler.GetBTTByStatus)
 			authorized.POST("/ai/chat", handler.AskAI)
+
+			authorized.GET("/marketing/terima-retur", handler.GetTerimaReturList)
+			authorized.PUT("/marketing/terima-retur/deactivate/:btt_id", handler.DeactivateTerimaRetur)
+			authorized.GET("/marketing/terima-retur/check/:btt_id", handler.GetInfoBTTForRetur)
+			authorized.POST("/marketing/terima-retur", handler.CreateTerimaRetur)
+			authorized.GET("/marketing/terima-retur/options", handler.GetFilterOptionsTerimaRetur)
+
+			authorized.GET("/marketing/econote-bayar", handler.GetEconoteBayarList)
+			authorized.PUT("/marketing/econote-bayar/deactivate/:eid", handler.DeactivateEconoteBayar)
+			authorized.GET("/marketing/econote-bayar/check/:btt_id", handler.GetBTTForBayar)
+			authorized.POST("/marketing/econote-bayar", handler.CreateEconoteBayar)
+
+			authorized.GET("/marketing/kembali-sj/available", handler.GetAvailableSJ)
+			authorized.POST("/marketing/kembali-sj", handler.CreateKembaliSJ)
+			authorized.DELETE("/marketing/kembali-sj/:id", handler.DeleteKembaliSJ)
+
+			authorized.GET("/marketing/outstanding-sj/:customer_id", handler.GetOutstandingSJ)
+			authorized.POST("/marketing/kembali-sj/add", handler.CreateKembaliSJAdd)
+
+			// 💵 MARKETING / KASIR: SETORAN PENJUALAN TUNAI
+			authorized.GET("/marketing/setoran-tunai", handler.GetSetoranTunaiList)
+			authorized.GET("/marketing/setoran-tunai/available-lph", handler.GetAvailableLPH)
+			authorized.POST("/marketing/setoran-tunai", handler.CreateSetoranTunai)
+			authorized.DELETE("/marketing/setoran-tunai/:id", handler.DeleteSetoranTunai)
+
+			authorized.GET("/marketing/transport-planning/suggest-customer", handler.SuggestCustomerPlanning)
+			authorized.POST("/marketing/transport-planning/parse-csv", handler.ParseTransportPlanningCSV)
+			authorized.POST("/marketing/transport-planning/save-batch", handler.SaveTransportPlanningBatch)
+
+			// 📦 MARKETING / CUSTOMER - UPLOAD CSV: CUSTOMER KHUSUS
+			authorized.GET("/marketing/customer-khusus/suggest", handler.SuggestCustomerKhusus)
+			authorized.POST("/marketing/customer-khusus/upload", handler.UploadCSVCustomerKhusus)
+			authorized.GET("/marketing/customer-khusus/unprocessed", handler.GetUnprocessedBTT)
+			authorized.GET("/marketing/customer-khusus/hold-list", handler.GetBTTHoldList)
+			authorized.POST("/marketing/customer-khusus/toggle-hold", handler.ToggleHoldBTT)
+
+			// 🚀 MARKETING / CUSTOMER - UPLOAD DATA UNTUK PEMBUATAN BTT (KIMIA FARMA / MERCK)
+			authorized.GET("/marketing/upload-btt/suggest-customer", handler.SuggestCustomerBTT)
+			authorized.POST("/marketing/upload-btt/parse-csv", handler.ParseBTTCSV)
+			authorized.POST("/marketing/upload-btt/save-batch", handler.SaveBTTCSVBatch)
+
+			// 📦 MARKETING / UPLOAD CSV (BTT UPLOAD V2)
+			authorized.GET("/marketing/btt-upload-v2/suggest-customer", handler.SuggestCustomerBTTV2)
+			authorized.POST("/marketing/btt-upload-v2/parse-csv", handler.ParseBTTV2CSV)
+			authorized.POST("/marketing/btt-upload-v2/save-batch", handler.SaveBTTV2CSVBatch)
+
+			// 📑 MARKETING / UPLOAD DN/OJ
+			authorized.GET("/marketing/dn-upload/outstanding", handler.GetDNBelumMasukLSPB)
+			authorized.POST("/marketing/dn-upload/upload", handler.UploadDNCSV)
+			// 🚚 MARKETING / OPERASIONAL: UPLOAD CSV DATA LOPERAN SUPIR
+			authorized.POST("/marketing/hasil-loper/parse-csv", handler.ParseHasilLoperCSV)
+			authorized.POST("/marketing/hasil-loper/save-batch", handler.SaveHasilLoperBatch)
 		}
 	}
 

@@ -41,8 +41,9 @@ func GetTarifPaketSummaryList(c *gin.Context) {
 	agenNama := strings.TrimSpace(c.Query("agen_nama"))
 	activeAgen := strings.TrimSpace(c.Query("agen_id"))
 
+	// ✅ Menggunakan a.agen_telp AS agen_phone1 sesuai kolom riil di database
 	query := database.Table("public.glb_m_agen a").
-		Select("a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_phone1, COUNT(e.area_agenid) as jml").
+		Select("a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_telp AS agen_phone1, COUNT(e.area_agenid) as jml").
 		Joins("LEFT JOIN public.opr_m_earea e ON a.agen_id = e.area_agenid").
 		Where("a.agen_aktifyn = ?", "Y")
 
@@ -54,7 +55,8 @@ func GetTarifPaketSummaryList(c *gin.Context) {
 		query = query.Where("UPPER(a.agen_nama) LIKE UPPER(?)", "%"+agenNama+"%")
 	}
 
-	query = query.Group("a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_phone1")
+	// ✅ Group By menggunakan a.agen_telp
+	query = query.Group("a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_telp")
 
 	var totalRecords int64
 	database.Table("public.glb_m_agen a").Where("a.agen_aktifyn = ?", "Y").Count(&totalRecords)
