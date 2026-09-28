@@ -225,7 +225,7 @@ func main() {
 			authorized.PUT("/operasional/ambil-update", handler.UpdateAmbil)
 			authorized.DELETE("/operasional/ambil-delete", handler.DeleteAmbil)
 
-			// authorized.GET("/marketing/bdb/list", handler.GetBDBListHandler)
+			authorized.GET("/marketing/bdb/list", handler.GetBDBListHandler)
 			// authorized.GET("/marketing/monitoring-btt", handler.GetMonitoringBTT)
 
 			authorized.GET("/marketing/monitoring-btt/data", handler.GetMonitoringBtt)
