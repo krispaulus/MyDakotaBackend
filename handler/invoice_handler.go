@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -228,7 +229,6 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 	})
 }
 
-// 3. GET /api/piutang/invoice/unbilled-btt
 func GetUnbilledBTTHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
@@ -237,76 +237,95 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 	}
 
 	custID := strings.TrimSpace(c.Query("cust_id"))
-	if custID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Customer ID wajib diisi"})
-		return
-	}
-
 	custName := strings.TrimSpace(c.Query("cust_name"))
 	startDate := strings.TrimSpace(c.Query("start_date"))
 	endDate := strings.TrimSpace(c.Query("end_date"))
 	bypassTanggal := c.Query("bypass_tanggal") == "true" || c.Query("bypass_tanggal") == "1"
 	displayType := strings.ToUpper(strings.TrimSpace(c.Query("display_type")))
 
-	cleanCustID := strings.TrimLeft(custID, "0")
-
 	query := database.Table("public.mkt_t_econote e").
 		Select(`
-            e.bttt_id::varchar AS bttt_id,
-            COALESCE(e.bttt_servid::varchar, '1') AS bttt_servid,
-            COALESCE(e.bttt_tanggal, NOW()) AS bttt_tanggal,
-            COALESCE(e.bttt_asalname::varchar, '') AS bttt_asalname,
-            COALESCE(e.bttt_tujuannama::varchar, '') AS bttt_tujuannama,
-            COALESCE(e.bttt_tujuankota::varchar, '') AS bttt_tujuankota,
-            COALESCE(e.bttt_nosuratjalan::varchar, '') AS bttt_nosuratjalan,
-            COALESCE(e.bttt_namabarang::varchar, '') AS bttt_namabarang,
-            COALESCE(e.bttt_jmlunit::numeric, 0) AS bttt_jmlunit,
-            COALESCE(e.bttt_berat::numeric, 0) AS bttt_berat,
-            COALESCE(e.bttt_ukuran::numeric, 0) AS bttt_ukuran,
-            COALESCE(e.bttt_harga::numeric, 0) AS bttt_harga,
-            COALESCE(e.bttt_biayapenerus::numeric, 0) AS bttt_biayapenerus,
-            COALESCE(p.pck_biaya::numeric, 0) AS biaya_packing,
-            (
-                (COALESCE(e.bttt_harga::numeric, 0) - (COALESCE(e.bttt_harga::numeric, 0) * (COALESCE(e.bttt_disc::numeric, 0) / 100.0))) 
-                + COALESCE(e.bttt_biayapenerus::numeric, 0) 
-                + COALESCE(p.pck_biaya::numeric, 0)
-            ) AS subtotal
-        `).
-		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)")
+			e.bttt_id::varchar AS bttt_id,
+			COALESCE(e.bttt_servid::varchar, '1') AS bttt_servid,
+			COALESCE(e.bttt_tanggal, NOW()) AS bttt_tanggal,
+			COALESCE(e.bttt_asalname::varchar, '') AS bttt_asalname,
+			COALESCE(e.bttt_tujuannama::varchar, '') AS bttt_tujuannama,
+			COALESCE(e.bttt_tujuankota::varchar, '') AS bttt_tujuankota,
+			COALESCE(e.bttt_nosuratjalan::varchar, '') AS bttt_nosuratjalan,
+			COALESCE(e.bttt_namabarang::varchar, '') AS bttt_namabarang,
+			COALESCE(e.bttt_jmlunit::numeric, 0) AS bttt_jmlunit,
+			COALESCE(e.bttt_berat::numeric, 0) AS bttt_berat,
+			COALESCE(e.bttt_ukuran::numeric, 0) AS bttt_ukuran,
+			COALESCE(e.bttt_harga::numeric, 0) AS bttt_harga,
+			COALESCE(e.bttt_biayapenerus::numeric, 0) AS bttt_biayapenerus,
+			COALESCE(p.pck_biaya::numeric, 0) AS biaya_packing,
+			0::numeric AS biaya_asuransi,
+			''::varchar AS no_skb,
+			(
+				(COALESCE(e.bttt_harga::numeric, 0) - (COALESCE(e.bttt_harga::numeric, 0) * (COALESCE(e.bttt_disc::numeric, 0) / 100.0))) 
+				+ COALESCE(e.bttt_biayapenerus::numeric, 0) 
+				+ COALESCE(p.pck_biaya::numeric, 0)
+			) AS subtotal
+		`).
+		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
+		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
 
-	// 🎯 Filter Customer (ID lengkap, ID tanpa nol, atau kecocokan nama)
-	if custName != "" {
-		query = query.Where(`(
-            TRIM(LOWER(e.bttt_asalcustid::varchar)) = TRIM(LOWER(?)) 
-            OR TRIM(LOWER(e.bttt_asalcustid::varchar)) = TRIM(LOWER(?))
-            OR e.bttt_asalname ILIKE ?
-        )`, custID, cleanCustID, "%"+custName+"%")
-	} else {
-		query = query.Where("(TRIM(LOWER(e.bttt_asalcustid::varchar)) = TRIM(LOWER(?)) OR TRIM(LOWER(e.bttt_asalcustid::varchar)) = TRIM(LOWER(?)))", custID, cleanCustID)
+	// 1. Ekstraksi kata kunci customer secara dinamis tanpa hardcode
+	var searchKeywords []string
+	reg := regexp.MustCompile(`(?i)\b(PT|CV|TBK|UD|TOKO|CORP|INC|LTD)\b|[^a-zA-Z0-9\s]`)
+	cleanName := reg.ReplaceAllString(custName, " ")
+
+	for _, w := range strings.Fields(cleanName) {
+		if len(w) >= 3 {
+			searchKeywords = append(searchKeywords, w)
+		}
 	}
 
-	// 🎯 Filter Tanggal hanya berlaku jika bypass TIDAK dicentang
+	cleanCustID := strings.TrimLeft(custID, "0")
+
+	if len(searchKeywords) > 0 {
+		var nameConditions []string
+		var args []interface{}
+
+		for _, kw := range searchKeywords {
+			nameConditions = append(nameConditions, "e.bttt_asalname ILIKE ?")
+			args = append(args, "%"+kw+"%")
+		}
+
+		nameClause := strings.Join(nameConditions, " OR ")
+		finalClause := fmt.Sprintf(`(
+			(%s)
+			OR TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?))
+			OR TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?))
+		)`, nameClause)
+
+		args = append(args, custID, cleanCustID)
+		query = query.Where(finalClause, args...)
+	} else if custID != "" {
+		query = query.Where("(TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?)) OR TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?)))", custID, cleanCustID)
+	}
+
+	// 2. Filter Tanggal (jika tidak bypass)
 	if !bypassTanggal && startDate != "" && endDate != "" {
 		query = query.Where("e.bttt_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
 	}
 
-	// 🎯 Filter PI vs Unbilled
+	// 3. Filter Unbilled vs PI
 	if displayType == "PI" {
 		query = query.Joins("INNER JOIN public.art_t_proformad pid ON TRIM(pid.pid_bttid::varchar) = TRIM(e.bttt_id::varchar)")
 	} else {
-		// Cek unbilled: hanya sembunyikan jika ada di invoice yang aktif (delete <> 'Y')
 		query = query.Where(`
-            NOT EXISTS (
-                SELECT 1 FROM public.art_t_invoiced invd 
-                INNER JOIN public.art_t_invoiceh invh ON TRIM(LOWER(invh.artih_id::varchar)) = TRIM(LOWER(invd.artid_artihid::varchar)) 
-                WHERE TRIM(LOWER(invd.artid_bttid::varchar)) = TRIM(LOWER(e.bttt_id::varchar)) 
-                  AND COALESCE(invh.artih_delete, 'N') <> 'Y'
-            )
-        `)
+			NOT EXISTS (
+				SELECT 1 FROM public.art_t_invoiced invd 
+				INNER JOIN public.art_t_invoiceh invh ON TRIM(LOWER(invh.artih_id::varchar)) = TRIM(LOWER(invd.artid_artihid::varchar)) 
+				WHERE TRIM(LOWER(invd.artid_bttid::varchar)) = TRIM(LOWER(e.bttt_id::varchar)) 
+				  AND COALESCE(invh.artih_delete, 'N') <> 'Y'
+			)
+		`)
 	}
 
 	var list []InvoiceBTTDetailRow
-	if err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Limit(300).Scan(&list).Error; err != nil {
+	if err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Limit(450).Scan(&list).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengambil daftar unbilled BTT: " + err.Error()})
 		return
 	}
