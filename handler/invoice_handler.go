@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,33 @@ type CreateInvoiceReq struct {
 	ARTIHFktPajak   string   `json:"artih_fktpajak"`
 	ARTIHKeterangan string   `json:"artih_keterangan"`
 	BTTList         []string `json:"btt_list" binding:"required"`
+}
+
+// Helper konversi nama/kode cabang ke 3-digit kode agen resmi Dakota
+func resolveKodeAgenNumeric(agenID string, agenNama string) string {
+	cleanID := strings.TrimSpace(strings.ToUpper(agenID))
+	cleanNama := strings.TrimSpace(strings.ToUpper(agenNama))
+
+	// Mapping paten cabang utama
+	if cleanID == "001" || cleanID == "1" || cleanID == "OTA" || strings.Contains(cleanNama, "PUSAT") {
+		return "001" // DLI Pusat
+	}
+	if cleanID == "002" || cleanID == "2" || strings.Contains(cleanNama, "SURABAYA") {
+		return "002" // DLI Surabaya
+	}
+	if cleanID == "006" || cleanID == "6" || strings.Contains(cleanNama, "SEMARANG") {
+		return "006" // DLI Semarang
+	}
+
+	// Jika berupa angka lain, pastikan pad 3 digit (misal: "3" -> "003")
+	numericOnly := regexp.MustCompile(`\D`).ReplaceAllString(cleanID, "")
+	if numericOnly != "" {
+		if num, err := strconv.Atoi(numericOnly); err == nil {
+			return fmt.Sprintf("%03d", num)
+		}
+	}
+
+	return "001" // Default ke DLI Pusat
 }
 
 // 1. GET /api/piutang/invoice (List Grid Invoice)
@@ -159,6 +187,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 	}
 	invoiceID = strings.TrimPrefix(invoiceID, "/")
 
+	// 1. Query Header Invoice
 	var header InvoiceListRow
 	err := database.Table("public.art_t_invoiceh h").
 		Select(`
@@ -188,7 +217,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// Query Rincian BTT yang sudah masuk invoice dilengkapi Asuransi dan Fallback No. SKB
+	// 2. Query Detail BTT (Deklarasi bttList diletakkan di sini)
 	var bttList []InvoiceBTTDetailRow
 	err = database.Table("public.art_t_invoiced d").
 		Select(`
@@ -222,9 +251,19 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
+	// 3. Query Kepala Akunting dari Parameter glb_m_param (Murni dari Database)
+	var accHead string
+	database.Table("public.glb_m_param").
+		Select("COALESCE(set_varvalue, '')").
+		Where("TRIM(LOWER(set_varname)) = 'acc_head'").
+		Order("set_updatetime DESC NULLS LAST, set_cabid ASC").
+		Limit(1).
+		Scan(&accHead)
+
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "success",
 		"header":   header,
+		"acc_head": strings.TrimSpace(accHead), // Murni dari database
 		"btt_list": bttList,
 	})
 }
@@ -361,13 +400,8 @@ func SaveInvoiceHandler(c *gin.Context) {
 		tgl = time.Now()
 	}
 
-	agenIDPad := fmt.Sprintf("%03s", strings.TrimSpace(req.ARTIHAgenID))
-	if len(agenIDPad) > 3 {
-		agenIDPad = agenIDPad[len(agenIDPad)-3:]
-	}
-	if agenIDPad == "000" || agenIDPad == "" {
-		agenIDPad = "001"
-	}
+	// 🎯 Pastikan kode agen selalu berupa 3 digit angka (contoh: "001", "002", "006")
+	agenIDPad := resolveKodeAgenNumeric(req.ARTIHAgenID, "")
 
 	tx := database.Begin()
 	defer func() {
@@ -380,10 +414,10 @@ func SaveInvoiceHandler(c *gin.Context) {
 	mmyy := tgl.Format("0106")
 	var maxInv string
 	tx.Raw(`
-		SELECT artih_id FROM public.art_t_invoiceh
-		WHERE LEFT(artih_id, 3) = ? AND SUBSTRING(artih_id, 4, 4) = ?
-		ORDER BY artih_id DESC LIMIT 1 FOR UPDATE
-	`, agenIDPad, mmyy).Scan(&maxInv)
+        SELECT artih_id FROM public.art_t_invoiceh
+        WHERE LEFT(artih_id, 3) = ? AND SUBSTRING(artih_id, 4, 4) = ?
+        ORDER BY artih_id DESC LIMIT 1 FOR UPDATE
+    `, agenIDPad, mmyy).Scan(&maxInv)
 
 	urut := 1
 	if len(maxInv) >= 11 {
@@ -393,7 +427,7 @@ func SaveInvoiceHandler(c *gin.Context) {
 	}
 	newInvoiceID := fmt.Sprintf("%s%s%04d", agenIDPad, mmyy, urut)
 
-	// Format Nomor Kwitansi Resmi: 0001/DLI/001/06/26
+	// Format Nomor Kwitansi Resmi: 0010/DLI/001/09/26
 	noKW := fmt.Sprintf("%04d/DLI/%s/%s/%s", urut, agenIDPad, tgl.Format("01"), tgl.Format("06"))
 
 	// 2. Hitung Total Tagihan dari BTT Terpilih
@@ -556,12 +590,17 @@ func DeleteInvoiceHandler(c *gin.Context) {
 	userID, _ := c.Get("username")
 
 	var postingYN string
-	database.Table("public.art_t_invoiceh").Select("COALESCE(artih_postingyn, 'N')").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Scan(&postingYN)
+	database.Table("public.art_t_invoiceh").
+		Select("COALESCE(artih_postingyn, 'N')").
+		Where("TRIM(artih_id) = TRIM(?)", invoiceID).
+		Scan(&postingYN)
+
 	if postingYN == "Y" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice sudah diposting dan tidak dapat dihapus."})
 		return
 	}
 
+	// Soft delete header invoice (Otomatis membebaskan BTT kembali jadi unbilled)
 	if err := database.Table("public.art_t_invoiceh").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Updates(map[string]interface{}{
 		"artih_delete":     "Y",
 		"artih_updateid":   fmt.Sprintf("%v", userID),
@@ -603,7 +642,11 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 	invoiceID := strings.TrimSpace(req.ARTIHID)
 
 	var postingYN string
-	database.Table("public.art_t_invoiceh").Select("COALESCE(artih_postingyn, 'N')").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Scan(&postingYN)
+	database.Table("public.art_t_invoiceh").
+		Select("COALESCE(artih_postingyn, 'N')").
+		Where("TRIM(artih_id) = TRIM(?)", invoiceID).
+		Scan(&postingYN)
+
 	if postingYN == "Y" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice sudah diposting dan tidak dapat diubah."})
 		return
@@ -616,10 +659,10 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 		}
 	}()
 
-	// 1. Hapus BTT yang dicentang Hapus
+	// 1. Hapus BTT yang dicopot/dikeluarkan dari invoice
 	if len(req.RemoveBTTList) > 0 {
 		if err := tx.Table("public.art_t_invoiced").
-			Where("TRIM(artid_artihid) = TRIM(?) AND artid_bttid IN ?", invoiceID, req.RemoveBTTList).
+			Where("TRIM(artid_artihid) = TRIM(?) AND TRIM(artid_bttid) IN ?", invoiceID, req.RemoveBTTList).
 			Delete(map[string]interface{}{}).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus BTT terpilih: " + err.Error()})
@@ -627,38 +670,66 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 		}
 	}
 
-	// 2. Tambah BTT baru ke invoice
+	// 2. Tambah BTT baru ke dalam invoice (cegah duplikasi)
 	for _, bttID := range req.AddBTTList {
 		bttID = strings.TrimSpace(bttID)
 		if bttID == "" {
 			continue
 		}
-		detailMap := map[string]interface{}{
-			"artid_artihid":    invoiceID,
-			"artid_bttid":      bttID,
-			"artid_updateid":   fmt.Sprintf("%v", userID),
-			"artid_updatetime": time.Now(),
+
+		var count int64
+		tx.Table("public.art_t_invoiced").
+			Where("TRIM(artid_artihid) = TRIM(?) AND TRIM(artid_bttid) = TRIM(?)", invoiceID, bttID).
+			Count(&count)
+
+		if count == 0 {
+			detailMap := map[string]interface{}{
+				"artid_artihid":    invoiceID,
+				"artid_bttid":      bttID,
+				"artid_updateid":   fmt.Sprintf("%v", userID),
+				"artid_updatetime": time.Now(),
+			}
+			if err := tx.Table("public.art_t_invoiced").Create(&detailMap).Error; err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menambah rincian BTT: " + err.Error()})
+				return
+			}
 		}
-		_ = tx.Table("public.art_t_invoiced").Create(&detailMap)
 	}
 
-	// 3. Recalculate Total Invoice
-	var newTotal float64
+	// 3. Recalculate Total, DPP, dan PPN Invoice secara akurat
+	var summary struct {
+		BiayaKirim float64
+		Penerus    float64
+		Packing    float64
+	}
 	tx.Table("public.art_t_invoiced d").
-		Select("COALESCE(SUM(COALESCE(e.bttt_harga, 0) + COALESCE(e.bttt_biayapenerus, 0) + COALESCE(p.pck_biaya, 0)), 0)").
+		Select(`
+			COALESCE(SUM(COALESCE(e.bttt_harga, 0)), 0) AS biaya_kirim,
+			COALESCE(SUM(COALESCE(e.bttt_biayapenerus, 0)), 0) AS penerus,
+			COALESCE(SUM(COALESCE(p.pck_biaya, 0)), 0) AS packing
+		`).
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = TRIM(d.artid_bttid)").
-		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id) = TRIM(e.bttt_packingid::varchar)").
+		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Where("TRIM(d.artid_artihid) = TRIM(?)", invoiceID).
-		Scan(&newTotal)
+		Scan(&summary)
 
-	// 4. Update Header
+	nilaiJual := summary.BiayaKirim + summary.Penerus + summary.Packing
+	dpp := nilaiJual
+	ppn := dpp * 0.011 // Tarif PPN logistik 1.1%
+	totalTagihan := nilaiJual + ppn
+
+	// 4. Update Header Invoice
 	updateHeader := map[string]interface{}{
-		"artih_total":      newTotal,
+		"artih_dpp":        dpp,
+		"artih_ppn":        ppn,
+		"artih_total":      totalTagihan,
 		"artih_fktpajak":   strings.TrimSpace(req.ARTIHFktPajak),
 		"artih_keterangan": strings.TrimSpace(req.ARTIHKeterangan),
 		"artih_updateid":   fmt.Sprintf("%v", userID),
 		"artih_updatetime": time.Now(),
 	}
+
 	if req.ARTIHTanggal != "" {
 		if tgl, err := time.Parse("2006-01-02", req.ARTIHTanggal); err == nil {
 			updateHeader["artih_tanggal"] = tgl
@@ -675,7 +746,10 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
-		"message": fmt.Sprintf("Invoice %s berhasil diperbarui. Total baru: Rp %v", invoiceID, newTotal),
+		"message": fmt.Sprintf("Invoice %s berhasil diperbarui. Total Tagihan Baru: Rp %.2f", invoiceID, totalTagihan),
+		"total":   totalTagihan,
+		"dpp":     dpp,
+		"ppn":     ppn,
 	})
 }
 
@@ -856,15 +930,12 @@ func PostingInvoiceHandler(c *gin.Context) {
 			COALESCE(SUM(COALESCE(p.pck_biaya, 0)), 0) AS bpck_total
 		`).
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = TRIM(d.artid_bttid)").
-		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id) = TRIM(e.bttt_packingid::varchar)").
+		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Where("TRIM(d.artid_artihid) = TRIM(?)", invoiceID).
 		Scan(&summary)
 
 	subtotalDPP := summary.JbttTotal + summary.BpckTotal
-	ppn := subtotalDPP * 0.012
-	if tahun < 2025 {
-		ppn = subtotalDPP * 0.011
-	}
+	ppn := subtotalDPP * 0.011 // Default 1.1%
 	totalPiutang := subtotalDPP + ppn
 
 	tx := database.Begin()
@@ -874,7 +945,7 @@ func PostingInvoiceHandler(c *gin.Context) {
 		}
 	}()
 
-	// 4. Generate Nomor Voucher Jurnal Memorial
+	// 4. Generate Nomor Voucher Jurnal Memorial (MEM{MMYY}{URUT})
 	blTh := inv.ARTIHTanggal.Format("0106")
 	var maxJur string
 	tx.Raw("SELECT tjurh_no FROM public.gl_t_jurnalh WHERE tjurh_no LIKE ? ORDER BY tjurh_no DESC LIMIT 1 FOR UPDATE", "MEM"+blTh+"%").Scan(&maxJur)
@@ -887,12 +958,12 @@ func PostingInvoiceHandler(c *gin.Context) {
 	noJurnal := fmt.Sprintf("MEM%s%04d", blTh, urutJur)
 	ketJurnal := fmt.Sprintf("Penjualan Kredit (Invoice %s) — %s", invoiceID, inv.ARTIHCustName)
 
-	// 5. Insert Header Jurnal (Sesuai 11 kolom tabel public.gl_t_jurnalh)
+	// 5. Insert Header Jurnal
 	headerJurnal := map[string]interface{}{
 		"tjurh_no":         noJurnal,
 		"tjurh_tanggal":    inv.ARTIHTanggal,
 		"tjurh_keterangan": ketJurnal,
-		"tjurh_type":       "M", // M = Memorial
+		"tjurh_type":       "M",
 		"tjurh_deleteyn":   "N",
 		"tjurh_postyn":     "Y",
 		"tjurh_susutyn":    "N",
@@ -907,19 +978,16 @@ func PostingInvoiceHandler(c *gin.Context) {
 		return
 	}
 
-	// Pastikan agen id terformat standar
-	currentAgen := strings.TrimSpace(req.AgenID)
-	if currentAgen == "" || strings.Contains(strings.ToUpper(currentAgen), "PUSAT") {
-		currentAgen = "001"
-	}
+	// Gunakan helper kode agen standar 3 digit
+	kodeAgen3Digit := resolveKodeAgenNumeric(req.AgenID, "")
 
-	// 6. Insert Detail Baris Jurnal (Sesuai 7 kolom public.gl_t_jurnald)
+	// 6. Insert Detail Baris Jurnal
 	lines := []map[string]interface{}{
 		// Debet: Piutang Usaha
 		{
 			"tjurd_tjurhno":    noJurnal,
 			"tjurd_acccode":    "A102010100",
-			"tjurd_agenid":     currentAgen,
+			"tjurd_agenid":     kodeAgen3Digit,
 			"tjurd_keterangan": ketJurnal,
 			"tjurd_debet":      totalPiutang,
 			"tjurd_kredit":     0,
@@ -929,17 +997,17 @@ func PostingInvoiceHandler(c *gin.Context) {
 		{
 			"tjurd_tjurhno":    noJurnal,
 			"tjurd_acccode":    "B102010600",
-			"tjurd_agenid":     currentAgen,
+			"tjurd_agenid":     kodeAgen3Digit,
 			"tjurd_keterangan": "Utang PPN Keluaran (" + invoiceID + ")",
 			"tjurd_debet":      0,
 			"tjurd_kredit":     ppn,
 			"created_at":       time.Now(),
 		},
-		// Kredit: Pendapatan Kirim
+		// Kredit: Pendapatan Angkut
 		{
 			"tjurd_tjurhno":    noJurnal,
 			"tjurd_acccode":    "D101010200",
-			"tjurd_agenid":     currentAgen,
+			"tjurd_agenid":     kodeAgen3Digit,
 			"tjurd_keterangan": "Pendapatan Angkut (" + invoiceID + ")",
 			"tjurd_debet":      0,
 			"tjurd_kredit":     summary.JbttTotal,
@@ -952,7 +1020,7 @@ func PostingInvoiceHandler(c *gin.Context) {
 		lines = append(lines, map[string]interface{}{
 			"tjurd_tjurhno":    noJurnal,
 			"tjurd_acccode":    "D101010300",
-			"tjurd_agenid":     currentAgen,
+			"tjurd_agenid":     kodeAgen3Digit,
 			"tjurd_keterangan": "Pendapatan Jasa Packing (" + invoiceID + ")",
 			"tjurd_debet":      0,
 			"tjurd_kredit":     summary.BpckTotal,
@@ -968,7 +1036,7 @@ func PostingInvoiceHandler(c *gin.Context) {
 		}
 	}
 
-	// 7. Update Status Invoice
+	// 7. Update Status Invoice Menjadi POSTED
 	if err := tx.Table("public.art_t_invoiceh").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Updates(map[string]interface{}{
 		"artih_postingyn":  "Y",
 		"artih_journalid":  noJurnal,
