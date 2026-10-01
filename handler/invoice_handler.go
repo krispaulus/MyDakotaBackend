@@ -32,23 +32,25 @@ type InvoiceListRow struct {
 }
 
 type InvoiceBTTDetailRow struct {
-	BTTTID           string    `json:"bttt_id" gorm:"column:bttt_id"`
-	BTTTServID       string    `json:"bttt_servid" gorm:"column:bttt_servid"`
-	BTTTTanggal      time.Time `json:"bttt_tanggal" gorm:"column:bttt_tanggal"`
-	BTTTAsalName     string    `json:"bttt_asalname" gorm:"column:bttt_asalname"`
-	BTTTTujuanNama   string    `json:"bttt_tujuannama" gorm:"column:bttt_tujuannama"`
-	BTTTTujuanKota   string    `json:"bttt_tujuankota" gorm:"column:bttt_tujuankota"`
-	BTTTNoSuratJalan string    `json:"bttt_nosuratjalan" gorm:"column:bttt_nosuratjalan"`
-	BTTTNamaBarang   string    `json:"bttt_namabarang" gorm:"column:bttt_namabarang"`
-	BTTTJmlUnit      float64   `json:"bttt_jmlunit" gorm:"column:bttt_jmlunit"`
-	BTTTBerat        float64   `json:"bttt_berat" gorm:"column:bttt_berat"`
-	BTTTUkuran       float64   `json:"bttt_ukuran" gorm:"column:bttt_ukuran"`
-	BTTTHarga        float64   `json:"bttt_harga" gorm:"column:bttt_harga"`
-	BTTTBiayaPenerus float64   `json:"bttt_biayapenerus" gorm:"column:bttt_biayapenerus"`
-	BiayaPacking     float64   `json:"biaya_packing" gorm:"column:biaya_packing"`
-	BiayaAsuransi    float64   `json:"biaya_asuransi" gorm:"column:biaya_asuransi"`
-	NoSKB            string    `json:"no_skb" gorm:"column:no_skb"`
-	Subtotal         float64   `json:"subtotal" gorm:"column:subtotal"`
+	BTTTID            string    `json:"bttt_id" gorm:"column:bttt_id"`
+	BTTTServID        string    `json:"bttt_servid" gorm:"column:bttt_servid"`
+	BTTTTanggal       time.Time `json:"bttt_tanggal" gorm:"column:bttt_tanggal"`
+	BTTTAsalName      string    `json:"bttt_asalname" gorm:"column:bttt_asalname"`
+	BTTTTujuanNama    string    `json:"bttt_tujuannama" gorm:"column:bttt_tujuannama"`
+	BTTTTujuanKota    string    `json:"bttt_tujuankota" gorm:"column:bttt_tujuankota"`
+	BTTTTujuanKodepos string    `json:"bttt_tujuankodepos" gorm:"column:bttt_tujuankodepos"` // 🎯 KODEPOS TUJUAN DARI DB
+	BTTTVia           string    `json:"bttt_via" gorm:"column:bttt_via"`                     // 🎯 MODA PENGIRIMAN (DARAT/LAUT/UDARA) DARI DB
+	BTTTNoSuratJalan  string    `json:"bttt_nosuratjalan" gorm:"column:bttt_nosuratjalan"`
+	BTTTNamaBarang    string    `json:"bttt_namabarang" gorm:"column:bttt_namabarang"`
+	BTTTJmlUnit       float64   `json:"bttt_jmlunit" gorm:"column:bttt_jmlunit"`
+	BTTTBerat         float64   `json:"bttt_berat" gorm:"column:bttt_berat"`
+	BTTTUkuran        float64   `json:"bttt_ukuran" gorm:"column:bttt_ukuran"`
+	BTTTHarga         float64   `json:"bttt_harga" gorm:"column:bttt_harga"`
+	BTTTBiayaPenerus  float64   `json:"bttt_biayapenerus" gorm:"column:bttt_biayapenerus"`
+	BiayaPacking      float64   `json:"biaya_packing" gorm:"column:biaya_packing"`
+	BiayaAsuransi     float64   `json:"biaya_asuransi" gorm:"column:biaya_asuransi"`
+	NoSKB             string    `json:"no_skb" gorm:"column:no_skb"`
+	Subtotal          float64   `json:"subtotal" gorm:"column:subtotal"`
 }
 
 type CreateInvoiceReq struct {
@@ -218,7 +220,8 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// 2. Query Detail BTT (Deklarasi bttList diletakkan di sini)
+	// 2. Query Detail BTT (Lengkap dengan Kodepos & Via dari mkt_t_econote)
+	// 2. Query Detail BTT
 	var bttList []InvoiceBTTDetailRow
 	err = database.Table("public.art_t_invoiced d").
 		Select(`
@@ -228,6 +231,12 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			COALESCE(e.bttt_asalname::varchar, '') AS bttt_asalname,
 			COALESCE(e.bttt_tujuannama::varchar, '') AS bttt_tujuannama,
 			COALESCE(e.bttt_tujuankota::varchar, '') AS bttt_tujuankota,
+			COALESCE(e.bttt_tujuankodepos::varchar, '-') AS bttt_tujuankodepos,
+			CASE 
+				WHEN e.bttt_servid::varchar = '2' THEN 'UDARA'
+				WHEN e.bttt_servid::varchar = '3' THEN 'LAUT'
+				ELSE 'DARAT'
+			END AS bttt_via,
 			COALESCE(e.bttt_nosuratjalan::varchar, '') AS bttt_nosuratjalan,
 			COALESCE(e.bttt_namabarang::varchar, '') AS bttt_namabarang,
 			COALESCE(e.bttt_jmlunit::numeric, 0) AS bttt_jmlunit,
@@ -264,7 +273,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "success",
 		"header":   header,
-		"acc_head": strings.TrimSpace(accHead), // Murni dari database
+		"acc_head": strings.TrimSpace(accHead),
 		"btt_list": bttList,
 	})
 }
