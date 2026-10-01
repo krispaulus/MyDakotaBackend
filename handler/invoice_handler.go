@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type InvoiceListRow struct {
@@ -753,7 +754,6 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 	})
 }
 
-// POST /api/piutang/invoice/unposting
 func UnpostingInvoiceHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
@@ -762,6 +762,9 @@ func UnpostingInvoiceHandler(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("username")
+	if userID == nil || fmt.Sprintf("%v", userID) == "" {
+		userID = "system"
+	}
 
 	var req struct {
 		InvoiceID string `json:"invoice_id" binding:"required"`
@@ -774,35 +777,56 @@ func UnpostingInvoiceHandler(c *gin.Context) {
 
 	invoiceID := strings.TrimSpace(req.InvoiceID)
 
-	// 1. Ambil data Header Invoice
+	// 1. Ambil data Header Invoice (tanpa artih_agenid)
 	var inv struct {
 		ARTIHID        string    `gorm:"column:artih_id"`
 		ARTIHTanggal   time.Time `gorm:"column:artih_tanggal"`
 		ARTIHJournalID *string   `gorm:"column:artih_journalid"`
 		ARTIHPostingYN string    `gorm:"column:artih_postingyn"`
+		ARTIHTerbayar  *string   `gorm:"column:artih_terbayar"`
 	}
+
 	err := database.Table("public.art_t_invoiceh").
-		Select("artih_id, artih_tanggal, artih_journalid, artih_postingyn").
-		Where("TRIM(artih_id) = TRIM(?)", invoiceID).
+		Select("artih_id, artih_tanggal, artih_journalid, artih_postingyn, artih_terbayar").
+		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", invoiceID).
 		Take(&inv).Error
 
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data Invoice tidak ditemukan"})
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data Invoice tidak ditemukan: " + err.Error()})
 		return
 	}
 
-	if inv.ARTIHPostingYN != "Y" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice ini belum diposting (Draft)"})
+	if strings.ToUpper(strings.TrimSpace(inv.ARTIHPostingYN)) != "Y" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice ini belum diposting (masih berstatus Draft)"})
 		return
+	}
+
+	// Validasi pembayaran jika kolom artih_terbayar ada isi nominal > 0
+	if inv.ARTIHTerbayar != nil {
+		valBayar := strings.TrimSpace(*inv.ARTIHTerbayar)
+		if valBayar != "" && valBayar != "0" && valBayar != "0.00" && strings.ToUpper(valBayar) != "N" {
+			if nominal, errParse := strconv.ParseFloat(valBayar, 64); errParse == nil && nominal > 0 {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"status":  "error",
+					"message": fmt.Sprintf("Invoice %s sudah memiliki pembayaran sebesar Rp %.2f! Batalkan pelunasan terlebih dahulu sebelum unposting.", invoiceID, nominal),
+				})
+				return
+			}
+		}
 	}
 
 	// 2. Validasi Periode Closing Bulanan
+	agenID := strings.TrimSpace(req.AgenID)
+	if agenID == "" || strings.ToUpper(agenID) == "OTA" {
+		agenID = "001"
+	}
+
 	bulan := int(inv.ARTIHTanggal.Month())
 	tahun := inv.ARTIHTanggal.Year()
 
 	var closingCount int64
 	database.Table("public.glb_m_closing").
-		Where("bulan = ? AND tahun = ? AND (agenid = ? OR agenid = '001')", bulan, tahun, req.AgenID).
+		Where("bulan = ? AND tahun = ? AND (agenid = ? OR agenid = '001')", bulan, tahun, agenID).
 		Count(&closingCount)
 
 	if closingCount > 0 {
@@ -820,21 +844,26 @@ func UnpostingInvoiceHandler(c *gin.Context) {
 		}
 	}()
 
-	// 3. Batalkan Jurnal Akuntansi jika ada
+	// 3. Batalkan Jurnal Akuntansi (Dukung varian OTA vs 001)
 	if inv.ARTIHJournalID != nil && strings.TrimSpace(*inv.ARTIHJournalID) != "" {
 		journalNo := strings.TrimSpace(*inv.ARTIHJournalID)
 
-		// Hapus Detail Jurnal
-		if err := tx.Exec("DELETE FROM public.gl_t_jurnald WHERE TRIM(tjurd_tjurhno) = TRIM(?)", journalNo).Error; err != nil {
+		journalNoAlt := strings.ReplaceAll(journalNo, "001", "OTA")
+		if strings.Contains(journalNo, "OTA") {
+			journalNoAlt = strings.ReplaceAll(journalNo, "OTA", "001")
+		}
+
+		// Hapus Detail Jurnal (gl_t_jurnald)
+		if err := tx.Exec("DELETE FROM public.gl_t_jurnald WHERE TRIM(tjurd_tjurhno) = TRIM(?) OR TRIM(tjurd_tjurhno) = TRIM(?)", journalNo, journalNoAlt).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus jurnal detail: " + err.Error()})
 			return
 		}
 
-		// Soft delete Header Jurnal
-		if err := tx.Exec("UPDATE public.gl_t_jurnalh SET tjurh_deleteyn = 'Y' WHERE TRIM(tjurh_no) = TRIM(?)", journalNo).Error; err != nil {
+		// Hapus Header Jurnal (gl_t_jurnalh)
+		if err := tx.Exec("DELETE FROM public.gl_t_jurnalh WHERE TRIM(tjurh_no) = TRIM(?) OR TRIM(tjurh_no) = TRIM(?)", journalNo, journalNoAlt).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update jurnal header: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus jurnal header: " + err.Error()})
 			return
 		}
 	}
@@ -846,15 +875,18 @@ func UnpostingInvoiceHandler(c *gin.Context) {
 			artih_journalid = NULL,
 			artih_updateid = ?, 
 			artih_updatetime = NOW() 
-		WHERE TRIM(artih_id) = TRIM(?)
+		WHERE TRIM(LOWER(artih_id)) = TRIM(LOWER(?))
 	`
 	if err := tx.Exec(updateSQL, fmt.Sprintf("%v", userID), invoiceID).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal unposting invoice: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update status invoice: " + err.Error()})
 		return
 	}
 
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal commit database: " + err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
@@ -862,200 +894,197 @@ func UnpostingInvoiceHandler(c *gin.Context) {
 	})
 }
 
-// POST /api/piutang/invoice/posting
 func PostingInvoiceHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database corporate tidak terhubung"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
 		return
 	}
-
-	userID, _ := c.Get("username")
 
 	var req struct {
 		InvoiceID string `json:"invoice_id" binding:"required"`
 		AgenID    string `json:"agen_id"`
 	}
+
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Data tidak valid: " + err.Error()})
 		return
 	}
 
 	invoiceID := strings.TrimSpace(req.InvoiceID)
-
-	// 1. Ambil Header Invoice
-	var inv struct {
-		ARTIHID        string    `gorm:"column:artih_id"`
-		ARTIHTanggal   time.Time `gorm:"column:artih_tanggal"`
-		ARTIHCustID    string    `gorm:"column:artih_custid"`
-		ARTIHCustName  string    `gorm:"column:artih_custname"`
-		ARTIHPostingYN string    `gorm:"column:artih_postingyn"`
-		ARTIHDelete    string    `gorm:"column:artih_delete"`
+	username := c.GetString("username")
+	if username == "" {
+		username = "system"
 	}
-	if err := database.Table("public.art_t_invoiceh").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Take(&inv).Error; err != nil {
+
+	// 1. Ambil header invoice untuk mendapatkan tanggal, total, dan agen
+	var invHeader struct {
+		ArtihID      string    `gorm:"column:artih_id"`
+		ArtihTanggal time.Time `gorm:"column:artih_tanggal"`
+		ArtihTotal   float64   `gorm:"column:artih_total"`
+		ArtihAgenID  string    `gorm:"column:artih_agenid"`
+	}
+
+	if err := database.Table("public.art_t_invoiceh").
+		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", invoiceID).
+		Take(&invHeader).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Invoice tidak ditemukan"})
 		return
 	}
 
-	if inv.ARTIHPostingYN == "Y" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice sudah berstatus POSTED"})
-		return
+	// Normalisasi agenID (hindari OTA, pastikan '001')
+	agenID := strings.TrimSpace(req.AgenID)
+	if agenID == "" {
+		agenID = strings.TrimSpace(invHeader.ArtihAgenID)
+	}
+	if strings.ToUpper(agenID) == "OTA" || agenID == "" || agenID == "0" || agenID == "000" {
+		agenID = "001"
 	}
 
-	// 2. Validasi Closing Bulanan
-	bulan := int(inv.ARTIHTanggal.Month())
-	tahun := inv.ARTIHTanggal.Year()
-
-	var closingCount int64
-	database.Table("public.glb_m_closing").
-		Where("bulan = ? AND tahun = ? AND (agenid = ? OR agenid = '001')", bulan, tahun, req.AgenID).
-		Count(&closingCount)
-
-	if closingCount > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"status":  "error",
-			"message": fmt.Sprintf("Transaksi periode %02d/%d sudah diclosing! Posting ditolak.", bulan, tahun),
-		})
-		return
+	tglInvoice := invHeader.ArtihTanggal
+	if tglInvoice.IsZero() {
+		tglInvoice = time.Now()
 	}
 
-	// 3. Hitung Komponen Biaya untuk Jurnal Akuntansi
-	var summary struct {
-		JbttTotal float64
-		BpckTotal float64
-	}
-	database.Table("public.art_t_invoiced d").
-		Select(`
-			COALESCE(SUM(COALESCE(e.bttt_harga, 0) + COALESCE(e.bttt_biayapenerus, 0)), 0) AS jbtt_total,
-			COALESCE(SUM(COALESCE(p.pck_biaya, 0)), 0) AS bpck_total
-		`).
-		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = TRIM(d.artid_bttid)").
-		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
-		Where("TRIM(d.artid_artihid) = TRIM(?)", invoiceID).
-		Scan(&summary)
+	// 2. 🎯 GENERATE NOMOR JURNAL RESMI GL (Contoh: 2609001J00001)
+	noJurnalResmi := generateNoJurnalGL(database, tglInvoice, agenID, "J")
 
-	subtotalDPP := summary.JbttTotal + summary.BpckTotal
-	ppn := subtotalDPP * 0.011 // Default 1.1%
-	totalPiutang := subtotalDPP + ppn
-
-	tx := database.Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// 4. Generate Nomor Voucher Jurnal Memorial (MEM{MMYY}{URUT})
-	blTh := inv.ARTIHTanggal.Format("0106")
-	var maxJur string
-	tx.Raw("SELECT tjurh_no FROM public.gl_t_jurnalh WHERE tjurh_no LIKE ? ORDER BY tjurh_no DESC LIMIT 1 FOR UPDATE", "MEM"+blTh+"%").Scan(&maxJur)
-
-	urutJur := 1
-	if len(maxJur) >= 11 {
-		fmt.Sscanf(maxJur[7:], "%d", &urutJur)
-		urutJur++
-	}
-	noJurnal := fmt.Sprintf("MEM%s%04d", blTh, urutJur)
-	ketJurnal := fmt.Sprintf("Penjualan Kredit (Invoice %s) — %s", invoiceID, inv.ARTIHCustName)
-
-	// 5. Insert Header Jurnal
-	headerJurnal := map[string]interface{}{
-		"tjurh_no":         noJurnal,
-		"tjurh_tanggal":    inv.ARTIHTanggal,
-		"tjurh_keterangan": ketJurnal,
-		"tjurh_type":       "M",
+	// 3. 🎯 SIMPAN HEADER JURNAL DI gl_t_jurnalh
+	insertJH := map[string]interface{}{
+		"tjurh_no":         noJurnalResmi,
+		"tjurh_tanggal":    tglInvoice,
+		"tjurh_keterangan": fmt.Sprintf("PENJUALAN KREDIT %s", invoiceID),
+		"tjurh_type":       "J",
 		"tjurh_deleteyn":   "N",
 		"tjurh_postyn":     "Y",
-		"tjurh_susutyn":    "N",
-		"tjurh_postingyn":  "Y",
-		"tjurh_updateid":   fmt.Sprintf("%v", userID),
+		"tjurh_updateid":   username,
 		"tjurh_updatetime": time.Now(),
 	}
-
-	if err := tx.Table("public.gl_t_jurnalh").Create(&headerJurnal).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal buat header jurnal: " + err.Error()})
+	if err := database.Table("public.gl_t_jurnalh").Create(&insertJH).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal simpan header jurnal: " + err.Error()})
 		return
 	}
 
-	// Gunakan helper kode agen standar 3 digit
-	kodeAgen3Digit := resolveKodeAgenNumeric(req.AgenID, "")
-
-	// 6. Insert Detail Baris Jurnal
-	lines := []map[string]interface{}{
-		// Debet: Piutang Usaha
-		{
-			"tjurd_tjurhno":    noJurnal,
-			"tjurd_acccode":    "A102010100",
-			"tjurd_agenid":     kodeAgen3Digit,
-			"tjurd_keterangan": ketJurnal,
-			"tjurd_debet":      totalPiutang,
-			"tjurd_kredit":     0,
-			"created_at":       time.Now(),
-		},
-		// Kredit: Utang PPN
-		{
-			"tjurd_tjurhno":    noJurnal,
-			"tjurd_acccode":    "B102010600",
-			"tjurd_agenid":     kodeAgen3Digit,
-			"tjurd_keterangan": "Utang PPN Keluaran (" + invoiceID + ")",
-			"tjurd_debet":      0,
-			"tjurd_kredit":     ppn,
-			"created_at":       time.Now(),
-		},
-		// Kredit: Pendapatan Angkut
-		{
-			"tjurd_tjurhno":    noJurnal,
-			"tjurd_acccode":    "D101010200",
-			"tjurd_agenid":     kodeAgen3Digit,
-			"tjurd_keterangan": "Pendapatan Angkut (" + invoiceID + ")",
-			"tjurd_debet":      0,
-			"tjurd_kredit":     summary.JbttTotal,
-			"created_at":       time.Now(),
-		},
+	// 4. Hitung rincian biaya packing dari detail BTT terkait
+	type BttSummary struct {
+		TotalPacking float64 `gorm:"column:tot_packing"`
 	}
+	var bttSum BttSummary
+	database.Table("public.art_t_invoiced d").
+		Select("COALESCE(SUM(b.biaya_packing), 0) AS tot_packing").
+		Joins("LEFT JOIN public.btt_t_btt b ON b.bttt_id = d.artid_btttid").
+		Where("TRIM(d.artid_artihid) = TRIM(?)", invoiceID).
+		Scan(&bttSum)
 
-	if summary.BpckTotal > 0 {
-		// Kredit: Pendapatan Packing
-		lines = append(lines, map[string]interface{}{
-			"tjurd_tjurhno":    noJurnal,
-			"tjurd_acccode":    "D101010300",
-			"tjurd_agenid":     kodeAgen3Digit,
-			"tjurd_keterangan": "Pendapatan Jasa Packing (" + invoiceID + ")",
+	totalTagihan := invHeader.ArtihTotal
+	packingNominal := bttSum.TotalPacking
+	ppnNominal := 0.0 // Set nominal PPN jika transaksi bertarif PPN
+	pendapatanKirim := totalTagihan - packingNominal - ppnNominal
+
+	// 5. 🎯 SUSUN DETAIL BARIS JURNAL (gl_t_jurnald)
+	var details []map[string]interface{}
+
+	// Akun A102010100: Piutang Usaha (Debet)
+	details = append(details, map[string]interface{}{
+		"tjurd_tjurhno":    noJurnalResmi,
+		"tjurd_acccode":    "A102010100",
+		"tjurd_agenid":     agenID,
+		"tjurd_keterangan": fmt.Sprintf("PENJUALAN KREDIT %s", invoiceID),
+		"tjurd_debet":      totalTagihan,
+		"tjurd_kredit":     0,
+	})
+
+	// Akun B102010600: Utang PPN (Kredit)
+	details = append(details, map[string]interface{}{
+		"tjurd_tjurhno":    noJurnalResmi,
+		"tjurd_acccode":    "B102010600",
+		"tjurd_agenid":     agenID,
+		"tjurd_keterangan": fmt.Sprintf("UTANG PPN : UTANG PPN PENJUALAN KREDIT %s", invoiceID),
+		"tjurd_debet":      0,
+		"tjurd_kredit":     ppnNominal,
+	})
+
+	// Akun D101010200: Pendapatan Kredit (Kredit)
+	details = append(details, map[string]interface{}{
+		"tjurd_tjurhno":    noJurnalResmi,
+		"tjurd_acccode":    "D101010200",
+		"tjurd_agenid":     agenID,
+		"tjurd_keterangan": fmt.Sprintf("PENJUALAN KREDIT %s", invoiceID),
+		"tjurd_debet":      0,
+		"tjurd_kredit":     pendapatanKirim,
+	})
+
+	// Akun D102010300: Pendapatan Jasa Packing (Kredit - jika ada)
+	if packingNominal > 0 {
+		details = append(details, map[string]interface{}{
+			"tjurd_tjurhno":    noJurnalResmi,
+			"tjurd_acccode":    "D102010300",
+			"tjurd_agenid":     agenID,
+			"tjurd_keterangan": fmt.Sprintf("BIAYA PACKING PENJUALAN KREDIT %s", invoiceID),
 			"tjurd_debet":      0,
-			"tjurd_kredit":     summary.BpckTotal,
-			"created_at":       time.Now(),
+			"tjurd_kredit":     packingNominal,
 		})
 	}
 
-	for _, l := range lines {
-		if err := tx.Table("public.gl_t_jurnald").Create(&l).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal buat detail jurnal: " + err.Error()})
-			return
+	// Simpan seluruh rincian ke database gl_t_jurnald
+	for _, d := range details {
+		database.Table("public.gl_t_jurnald").Create(&d)
+	}
+
+	// 6. 🎯 UPDATE STATUS INVOICE DI art_t_invoiceh
+	database.Table("public.art_t_invoiceh").
+		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", invoiceID).
+		Updates(map[string]interface{}{
+			"artih_postingyn": "Y",
+			"artih_journalid": noJurnalResmi,
+		})
+
+	// 7. 🎯 KIRIM RESPONS SUKSES KE FRONTEND REACT
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "success",
+		"message":    "Invoice berhasil diposting",
+		"journal_id": noJurnalResmi,
+	})
+}
+
+func generateNoJurnalGL(database *gorm.DB, tglTrans time.Time, agenID string, tipeJurnal string) string {
+	cleanAgen := strings.TrimSpace(agenID)
+
+	// 🎯 KUNCI BEBAS OTA: Jika agenID mengandung 'OTA', kosong, atau bukan angka murni, jadikan '001' (PUSAT)
+	if strings.ToUpper(cleanAgen) == "OTA" || cleanAgen == "" || cleanAgen == "0" || cleanAgen == "000" {
+		cleanAgen = "001"
+	}
+
+	// Pastikan hanya angka dan panjangnya tepat 3 digit
+	if _, err := strconv.Atoi(cleanAgen); err != nil {
+		cleanAgen = "001"
+	}
+	cb3Digit := fmt.Sprintf("%03s", cleanAgen)
+	if len(cb3Digit) > 3 {
+		cb3Digit = cb3Digit[len(cb3Digit)-3:]
+	}
+
+	if tipeJurnal == "" {
+		tipeJurnal = "J"
+	}
+
+	// Prefix standar GL: YYMM + 001 + J (contoh: 2609001J)
+	prefix := fmt.Sprintf("%s%s%s", tglTrans.Format("0601"), cb3Digit, tipeJurnal)
+
+	var lastNo string
+	database.Table("public.gl_t_jurnalh").
+		Select("tjurh_no").
+		Where("tjurh_no LIKE ?", prefix+"%").
+		Order("tjurh_no DESC").
+		Limit(1).
+		Scan(&lastNo)
+
+	nextUrut := 1
+	if lastNo != "" && len(lastNo) >= len(prefix)+5 {
+		if num, err := strconv.Atoi(lastNo[len(prefix):]); err == nil {
+			nextUrut = num + 1
 		}
 	}
 
-	// 7. Update Status Invoice Menjadi POSTED
-	if err := tx.Table("public.art_t_invoiceh").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Updates(map[string]interface{}{
-		"artih_postingyn":  "Y",
-		"artih_journalid":  noJurnal,
-		"artih_dpp":        subtotalDPP,
-		"artih_ppn":        ppn,
-		"artih_total":      totalPiutang,
-		"artih_updateid":   fmt.Sprintf("%v", userID),
-		"artih_updatetime": time.Now(),
-	}).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update status invoice: " + err.Error()})
-		return
-	}
-
-	tx.Commit()
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":     "success",
-		"message":    fmt.Sprintf("Invoice %s berhasil diposting. Jurnal: %s", invoiceID, noJurnal),
-		"journal_id": noJurnal,
-	})
+	return fmt.Sprintf("%s%05d", prefix, nextUrut)
 }

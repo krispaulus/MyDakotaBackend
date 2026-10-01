@@ -164,7 +164,6 @@ func GetJurnalListHandler(c *gin.Context) {
 	})
 }
 
-// GET /api/gl/jurnal/detail/:id (AMBIL HEADER & RINCIAN JURNAL LENGKAP)
 // GET /api/gl/jurnal/detail/:id
 func GetJurnalDetailHandler(c *gin.Context) {
 	database := getJurnalDB(c)
@@ -175,7 +174,12 @@ func GetJurnalDetailHandler(c *gin.Context) {
 
 	jurnalNo := strings.TrimSpace(c.Param("id"))
 
-	// 1. Ambil Header Jurnal
+	// Siapkan format alternatif jika nomor tersimpan dalam format OTA atau 001
+	jurnalNoAlt := strings.ReplaceAll(jurnalNo, "001", "OTA")
+	if strings.Contains(jurnalNo, "OTA") {
+		jurnalNoAlt = strings.ReplaceAll(jurnalNo, "OTA", "001")
+	}
+
 	var header struct {
 		TjurhNo         string    `json:"tjurh_no" gorm:"column:tjurh_no"`
 		TjurhTanggal    time.Time `json:"tjurh_tanggal" gorm:"column:tjurh_tanggal"`
@@ -184,14 +188,17 @@ func GetJurnalDetailHandler(c *gin.Context) {
 		TjurhUpdateID   string    `json:"tjurh_updateid" gorm:"column:tjurh_updateid"`
 	}
 
+	// Cari dengan format utama atau format alternatifnya
 	if err := database.Table("public.gl_t_jurnalh").
-		Where("TRIM(tjurh_no) = TRIM(?)", jurnalNo).
+		Where("TRIM(tjurh_no) = TRIM(?) OR TRIM(tjurh_no) = TRIM(?)", jurnalNo, jurnalNoAlt).
 		Take(&header).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Jurnal header tidak ditemukan"})
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Jurnal header tidak ditemukan: " + err.Error()})
 		return
 	}
 
-	// 2. Ambil Detail Baris Jurnal
+	// Gunakan nomor transaksi aktual yang tersimpan di header untuk query detailnya
+	actualNo := header.TjurhNo
+
 	type JurnalDetailItem struct {
 		AccCode    string  `json:"tjurd_acccode" gorm:"column:tjurd_acccode"`
 		AccName    string  `json:"sakun_nama" gorm:"column:sakun_nama"`
@@ -204,24 +211,17 @@ func GetJurnalDetailHandler(c *gin.Context) {
 	query := `
 		SELECT 
 			d.tjurd_acccode,
-			CASE 
-				WHEN TRIM(d.tjurd_acccode) = 'A102010100' THEN 'PIUTANG USAHA'
-				WHEN TRIM(d.tjurd_acccode) = 'B102010600' THEN 'UTANG PPN KELUARAN'
-				WHEN TRIM(d.tjurd_acccode) = 'D101010200' THEN 'PENDAPATAN JASA ANGKUT'
-				WHEN TRIM(d.tjurd_acccode) = 'D101010300' THEN 'PENDAPATAN JASA PACKING'
-				WHEN TRIM(d.tjurd_acccode) LIKE 'A%' THEN 'ASET / PIUTANG'
-				WHEN TRIM(d.tjurd_acccode) LIKE 'B%' THEN 'KEWAJIBAN / HUTANG'
-				WHEN TRIM(d.tjurd_acccode) LIKE 'D%' THEN 'PENDAPATAN'
-				ELSE d.tjurd_acccode
-			END AS sakun_nama,
+			COALESCE(ca.ca_name, b.bank_name, d.tjurd_acccode) AS sakun_nama,
 			d.tjurd_keterangan,
 			COALESCE(d.tjurd_debet, 0) AS tjurd_debet,
 			COALESCE(d.tjurd_kredit, 0) AS tjurd_kredit
 		FROM public.gl_t_jurnald d
-		WHERE TRIM(d.tjurd_tjurhno) = TRIM(?)
+		LEFT JOIN public.gl_m_chartaccount ca ON TRIM(ca.ca_id) = TRIM(d.tjurd_acccode)
+		LEFT JOIN public.gl_m_bank b ON TRIM(b.bank_acccode) = TRIM(d.tjurd_acccode)
+		WHERE TRIM(d.tjurd_tjurhno) = TRIM(?) OR TRIM(d.tjurd_tjurhno) = TRIM(?)
 		ORDER BY d.tjurd_debet DESC, d.tjurd_acccode ASC
 	`
-	if err := database.Raw(query, jurnalNo).Scan(&details).Error; err != nil {
+	if err := database.Raw(query, actualNo, jurnalNoAlt).Scan(&details).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal ambil detail jurnal: " + err.Error()})
 		return
 	}
