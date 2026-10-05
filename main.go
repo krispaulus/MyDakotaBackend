@@ -713,6 +713,9 @@ func main() {
 			// 🚚 MARKETING / OPERASIONAL: UPLOAD CSV DATA LOPERAN SUPIR
 			authorized.POST("/marketing/hasil-loper/parse-csv", handler.ParseHasilLoperCSV)
 			authorized.POST("/marketing/hasil-loper/save-batch", handler.SaveHasilLoperBatch)
+
+			authorized.GET("/settings/operasional", handler.GetSettingOperasionalHandler)
+			authorized.POST("/settings/operasional", handler.SaveSettingOperasionalHandler)
 		}
 	}
 

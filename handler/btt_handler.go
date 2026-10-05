@@ -56,45 +56,28 @@ func GetBTT(c *gin.Context) {
 }
 
 func CheckLockBTT(c *gin.Context) {
-	// 1. Ambil PT ID aman dari context token JWT buatanmu
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
 		return
 	}
 
-	// Ambil Agen ID dari parameter query
 	agenID := strings.TrimSpace(c.Query("agen_id"))
 	if agenID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Parameter agen_id wajib diisi, bro!"})
 		return
 	}
 
-	// =========================================================================
-	// 🛑 LAPISAN 0: PROTEKSI PUSAT DAKOTA (HOLDING)
-	// =========================================================================
-	upperAgen := strings.ToUpper(agenID)
-	if agenID == "1" || upperAgen == "PUSAT DAKOTA" || strings.Contains(upperAgen, "PUSAT") || strings.Contains(upperAgen, "HOLDING") {
-		c.JSON(http.StatusOK, gin.H{
-			"is_locked": true,
-			"layer":     0,
-			"reason":    "Pusat Dakota (Holding) tidak diizinkan untuk membuat Bukti Tanda Terima (BTT)! Silakan ganti lokasi loket ke Agen / Cabang Operasional.",
-		})
-		return
-	}
-
-	// Resolve database dinamis sesuai tenant PT
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal"})
 		return
 	}
 
-	// Waktu server saat ini (Zona Asia/Jakarta)
-	loc, _ := time.LoadLocation("Asia/Jakarta")
-	now := time.Now().In(loc)
-
-	// Cek juga ke tabel master glb_m_agen jika agen_id berupa ID/Kode angka
+	// =========================================================================
+	// 🛑 LAPISAN 0: PROTEKSI PUSAT DAKOTA (DENGAN BYPASS TOGGLE PARAMETER)
+	// =========================================================================
+	upperAgen := strings.ToUpper(agenID)
 	var agenNama string
 	database.Table("public.glb_m_agen").
 		Select("agen_nama").
@@ -102,14 +85,26 @@ func CheckLockBTT(c *gin.Context) {
 		Scan(&agenNama)
 
 	upperNamaDb := strings.ToUpper(agenNama)
-	if strings.Contains(upperNamaDb, "PUSAT") || strings.Contains(upperNamaDb, "HOLDING") {
-		c.JSON(http.StatusOK, gin.H{
-			"is_locked": true,
-			"layer":     0,
-			"reason":    "Pusat Dakota (Holding) tidak diizinkan untuk membuat Bukti Tanda Terima (BTT)! Silakan ganti lokasi loket ke Agen / Cabang Operasional.",
-		})
-		return
+
+	isPusat := agenID == "1" || agenID == "839" ||
+		upperAgen == "PUSAT DAKOTA" || strings.Contains(upperAgen, "PUSAT") || strings.Contains(upperAgen, "HOLDING") ||
+		strings.Contains(upperNamaDb, "PUSAT") || strings.Contains(upperNamaDb, "HOLDING")
+
+	if isPusat {
+		// Periksa apakah izin diizinkan dari menu Settings -> Aturan Operasional
+		allowPusat := isPusatAllowedCreateBTT(database)
+		if !allowPusat {
+			c.JSON(http.StatusOK, gin.H{
+				"is_locked": true,
+				"layer":     0,
+				"reason":    "Pusat Dakota (Holding) tidak diizinkan untuk membuat Bukti Tanda Terima (BTT)! Silakan ganti lokasi loket ke Agen / Cabang Operasional atau aktifkan izin di menu Setting Operasional.",
+			})
+			return
+		}
 	}
+
+	loc, _ := time.LoadLocation("Asia/Jakarta")
+	now := time.Now().In(loc)
 
 	// ==========================================
 	// LAPISAN 1: Lock Jam Operasional Global
@@ -339,29 +334,38 @@ func CreateBTT(c *gin.Context) {
 		return
 	}
 
-	// 🛑 PROTEKSI SERVER: BLOKIR INSERT BTT DARI PUSAT DAKOTA / HOLDING
-	asalAgenRaw := strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalagenid"]))
-	upperAsalAgen := strings.ToUpper(asalAgenRaw)
-
-	if asalAgenRaw == "1" || upperAsalAgen == "PUSAT DAKOTA" || strings.Contains(upperAsalAgen, "PUSAT") || strings.Contains(upperAsalAgen, "HOLDING") {
-		c.JSON(http.StatusForbidden, gin.H{
-			"status": "error",
-			"error":  "Akses Ditolak! Pusat Dakota (Holding) tidak diizinkan membuat BTT baru.",
-		})
-		return
-	}
-
+	// 1. Resolve database sesuai tenant PT terlebih dahulu
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal resolved"})
 		return
 	}
 
+	// 2. Cek apakah asal agen tergolong PUSAT / HOLDING
+	asalAgenRaw := strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalagenid"]))
+	upperAsalAgen := strings.ToUpper(asalAgenRaw)
+	asalKotaRaw := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalkota"])))
+
+	isPusat := asalAgenRaw == "1" || asalAgenRaw == "839" ||
+		upperAsalAgen == "PUSAT DAKOTA" || strings.Contains(upperAsalAgen, "PUSAT") || strings.Contains(upperAsalAgen, "HOLDING") ||
+		strings.Contains(asalKotaRaw, "PUSAT") || strings.Contains(asalKotaRaw, "HOLDING")
+
+	// 🟢 JIKA PUSAT: Periksa tabel glb_m_param apakah toggle izin aktif
+	if isPusat {
+		allowPusat := isPusatAllowedCreateBTT(database)
+		if !allowPusat {
+			c.JSON(http.StatusForbidden, gin.H{
+				"status": "error",
+				"error":  "Akses Ditolak! Pusat Dakota (Holding) tidak diizinkan membuat BTT baru. Silakan aktifkan izinnya di menu Settings -> Aturan Operasional.",
+			})
+			return
+		}
+		log.Printf("🔓 [BTT Center Bypass] Unit Pusat/Holding diizinkan menerbitkan BTT berdasarkan parameter glb_m_param.")
+	}
+
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	now := time.Now().In(loc)
 
-	// Ambil ID utama dari React dan cari nomor urut terunik agar tidak bentrok / double
-	//bttIDStr := getUniqueBttID(database, fmt.Sprintf("%v", rawPayload["id"]), rawPayload, now)
 	userAgenID, _ := c.Get("agen_id")
 
 	// Generate nomor BTT dinamis
@@ -504,7 +508,7 @@ func CreateBTT(c *gin.Context) {
 	}
 
 	keteranganAsli = fmt.Sprintf(
-		"%s (%s KOLI) - CABANG: %s%s - %s [B.PACKING: Rp %.0f, B.PENERUS: Rp %.0f]",
+		"%s (%s KOLI) - CABANG: %s%s\n%s [B.PACKING: Rp %.0f, B.PENERUS: Rp %.0f]",
 		strings.ToUpper(isiKirimanRaw),
 		jmlKoliRaw,
 		strings.ToUpper(kodeCabangRaw),
@@ -567,7 +571,7 @@ func CreateBTT(c *gin.Context) {
 		"bttt_harga":           rawPayload["bttt_harga"],
 		"bttt_spyn":            "Y",
 		"bttt_aktifyn":         "Y",
-		"bttt_servid":          cleanStringVal(servIDFinal), // 👈 VARCHAR
+		"bttt_servid":          cleanStringVal(servIDFinal),
 		"bttt_asalagenid":      cleanStringVal(asalAgenIDFinal),
 	}
 
@@ -1143,4 +1147,20 @@ func generateNomorBTT(database *gorm.DB, ptID string, custID string, now time.Ti
 
 	// Format Final Nomor BTT (Contoh: "CDPS001082600001")
 	return fmt.Sprintf("%s%05d", prefixBTT, nextUrutan)
+}
+
+// Helper cek apakah Pusat Dakota diizinkan membuat BTT dari tabel glb_m_param
+func isPusatAllowedCreateBTT(db *gorm.DB) bool {
+	var val string
+	err := db.Table("public.glb_m_param").
+		Select("COALESCE(set_varvalue, 'N')").
+		Where("TRIM(LOWER(set_varname)) = 'allow_pusat_create_btt'").
+		Order("set_updatetime DESC NULLS LAST").
+		Limit(1).
+		Scan(&val).Error
+
+	if err != nil {
+		return false
+	}
+	return strings.ToUpper(strings.TrimSpace(val)) == "Y"
 }

@@ -132,22 +132,48 @@ func CalculateTarifHandler(c *gin.Context) {
 		return
 	}
 
-	// 1. Resolve Info Agen Asal
-	var dbAgen models.GlbMAgen
+	// =========================================================================
+	// 🎯 1. RESOLVE INFO AGEN ASAL (DENGAN PENANGANAN PUSAT DAKOTA)
+	// =========================================================================
 	inputAgenRaw := strings.TrimSpace(req.AgenID)
 	if inputAgenRaw == "" {
 		inputAgenRaw = strings.TrimSpace(req.AsalKota)
 	}
 
-	database.Table("public.glb_m_agen").
-		Where("TRIM(agen_id) = ? OR TRIM(agen_kode) = ?", inputAgenRaw, inputAgenRaw).
-		First(&dbAgen)
+	upperInput := strings.ToUpper(inputAgenRaw)
+	isPusat := upperInput == "PUSAT DAKOTA" || strings.Contains(upperInput, "PUSAT") || strings.Contains(upperInput, "HOLDING") || inputAgenRaw == "1"
+
+	var dbAgen models.GlbMAgen
+
+	// Query pencarian agen: dukung pencarian nama (ILIKE) selain ID dan Kode
+	queryAgen := database.Table("public.glb_m_agen")
+	if isPusat {
+		// Jika akun Pusat Dakota, cari agen ID 839 atau fallback ke agen operasional Pusat
+		queryAgen.Where("TRIM(agen_id) = '839' OR TRIM(agen_id) = '1' OR agen_nama ILIKE '%PUSAT%'").
+			Order("agen_id ASC").
+			Limit(1).
+			Find(&dbAgen)
+	} else {
+		// Cari exact agen_id / agen_kode terlebih dahulu, jika gagal cari berdasarkan nama
+		errFind := queryAgen.Where("TRIM(agen_id) = ? OR TRIM(agen_kode) = ?", inputAgenRaw, inputAgenRaw).
+			Limit(1).
+			Find(&dbAgen).Error
+
+		if errFind != nil || dbAgen.AgenID == "" {
+			database.Table("public.glb_m_agen").
+				Where("agen_nama ILIKE ?", "%"+inputAgenRaw+"%").
+				Limit(1).
+				Find(&dbAgen)
+		}
+	}
 
 	var rawCabangID *string
-	database.Table("public.glb_m_agen").
-		Select("agen_cabangid").
-		Where("TRIM(agen_id) = ? OR TRIM(agen_kode) = ?", inputAgenRaw, inputAgenRaw).
-		Scan(&rawCabangID)
+	if dbAgen.AgenID != "" {
+		database.Table("public.glb_m_agen").
+			Select("agen_cabangid").
+			Where("TRIM(agen_id) = ?", dbAgen.AgenID).
+			Scan(&rawCabangID)
+	}
 
 	cabangIDStr := ""
 	if rawCabangID != nil {
@@ -174,12 +200,23 @@ func CalculateTarifHandler(c *gin.Context) {
 		tujuanClean = strings.TrimSpace(strings.Split(tujuanClean, " - ")[0])
 	}
 
-	// Daftar kemungkinan identitas agen asal di database tarif
-	asalCandidates := []string{
-		strings.TrimSpace(inputAgenRaw),
-		strings.TrimSpace(dbAgen.AgenKode),
-		strings.TrimSpace(dbAgen.AgenKotaID),
-		strings.TrimSpace(dbAgen.AgenID),
+	// 🎯 3. Susun Kandidat Agen Asal (Termasuk fallback resmi '839' & 'CGK0100')
+	asalCandidates := []string{}
+	if dbAgen.AgenID != "" {
+		asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenID))
+	}
+	if dbAgen.AgenKode != "" {
+		asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenKode))
+	}
+	if dbAgen.AgenKotaID != "" {
+		asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenKotaID))
+	}
+	if inputAgenRaw != "" && !isPusat {
+		asalCandidates = append(asalCandidates, strings.TrimSpace(inputAgenRaw))
+	}
+	// Tambahkan fallback untuk Pusat Dakota jika kandidat masih kosong/Pusat
+	if isPusat || len(asalCandidates) == 0 {
+		asalCandidates = append(asalCandidates, "839", "CGK0100", "001", "PST")
 	}
 
 	// 3. Query Rute REGULER & EKONOMIS
@@ -194,8 +231,8 @@ func CalculateTarifHandler(c *gin.Context) {
 		}
 		if regMap == nil {
 			database.Table("public.mkt_m_eharga").
-				Where("TRIM(agenid_asal) = ? AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'REGULER' OR TRIM(servid) = '1')",
-					asal, "%"+tujuanClean+"%").
+				Where("(TRIM(agenid_asal) = ? OR agenid_asal ILIKE ?) AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'REGULER' OR TRIM(servid) = '1' OR UPPER(TRIM(servid)) = 'R')",
+					asal, "%"+asal+"%", "%"+tujuanClean+"%").
 				Limit(1).
 				Find(&regList)
 			if len(regList) > 0 {
@@ -205,8 +242,8 @@ func CalculateTarifHandler(c *gin.Context) {
 
 		if ekoMap == nil {
 			database.Table("public.mkt_m_eharga").
-				Where("TRIM(agenid_asal) = ? AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'EKONOMIS' OR TRIM(servid) = '2')",
-					asal, "%"+tujuanClean+"%").
+				Where("(TRIM(agenid_asal) = ? OR agenid_asal ILIKE ?) AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'EKONOMIS' OR TRIM(servid) = '2' OR UPPER(TRIM(servid)) = 'E')",
+					asal, "%"+asal+"%", "%"+tujuanClean+"%").
 				Limit(1).
 				Find(&ekoList)
 			if len(ekoList) > 0 {
