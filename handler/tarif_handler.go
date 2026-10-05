@@ -398,28 +398,29 @@ func rangeLayananRow(tarifRow map[string]interface{}, discRow map[string]interfa
 	} else {
 		totalNormal = hargaPokok + ((beratFinal - minKG) * hargaNext) + biayaPenerus
 	}
-	totalCharge := totalNormal
 
 	// 3. Kalkulasi diskon jika ada contract
+	var totalCharge float64
 	hasDiscount := "N"
-	if discRow != nil && len(discRow) > 0 {
+
+	if len(discRow) > 0 {
 		hasDiscount = "Y"
 		discPokok := safeParseFloat(discRow["DiscountPokok"])
 		discLvl1 := safeParseFloat(discRow["DiscountLevel1"])
 		discLvl2 := safeParseFloat(discRow["DiscountLevel2"])
 		discLvl3 := safeParseFloat(discRow["DiscountLevel3"])
 
-		if bp := safeParseFloat(discRow["bypass1kg"]); bp > 0 {
-			bp1 = bp
+		if val := safeParseFloat(discRow["bypass1kg"]); val > 0 {
+			bp1 = val
 		}
-		if bp := safeParseFloat(discRow["bypass2kg"]); bp > 0 {
-			bp2 = bp
+		if val := safeParseFloat(discRow["bypass2kg"]); val > 0 {
+			bp2 = val
 		}
-		if bp := safeParseFloat(discRow["bypass3kg"]); bp > 0 {
-			bp3 = bp
+		if val := safeParseFloat(discRow["bypass3kg"]); val > 0 {
+			bp3 = val
 		}
-		if bp := safeParseFloat(discRow["biayatambahan"]); bp > 0 {
-			biayaPenerus += bp
+		if val := safeParseFloat(discRow["biayatambahan"]); val > 0 {
+			biayaPenerus += val
 		}
 
 		hargaPokok = hargaPokok * (1 - discPokok/100)
@@ -439,9 +440,11 @@ func rangeLayananRow(tarifRow map[string]interface{}, discRow map[string]interfa
 		} else {
 			totalCharge = hargaPokok + biayaPenerus
 		}
+	} else {
+		totalCharge = totalNormal
 	}
 
-	// 4. Return dengan SEMUA key (kompatibel penuh dengan frontend & backend)
+	// 4. Return map payload
 	return map[string]interface{}{
 		"servid":             jenis,
 		"lt":                 lt,
