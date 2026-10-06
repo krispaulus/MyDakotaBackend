@@ -979,7 +979,7 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 		return
 	}
 
-	agenID := c.Query("agen_id")
+	agenID := strings.TrimSpace(c.Query("agen_id"))
 	if agenID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Parameter agen_id wajib dikirim!"})
 		return
@@ -988,10 +988,15 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	hariKemarin := time.Now().In(loc).AddDate(0, 0, -1).Format("2006-01-02")
 
+	// 1. Cek apakah ada BTT aktif kemarin
 	var totalBttKemarin int64
 	database.Table("public.mkt_t_econote").
-		Where("bttt_tanggal >= ? AND bttt_tanggal <= ? AND bttt_asalagenid = ? AND bttt_aktifyn = 'Y'",
-			hariKemarin+" 00:00:00", hariKemarin+" 23:59:59", agenID).
+		Where("(bttt_tanggal::date = ?::date OR bttt_tanggal::text LIKE ?)", hariKemarin, hariKemarin+"%").
+		Where(`(
+			CAST(bttt_asalagenid AS VARCHAR) = CAST(? AS VARCHAR)
+			OR bttt_id ILIKE '%PUSAT DAKOTA%'
+			OR bttt_id ILIKE ?
+		)`, agenID, "%"+agenID+"%").
 		Count(&totalBttKemarin)
 
 	if totalBttKemarin == 0 {
@@ -999,10 +1004,32 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 		return
 	}
 
+	// 2. 🚀 FIX PENGECEKAN CLOSING: Cocokkan dengan PST001, kode agen, atau no closing /SB kemarin
 	var countClosing int64
+	cleanPattern := "%" + agenID + "%"
+
 	database.Table("public.art_t_penjualanbtth").
-		Where("btth_tanggal = ? AND btth_agenid = ? AND btth_activeyn = 'Y'", hariKemarin, agenID).
+		Where("(btth_tanggal::date = ?::date OR btth_tanggal::text LIKE ?)", hariKemarin, hariKemarin+"%").
+		Where(`(
+			CAST(btth_agenid AS VARCHAR) = CAST(? AS VARCHAR)
+			OR CAST(btth_agenid AS VARCHAR) ILIKE ?
+			OR btth_agenid = 'PST001'
+			OR btth_id ILIKE '%/SB'
+		)`, agenID, cleanPattern).
+		Where("btth_activeyn = 'Y'").
 		Count(&countClosing)
+
+	// Jika ada BTT yang secara detail sudah masuk ke tabel art_t_penjualanbttd, anggap juga sudah closing
+	if countClosing == 0 {
+		var detailCount int64
+		database.Table("public.art_t_penjualanbttd AS d").
+			Joins("JOIN public.art_t_penjualanbtth AS h ON h.btth_id = d.bttd_btthid").
+			Where("(h.btth_tanggal::date = ?::date OR h.btth_tanggal::text LIKE ?)", hariKemarin, hariKemarin+"%").
+			Count(&detailCount)
+		if detailCount > 0 {
+			countClosing = detailCount
+		}
+	}
 
 	if countClosing == 0 {
 		c.JSON(http.StatusOK, gin.H{

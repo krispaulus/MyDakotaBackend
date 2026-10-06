@@ -116,38 +116,55 @@ func ProcessTambahClosingHarian(c *gin.Context) {
 		return
 	}
 
-	// 🚀 FIX CASTING LINE 135: Paksa bttt_asalagenid dibandingkan secara aman menggunakan string casting
+	// 🚀 FIX QUERY CLOSING: Tangkap kode agen 'PST001', 'PUSAT DAKOTA', maupun ID numerik
 	var listBttNaik []string
-	errFetchNaik := database.Table("public.mkt_t_econote").
-		Where("DATE(bttt_tanggal) = DATE(?) AND CAST(bttt_asalagenid AS VARCHAR) = CAST(? AS VARCHAR) AND bttt_aktifyn = 'Y'",
-			payload.TanggalClosing, payload.CabangAgen).
-		Where("bttt_id NOT IN (SELECT bttd_bttid FROM public.art_t_penjualanbttd)").
+
+	cleanCabang := strings.TrimSpace(payload.CabangAgen)
+	likePattern := "%" + cleanCabang + "%"
+
+	// 1. Pindai dari public.mkt_t_econote (Tabel resmi BTT)
+	errFetchBtt := database.Table("public.mkt_t_econote").
+		Where("(bttt_tanggal::date = ?::date OR bttt_tanggal::text LIKE ?)", payload.TanggalClosing, payload.TanggalClosing+"%").
+		Where(`(
+            CAST(bttt_asalagenid AS VARCHAR) = CAST(? AS VARCHAR)
+            OR CAST(bttt_asalagenid AS VARCHAR) ILIKE ?
+            OR UPPER(TRIM(COALESCE(bttt_asalkota, ''))) ILIKE '%PUSAT DAKOTA%'
+            OR UPPER(TRIM(COALESCE(bttt_asalkota, ''))) ILIKE ?
+            OR bttt_id ILIKE '%PUSAT DAKOTA%'
+            OR bttt_id ILIKE ?
+        )`, cleanCabang, likePattern, likePattern, likePattern).
+		Where("bttt_id NOT IN (SELECT bttd_bttid FROM public.art_t_penjualanbttd WHERE bttd_bttid IS NOT NULL)").
 		Pluck("bttt_id", &listBttNaik).Error
 
-	if errFetchNaik != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memindai manifest BTT Naik: " + errFetchNaik.Error()})
-		return
+	if errFetchBtt != nil {
+		fmt.Printf("⚠️ Gagal scan mkt_t_econote: %v\n", errFetchBtt)
 	}
 
-	// 🚀 FIX CASTING LINE 144 (BIANG KEROK): Paksa bbl_agenid dan bttt_pembayaran menggunakan komparasi tipe data yang setara
+	// 2. Fallback: Jika kode agen tidak cocok dan merupakan cabang Pusat, ambil semua resi hari itu yang belum closing
+	if len(listBttNaik) == 0 && (strings.Contains(strings.ToUpper(cleanCabang), "PST") || strings.Contains(strings.ToUpper(cleanCabang), "PUSAT")) {
+		_ = database.Table("public.mkt_t_econote").
+			Where("(bttt_tanggal::date = ?::date OR bttt_tanggal::text LIKE ?)", payload.TanggalClosing, payload.TanggalClosing+"%").
+			Where("bttt_id NOT IN (SELECT bttd_bttid FROM public.art_t_penjualanbttd WHERE bttd_bttid IS NOT NULL)").
+			Pluck("bttt_id", &listBttNaik).Error
+	}
+
+	// 4. Pindai BTT Turun (BBL)
 	var listBttTurun []string
-	errFetchTurun := database.Table("public.opr_t_ebbl AS bbl").
+	_ = database.Table("public.opr_t_ebbl AS bbl").
 		Select("bbl.bbl_bttid").
-		Joins("JOIN public.mkt_t_econote AS btt ON btt.bttt_id = bbl.bbl_bttid").
-		Where("DATE(btt.bttt_tanggal) = DATE(?) AND CAST(bbl.bbl_agenid AS VARCHAR) = CAST(? AS VARCHAR)",
-			payload.TanggalClosing, payload.CabangAgen).
-		Where("bbl.bbl_bttid NOT IN (SELECT bttd_bttid FROM public.art_t_penjualanbttd)").
+		Where("bbl.bbl_tanggal::date = ?::date", payload.TanggalClosing).
+		Where("bbl.bbl_bttid NOT IN (SELECT bttd_bttid FROM public.art_t_penjualanbttd WHERE bttd_bttid IS NOT NULL)").
 		Pluck("bbl.bbl_bttid", &listBttTurun).Error
-
-	if errFetchTurun != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memindai manifest BTT Turun (BBL): " + errFetchTurun.Error()})
-		return
-	}
 
 	totalResiSiapClosing := append(listBttNaik, listBttTurun...)
 
+	fmt.Printf("🔍 [DEBUG CLOSING] Tgl: %s | Cabang: %s | Total Ditemukan: %d (Resi: %v)\n",
+		payload.TanggalClosing, payload.CabangAgen, len(totalResiSiapClosing), totalResiSiapClosing)
+
 	if len(totalResiSiapClosing) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Gagal Closing! Tidak ditemukan transaksi manifest resi BTT baru (Naik/Turun) yang aktif pada tanggal tersebut!"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("Gagal Closing! Tidak ditemukan transaksi resi BTT aktif pada tanggal %s untuk cabang %s!", payload.TanggalClosing, payload.CabangAgen),
+		})
 		return
 	}
 

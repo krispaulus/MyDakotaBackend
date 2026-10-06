@@ -4,6 +4,7 @@ import (
 	"dakotagroup/business-insight-be/db"
 	"dakotagroup/business-insight-be/models"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,6 +33,33 @@ type MasterEHarga struct {
 	Bypass3Kg          float64 `gorm:"column:bypass3kg" json:"bypass3kg"`
 	Harga3Kg           float64 `gorm:"column:harga3kg" json:"harga3kg"`
 	Keterangan         string  `gorm:"column:keterangan" json:"keterangan"`
+}
+
+type TarifRequest struct {
+	AgenID          string  `json:"agen_id"`
+	AsalKota        string  `json:"asal_kota"`
+	CustID          string  `json:"cust_id"` // Tambahkan field ini
+	TujuanKec       string  `json:"tujuan_kec"`
+	TujuanKecamatan string  `json:"tujuan_kecamatan"` // Tambahkan field ini
+	BeratAsli       float64 `json:"berat_asli"`
+	Panjang         float64 `json:"panjang"`
+	Lebar           float64 `json:"lebar"`
+	Tinggi          float64 `json:"tinggi"`
+	JenisLayanan    string  `json:"jenis_layanan"`
+}
+
+type CalculateTarifPayload struct {
+	AgenID          string  `json:"agen_id"`
+	AsalKota        string  `json:"asal_kota"`
+	CustID          string  `json:"cust_id"`
+	AsalCustID      string  `json:"bttt_asalcustid"`
+	TujuanKec       string  `json:"tujuan_kec"`
+	TujuanKecamatan string  `json:"tujuan_kecamatan"`
+	BeratAsli       float64 `json:"berat_asli"`
+	Panjang         float64 `json:"panjang"`
+	Lebar           float64 `json:"lebar"`
+	Tinggi          float64 `json:"tinggi"`
+	JenisLayanan    string  `json:"jenis_layanan"`
 }
 
 func (MasterEHarga) TableName() string {
@@ -120,7 +148,7 @@ func CalculateTarifHandler(c *gin.Context) {
 		return
 	}
 
-	var req models.TarifRequest
+	var req CalculateTarifPayload
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Payload input tidak valid: " + err.Error()})
 		return
@@ -133,7 +161,7 @@ func CalculateTarifHandler(c *gin.Context) {
 	}
 
 	// =========================================================================
-	// 🎯 1. RESOLVE INFO AGEN ASAL (DENGAN PENANGANAN PUSAT DAKOTA)
+	// 🎯 1. RESOLVE INFO AGEN ASAL
 	// =========================================================================
 	inputAgenRaw := strings.TrimSpace(req.AgenID)
 	if inputAgenRaw == "" {
@@ -144,17 +172,13 @@ func CalculateTarifHandler(c *gin.Context) {
 	isPusat := upperInput == "PUSAT DAKOTA" || strings.Contains(upperInput, "PUSAT") || strings.Contains(upperInput, "HOLDING") || inputAgenRaw == "1"
 
 	var dbAgen models.GlbMAgen
-
-	// Query pencarian agen: dukung pencarian nama (ILIKE) selain ID dan Kode
 	queryAgen := database.Table("public.glb_m_agen")
 	if isPusat {
-		// Jika akun Pusat Dakota, cari agen ID 839 atau fallback ke agen operasional Pusat
 		queryAgen.Where("TRIM(agen_id) = '839' OR TRIM(agen_id) = '1' OR agen_nama ILIKE '%PUSAT%'").
 			Order("agen_id ASC").
 			Limit(1).
 			Find(&dbAgen)
 	} else {
-		// Cari exact agen_id / agen_kode terlebih dahulu, jika gagal cari berdasarkan nama
 		errFind := queryAgen.Where("TRIM(agen_id) = ? OR TRIM(agen_kode) = ?", inputAgenRaw, inputAgenRaw).
 			Limit(1).
 			Find(&dbAgen).Error
@@ -180,7 +204,9 @@ func CalculateTarifHandler(c *gin.Context) {
 		cabangIDStr = *rawCabangID
 	}
 
-	// 2. Hitung Berat Chargeable
+	// =========================================================================
+	// 🎯 2. HITUNG BERAT CHARGEABLE
+	// =========================================================================
 	var beratVolume float64 = 0
 	if req.Panjang > 0 && req.Lebar > 0 && req.Tinggi > 0 {
 		beratVolume = (req.Panjang * req.Lebar * req.Tinggi) / 4000.0
@@ -196,74 +222,144 @@ func CalculateTarifHandler(c *gin.Context) {
 
 	// Sanitasi Tujuan Kecamatan (hapus - KOTA / - KAB)
 	tujuanClean := strings.ToUpper(strings.TrimSpace(req.TujuanKec))
+	if tujuanClean == "" {
+		tujuanClean = strings.ToUpper(strings.TrimSpace(req.TujuanKecamatan))
+	}
 	if strings.Contains(tujuanClean, " - ") {
 		tujuanClean = strings.TrimSpace(strings.Split(tujuanClean, " - ")[0])
 	}
 
-	// 🎯 3. Susun Kandidat Agen Asal (Termasuk fallback resmi '839' & 'CGK0100')
-	asalCandidates := []string{}
-	if dbAgen.AgenID != "" {
-		asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenID))
-	}
-	if dbAgen.AgenKode != "" {
-		asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenKode))
-	}
-	if dbAgen.AgenKotaID != "" {
-		asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenKotaID))
-	}
-	if inputAgenRaw != "" && !isPusat {
-		asalCandidates = append(asalCandidates, strings.TrimSpace(inputAgenRaw))
-	}
-	// Tambahkan fallback untuk Pusat Dakota jika kandidat masih kosong/Pusat
-	if isPusat || len(asalCandidates) == 0 {
-		asalCandidates = append(asalCandidates, "839", "CGK0100", "001", "PST")
-	}
-
-	// 3. Query Rute REGULER & EKONOMIS
 	var regMap map[string]interface{}
 	var ekoMap map[string]interface{}
-	var regList []map[string]interface{}
-	var ekoList []map[string]interface{}
+	isCustomerRate := false
 
-	for _, asal := range asalCandidates {
-		if asal == "" {
-			continue
+	// =========================================================================
+	// 🌟 PRIORITAS 1: Cek Tarif Khusus Pelanggan Korporat (Contoh: PT MERCK Tbk)
+	// =========================================================================
+	cleanCustID := strings.TrimSpace(req.CustID)
+	if cleanCustID == "" {
+		cleanCustID = strings.TrimSpace(req.AsalCustID)
+	}
+
+	log.Printf("👉 [CEK TARIF] CustID: '%s' | TujuanKec: '%s'", cleanCustID, tujuanClean)
+
+	if cleanCustID != "" && strings.ToUpper(cleanCustID) != "UMUM" {
+		type CustRateResult struct {
+			MinimalKg          float64 `gorm:"column:minimalkg"`
+			HargaPokok         float64 `gorm:"column:hargapokok"`
+			HargaKgSelanjutnya float64 `gorm:"column:hargakgselanjutnya"`
+			EstimasiHari       string  `gorm:"column:estimasihari"`
+			BiayaTambahan      float64 `gorm:"column:biayatambahan"`
+			Keterangan         string  `gorm:"column:keterangan"`
 		}
-		if regMap == nil {
-			database.Table("public.mkt_m_eharga").
-				Where("(TRIM(agenid_asal) = ? OR agenid_asal ILIKE ?) AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'REGULER' OR TRIM(servid) = '1' OR UPPER(TRIM(servid)) = 'R')",
-					asal, "%"+asal+"%", "%"+tujuanClean+"%").
-				Limit(1).
-				Find(&regList)
-			if len(regList) > 0 {
-				regMap = regList[0]
+
+		var cr CustRateResult
+		// Gunakan ILIKE %...% agar tidak gagal karena spasi tersembunyi
+		queryCust := `
+			SELECT 
+				COALESCE(min_charge, 20.0) AS minimalkg,
+				(COALESCE(min_charge, 20.0) * COALESCE(tarif_kg, 0)) AS hargapokok,
+				COALESCE(tarif_kg, 0) AS hargakgselanjutnya,
+				COALESCE(lead_time, '5') AS estimasihari,
+				0.0 AS biayatambahan,
+				COALESCE(keterangan, 'TARIF KONTRAK') AS keterangan
+			FROM public.mkt_m_eharga_customer
+			WHERE TRIM(cust_id) = TRIM(?) 
+			  AND UPPER(TRIM(tujuan_kecamatan)) ILIKE ?
+			ORDER BY id ASC
+			LIMIT 1
+		`
+
+		errCust := database.Raw(queryCust, cleanCustID, "%"+tujuanClean+"%").Scan(&cr).Error
+		if errCust == nil && cr.HargaKgSelanjutnya > 0 {
+			isCustomerRate = true
+			regMap = map[string]interface{}{
+				"minimalkg":          cr.MinimalKg,
+				"hargapokok":         cr.HargaPokok,
+				"hargakgselanjutnya": cr.HargaKgSelanjutnya,
+				"estimasihari":       cr.EstimasiHari,
+				"biayatambahan":      cr.BiayaTambahan,
+				"keterangan":         cr.Keterangan,
 			}
-		}
-
-		if ekoMap == nil {
-			database.Table("public.mkt_m_eharga").
-				Where("(TRIM(agenid_asal) = ? OR agenid_asal ILIKE ?) AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'EKONOMIS' OR TRIM(servid) = '2' OR UPPER(TRIM(servid)) = 'E')",
-					asal, "%"+asal+"%", "%"+tujuanClean+"%").
-				Limit(1).
-				Find(&ekoList)
-			if len(ekoList) > 0 {
-				ekoMap = ekoList[0]
-			}
-		}
-
-		if regMap != nil && ekoMap != nil {
-			break
+			log.Printf("   ✅ TARIF KONTRAK MERCK DITEMUKAN: MinKg=%.0f, Dasar=Rp %.0f, PerKg=Rp %.0f, LT=%s",
+				cr.MinimalKg, cr.HargaPokok, cr.HargaKgSelanjutnya, cr.EstimasiHari)
+		} else {
+			log.Printf("   ⚠️ Tidak cocok di mkt_m_eharga_customer (Error: %v), fallback ke reguler...", errCust)
 		}
 	}
 
-	// 4. Hitung Baris Layanan
+	// =========================================================================
+	// 🌟 PRIORITAS 2 (FALLBACK): Ambil Tarif Reguler & Ekonomis Umum
+	// =========================================================================
+	if !isCustomerRate {
+		asalCandidates := []string{}
+		if dbAgen.AgenID != "" {
+			asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenID))
+		}
+		if dbAgen.AgenKode != "" {
+			asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenKode))
+		}
+		if dbAgen.AgenKotaID != "" {
+			asalCandidates = append(asalCandidates, strings.TrimSpace(dbAgen.AgenKotaID))
+		}
+		if inputAgenRaw != "" && !isPusat {
+			asalCandidates = append(asalCandidates, strings.TrimSpace(inputAgenRaw))
+		}
+		if isPusat || len(asalCandidates) == 0 {
+			asalCandidates = append(asalCandidates, "839", "CGK0100", "001", "PST")
+		}
+
+		var regList []map[string]interface{}
+		var ekoList []map[string]interface{}
+
+		for _, asal := range asalCandidates {
+			if asal == "" {
+				continue
+			}
+			if regMap == nil {
+				database.Table("public.mkt_m_eharga").
+					Where("(TRIM(agenid_asal) = ? OR agenid_asal ILIKE ?) AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'REGULER' OR TRIM(servid) = '1' OR UPPER(TRIM(servid)) = 'R')",
+						asal, "%"+asal+"%", "%"+tujuanClean+"%").
+					Limit(1).
+					Find(&regList)
+				if len(regList) > 0 {
+					regMap = regList[0]
+				}
+			}
+
+			if ekoMap == nil {
+				database.Table("public.mkt_m_eharga").
+					Where("(TRIM(agenid_asal) = ? OR agenid_asal ILIKE ?) AND UPPER(TRIM(tujuan_kecamatan)) LIKE ? AND (UPPER(TRIM(servid)) = 'EKONOMIS' OR TRIM(servid) = '2' OR UPPER(TRIM(servid)) = 'E')",
+						asal, "%"+asal+"%", "%"+tujuanClean+"%").
+					Limit(1).
+					Find(&ekoList)
+				if len(ekoList) > 0 {
+					ekoMap = ekoList[0]
+				}
+			}
+
+			if regMap != nil && ekoMap != nil {
+				break
+			}
+		}
+	}
+
+	// =========================================================================
+	// 🎯 3. HITUNG BARIS LAYANAN (DENGAN RANGELAYANANROW)
+	// =========================================================================
 	custDiscount := make(map[string]interface{})
 	buildLayananRow := rangeLayananRow(regMap, custDiscount, beratChargeable, "REGULER")
 	buildEkoRow := rangeLayananRow(ekoMap, custDiscount, beratChargeable, "EKONOMIS")
 
-	// 5. Penentuan Grand Total
+	// =========================================================================
+	// 🎯 4. PENENTUAN GRAND TOTAL
+	// =========================================================================
 	var finalGrandTotal float64 = 0
 	statusHitung := "TARIF TUNAI UMUM"
+	if isCustomerRate {
+		statusHitung = "TARIF KONTRAK PELANGGAN"
+	}
+
 	isEkonomis := strings.ToUpper(req.JenisLayanan) == "EKONOMIS" || req.JenisLayanan == "N"
 
 	if strings.ToUpper(req.JenisLayanan) == "KREDIT" {
@@ -289,6 +385,9 @@ func CalculateTarifHandler(c *gin.Context) {
 		}
 	}
 
+	// =========================================================================
+	// 🚀 5. RESPONSE AKHIR KE REACT
+	// =========================================================================
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "success",
 		"status_hitung":    statusHitung,
@@ -298,6 +397,7 @@ func CalculateTarifHandler(c *gin.Context) {
 		"grand_total":      finalGrandTotal,
 		"reguler_row":      buildLayananRow,
 		"ekonomis_row":     buildEkoRow,
+		"is_customer_rate": isCustomerRate,
 		"kode_kota_asal":   strings.ToUpper(strings.TrimSpace(dbAgen.AgenKotaID)),
 		"nomor_urut_agen":  extractThreeDigits(cabangIDStr),
 	})
