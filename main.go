@@ -51,6 +51,7 @@ func main() {
 	api := r.Group("/api")
 	{
 		api.POST("/login", handler.LoginHandler)
+		api.GET("/public/login-banner", handler.GetLoginBannerHandler)
 		api.POST("/request-otp", handler.RequestOTPHandler)
 		api.POST("/verify-otp", handler.VerifyAndSaveEmailHandler)
 		api.GET("/health", handler.HealthHandler)
@@ -716,6 +717,10 @@ func main() {
 
 			authorized.GET("/settings/operasional", handler.GetSettingOperasionalHandler)
 			authorized.POST("/settings/operasional", handler.SaveSettingOperasionalHandler)
+
+			authorized.GET("/settings/login-banner", handler.GetLoginBannerHandler) // Opsional: Untuk ambil nilai saat form settings dibuka
+			authorized.POST("/settings/login-banner", handler.SaveLoginBannerHandler)
+			authorized.POST("/settings/upload-login-banner", handler.UploadLoginBannerHandler)
 		}
 	}
 
