@@ -718,9 +718,10 @@ func main() {
 			authorized.GET("/settings/operasional", handler.GetSettingOperasionalHandler)
 			authorized.POST("/settings/operasional", handler.SaveSettingOperasionalHandler)
 
-			authorized.GET("/settings/login-banner", handler.GetLoginBannerHandler) // Opsional: Untuk ambil nilai saat form settings dibuka
+			authorized.GET("/settings/login-banner", handler.GetLoginBannerHandler)
 			authorized.POST("/settings/login-banner", handler.SaveLoginBannerHandler)
 			authorized.POST("/settings/upload-login-banner", handler.UploadLoginBannerHandler)
+			authorized.DELETE("/settings/login-banner/:slotIndex", handler.DeleteLoginBannerHandler)
 		}
 	}
 
