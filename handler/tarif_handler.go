@@ -3,6 +3,7 @@ package handler
 import (
 	"dakotagroup/business-insight-be/db"
 	"dakotagroup/business-insight-be/models"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -51,15 +52,22 @@ type TarifRequest struct {
 type CalculateTarifPayload struct {
 	AgenID          string  `json:"agen_id"`
 	AsalKota        string  `json:"asal_kota"`
+	AsalCustID      string  `json:"asal_cust_id"`
 	CustID          string  `json:"cust_id"`
-	AsalCustID      string  `json:"bttt_asalcustid"`
+	TujuanKota      string  `json:"tujuan_kota"`
 	TujuanKec       string  `json:"tujuan_kec"`
 	TujuanKecamatan string  `json:"tujuan_kecamatan"`
+	Kabupaten       string  `json:"kabupaten"`
 	BeratAsli       float64 `json:"berat_asli"`
 	Panjang         float64 `json:"panjang"`
 	Lebar           float64 `json:"lebar"`
 	Tinggi          float64 `json:"tinggi"`
 	JenisLayanan    string  `json:"jenis_layanan"`
+
+	// Tambahkan field-field di bawah ini agar error undefined hilang:
+	Layanan        string `json:"layanan"`         // "Darat", "Laut", "Udara"
+	JenisPelayanan string `json:"jenis_pelayanan"` // "PAKET" atau "CARTER"
+	PilihCarter    string `json:"pilih_carter"`    // Kode armada carter, misal "K0005"
 }
 
 func (MasterEHarga) TableName() string {
@@ -229,18 +237,162 @@ func CalculateTarifHandler(c *gin.Context) {
 		tujuanClean = strings.TrimSpace(strings.Split(tujuanClean, " - ")[0])
 	}
 
+	cleanCustID := strings.TrimSpace(req.CustID)
+	if cleanCustID == "" {
+		cleanCustID = strings.TrimSpace(req.AsalCustID)
+	}
+	if cleanCustID == "" {
+		cleanCustID = "0010000001" // Default Merck jika kosong
+	}
+
+	// =========================================================================
+	// 🚗 2.A: CEK KHUSUS CARTER ARMADA
+	// =========================================================================
+	if strings.ToUpper(strings.TrimSpace(req.JenisPelayanan)) == "CARTER" && req.PilihCarter != "" {
+		type CarterResult struct {
+			Harga          float64        `gorm:"column:harga"`
+			EstimasiHari   sql.NullString `gorm:"column:estimasihari"`
+			KgMax          float64        `gorm:"column:kg_max"`
+			HargaOverKgMax float64        `gorm:"column:hargaoverkg_max"`
+		}
+
+		var cr CarterResult
+		tujuanKabClean := strings.ToUpper(strings.TrimSpace(req.Kabupaten))
+		if tujuanKabClean == "" {
+			tujuanKabClean = strings.ToUpper(strings.TrimSpace(req.TujuanKota))
+		}
+
+		queryCarter := `
+			SELECT harga, estimasihari, COALESCE(kg_max, 0) AS kg_max, COALESCE(hargaoverkg_max, 0) AS hargaoverkg_max
+			FROM public.mkt_m_eharga_pelanggan_carter
+			WHERE customerid = ? 
+			  AND jns_kend = ?
+			  AND (
+			      UPPER(TRIM(tujuan_kecamatan)) ILIKE ? 
+			      OR UPPER(TRIM(tujuan_kabupaten)) ILIKE ?
+			  )
+			ORDER BY id ASC LIMIT 1;
+		`
+		errCarter := database.Raw(queryCarter, cleanCustID, req.PilihCarter, "%"+tujuanClean+"%", "%"+tujuanKabClean+"%").Scan(&cr).Error
+
+		if errCarter == nil && cr.Harga > 0 {
+			totalBiaya := cr.Harga
+			if req.BeratAsli > cr.KgMax && cr.KgMax > 0 && cr.HargaOverKgMax > 0 {
+				totalBiaya += (req.BeratAsli - cr.KgMax) * cr.HargaOverKgMax
+			}
+
+			estimasi := "-"
+			if cr.EstimasiHari.Valid {
+				estimasi = cr.EstimasiHari.String
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"status":           "success",
+				"status_hitung":    "TARIF CARTER ARMADA",
+				"berat_asli":       req.BeratAsli,
+				"berat_volume":     beratVolume,
+				"berat_chargeable": req.BeratAsli,
+				"grand_total":      totalBiaya,
+				"is_customer_rate": true,
+				"tipe_layanan":     "CARTER",
+				"reguler_row": map[string]interface{}{
+					"hargapokok":   cr.Harga,
+					"total_normal": totalBiaya,
+					"estimasihari": estimasi,
+					"keterangan":   "CARTER ARMADA (" + req.PilihCarter + ")",
+				},
+				"kode_kota_asal":  strings.ToUpper(strings.TrimSpace(dbAgen.AgenKotaID)),
+				"nomor_urut_agen": extractThreeDigits(cabangIDStr),
+			})
+			return
+		}
+	}
+
+	// =========================================================================
+	// ✈️ 2.B: CEK KHUSUS LAYANAN UDARA (servid = '3')
+	// =========================================================================
+	if strings.EqualFold(req.Layanan, "Udara") || strings.EqualFold(req.JenisLayanan, "Udara") || req.Layanan == "3" {
+		type UdaraResult struct {
+			MinimalKg          float64        `gorm:"column:minimalkg"`
+			HargaPokok         float64        `gorm:"column:hargapokok"`
+			HargaKgSelanjutnya float64        `gorm:"column:hargakgselanjutnya"`
+			EstimasiHari       sql.NullString `gorm:"column:estimasihari"`
+			Keterangan         sql.NullString `gorm:"column:keterangan"`
+		}
+
+		var ur UdaraResult
+		targetKota := strings.ToUpper(strings.TrimSpace(req.TujuanKota))
+		if targetKota == "" {
+			targetKota = strings.ToUpper(strings.TrimSpace(req.Kabupaten))
+		}
+
+		queryUdara := `
+			SELECT minimalkg, hargapokok, hargakgselanjutnya, estimasihari, keterangan
+			FROM public.mkt_m_eharga_pelanggan
+			WHERE customerid = ? 
+			  AND TRIM(servid) = '3'
+			  AND (
+			      UPPER(TRIM(tujuan_kabupaten)) ILIKE ? 
+			      OR UPPER(TRIM(tujuan_kecamatan)) ILIKE ?
+			  )
+			ORDER BY id ASC LIMIT 1;
+		`
+		errUdara := database.Raw(queryUdara, cleanCustID, "%"+targetKota+"%", "%"+tujuanClean+"%").Scan(&ur).Error
+
+		if errUdara == nil && ur.HargaPokok > 0 {
+			minKg := ur.MinimalKg
+			if minKg <= 0 {
+				minKg = 1
+			}
+
+			var totalBiaya float64
+			if beratChargeable <= minKg {
+				totalBiaya = ur.HargaPokok
+			} else {
+				totalBiaya = ur.HargaPokok + ((beratChargeable - minKg) * ur.HargaKgSelanjutnya)
+			}
+
+			estimasi := "-"
+			if ur.EstimasiHari.Valid {
+				estimasi = ur.EstimasiHari.String
+			}
+			kodeBandara := ""
+			if ur.Keterangan.Valid {
+				kodeBandara = ur.Keterangan.String
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"status":           "success",
+				"status_hitung":    "TARIF UDARA (CARGO AIRCRAFT)",
+				"berat_asli":       req.BeratAsli,
+				"berat_volume":     beratVolume,
+				"berat_chargeable": beratChargeable,
+				"grand_total":      totalBiaya,
+				"is_customer_rate": true,
+				"tipe_layanan":     "UDARA",
+				"kode_bandara":     kodeBandara,
+				"reguler_row": map[string]interface{}{
+					"minimalkg":          minKg,
+					"hargapokok":         ur.HargaPokok,
+					"hargakgselanjutnya": ur.HargaKgSelanjutnya,
+					"total_normal":       totalBiaya,
+					"estimasihari":       estimasi,
+					"keterangan":         kodeBandara,
+				},
+				"kode_kota_asal":  strings.ToUpper(strings.TrimSpace(dbAgen.AgenKotaID)),
+				"nomor_urut_agen": extractThreeDigits(cabangIDStr),
+			})
+			return
+		}
+	}
+
 	var regMap map[string]interface{}
 	var ekoMap map[string]interface{}
 	isCustomerRate := false
 
 	// =========================================================================
-	// 🌟 PRIORITAS 1: Cek Tarif Khusus Pelanggan Korporat (Contoh: PT MERCK Tbk)
+	// 🌟 PRIORITAS 1: Cek Tarif Khusus Pelanggan Korporat (Darat Reguler Merck)
 	// =========================================================================
-	cleanCustID := strings.TrimSpace(req.CustID)
-	if cleanCustID == "" {
-		cleanCustID = strings.TrimSpace(req.AsalCustID)
-	}
-
 	log.Printf("👉 [CEK TARIF] CustID: '%s' | TujuanKec: '%s'", cleanCustID, tujuanClean)
 
 	if cleanCustID != "" && strings.ToUpper(cleanCustID) != "UMUM" {
@@ -254,7 +406,6 @@ func CalculateTarifHandler(c *gin.Context) {
 		}
 
 		var cr CustRateResult
-		// Gunakan ILIKE %...% agar tidak gagal karena spasi tersembunyi
 		queryCust := `
 			SELECT 
 				COALESCE(min_charge, 20.0) AS minimalkg,

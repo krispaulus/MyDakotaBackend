@@ -14,6 +14,119 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Struktur data Banner lengkap
+type BannerItem struct {
+	URL       string `json:"url"`
+	Tag       string `json:"tag"`
+	Title     string `json:"title"`
+	Highlight string `json:"highlight"`
+	Desc      string `json:"desc"`
+}
+
+func getBannerItemsFromDB(database any) []BannerItem {
+	var rawValue string
+	if dbConn, ok := database.(interface {
+		Table(name string) interface {
+			Select(query any, args ...any) interface {
+				Where(query any, args ...any) interface {
+					Limit(limit int) interface {
+						Scan(dest any) interface{ Error() string }
+					}
+				}
+			}
+		}
+	}); ok {
+		_ = dbConn.Table("public.glb_m_param").
+			Select("COALESCE(set_varvalue, '')").
+			Where("TRIM(LOWER(set_varname)) = 'login_banner_url'").
+			Limit(1).
+			Scan(&rawValue)
+	}
+
+	banners := make([]BannerItem, 5)
+	for i := range banners {
+		banners[i] = BannerItem{
+			Tag:       fmt.Sprintf("DAKOTA PROMO #%d", i+1),
+			Title:     "Layanan Pengiriman",
+			Highlight: "Cepat & Aman",
+			Desc:      "Pengiriman barang ke seluruh Nusantara dengan jangkauan rute terluas dan tarif terbaik.",
+		}
+	}
+
+	rawValue = strings.TrimSpace(rawValue)
+	if rawValue != "" {
+		// 1. Coba parse sebagai array of BannerItem
+		var items []BannerItem
+		if err := json.Unmarshal([]byte(rawValue), &items); err == nil {
+			for i := 0; i < len(items) && i < 5; i++ {
+				banners[i] = items[i]
+			}
+		} else {
+			// 2. Fallback jika masih format lama (array of string URL)
+			var urls []string
+			if err := json.Unmarshal([]byte(rawValue), &urls); err == nil {
+				for i := 0; i < len(urls) && i < 5; i++ {
+					banners[i].URL = urls[i]
+				}
+			} else {
+				banners[0].URL = rawValue
+			}
+		}
+	}
+
+	return banners
+}
+
+func SaveBannerTextHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	var req struct {
+		SlotIndex int    `json:"slot_index"`
+		Tag       string `json:"tag"`
+		Title     string `json:"title"`
+		Highlight string `json:"highlight"`
+		Desc      string `json:"desc"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	if req.SlotIndex < 0 || req.SlotIndex >= 5 {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Slot tidak valid"})
+		return
+	}
+
+	banners := getBannerItemsFromDB(database)
+	banners[req.SlotIndex].Tag = strings.TrimSpace(req.Tag)
+	banners[req.SlotIndex].Title = strings.TrimSpace(req.Title)
+	banners[req.SlotIndex].Highlight = strings.TrimSpace(req.Highlight)
+	banners[req.SlotIndex].Desc = strings.TrimSpace(req.Desc)
+
+	jsonBytes, _ := json.Marshal(banners)
+	res := database.Exec(`
+		UPDATE public.glb_m_param 
+		SET set_varvalue = ?, set_updatetime = NOW() 
+		WHERE TRIM(LOWER(set_varname)) = 'login_banner_url'
+	`, string(jsonBytes))
+
+	if res.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": res.Error.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("Teks Slot #%d berhasil disimpan!", req.SlotIndex+1),
+		"banners": banners,
+	})
+}
+
 func getBannerListFromDB(database any) []string {
 	type DBExec interface {
 		Table(name string) any

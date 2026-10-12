@@ -77,3 +77,29 @@ type GlbMAgen struct {
 	AgenKode   string `gorm:"column:agen_kode"`
 	AgenNama   string `gorm:"column:agen_nama"`
 }
+
+type CalculateTarifRequest struct {
+	CustomerID     string  `json:"customer_id"`     // misal: "0010000001" (Merck)
+	Layanan        string  `json:"layanan"`         // "Darat", "Laut", "Udara"
+	JenisPelayanan string  `json:"jenis_pelayanan"` // "PAKET" atau "CARTER"
+	PilihCarter    string  `json:"pilih_carter"`    // misal: "K0005" (kode jns_kend)
+	Provinsi       string  `json:"provinsi"`
+	Kabupaten      string  `json:"kabupaten"`
+	Kecamatan      string  `json:"kecamatan"`
+	BeratAsli      float64 `json:"berat_asli"`
+	BeratVolume    float64 `json:"berat_volume"`
+	Kubikasi       float64 `json:"kubikasi"`
+	JumlahKoli     int     `json:"jumlah_koli"`
+	JenisHarga     string  `json:"jenis_harga"` // "BERAT", "VOLUME", "KUBIKASI"
+}
+
+type CalculateTarifResponse struct {
+	TarifDasar      float64 `json:"tarif_dasar"`
+	HargaPokok      float64 `json:"harga_pokok"`
+	HargaKgNext     float64 `json:"harga_kg_next"`
+	BeratDikenakan  float64 `json:"berat_dikenakan"`
+	TotalBiayaKirim float64 `json:"total_biaya_kirim"`
+	EstimasiHari    string  `json:"estimasi_hari"`
+	Keterangan      string  `json:"keterangan"`
+	TipeTarif       string  `json:"tipe_tarif"` // "CARTER", "UDARA", "DARAT_REGULER", dll.
+}

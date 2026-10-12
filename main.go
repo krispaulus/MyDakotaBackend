@@ -722,6 +722,7 @@ func main() {
 			authorized.POST("/settings/login-banner", handler.SaveLoginBannerHandler)
 			authorized.POST("/settings/upload-login-banner", handler.UploadLoginBannerHandler)
 			authorized.DELETE("/settings/login-banner/:slotIndex", handler.DeleteLoginBannerHandler)
+			authorized.POST("/settings/save-banner-text", handler.SaveBannerTextHandler)
 		}
 	}
 
