@@ -723,6 +723,25 @@ func main() {
 			authorized.POST("/settings/upload-login-banner", handler.UploadLoginBannerHandler)
 			authorized.DELETE("/settings/login-banner/:slotIndex", handler.DeleteLoginBannerHandler)
 			authorized.POST("/settings/save-banner-text", handler.SaveBannerTextHandler)
+
+			authorized.GET("/customer/with-tarif", handler.GetTarifCustomerList)
+			authorized.POST("/tarif/upload-csv", handler.UploadTarifCSVHandler)
+			authorized.POST("/tarif/adjust", handler.AdjustTarifCustomerHandler)
+			authorized.GET("/customer/cabang-options", handler.GetCabangTarifList)
+
+			authorized.GET("/tarif-customer/cargo/detail", handler.GetCargoTarifDetail)
+			authorized.POST("/tarif-customer/cargo/update-field", handler.UpdateCargoTarifField)
+			authorized.POST("/tarif-customer/cargo/delete-bulk", handler.DeleteBulkCargoTarif)
+
+			authorized.GET("/wilayah/propinsi", handler.GetWilayahPropinsi)
+			authorized.GET("/wilayah/kota", handler.GetWilayahKota)
+			authorized.GET("/wilayah/kecamatan", handler.GetWilayahKecamatan)
+			authorized.POST("/tarif-customer/simpan-rute", handler.SimpanTarifRute)
+			authorized.POST("/tarif-customer/salin-tarif", handler.SalinTarifCustomerLain)
+			authorized.POST("/tarif-customer/penyesuaian-wilayah", handler.PenyesuaianTarifWilayah)
+
+			authorized.GET("/tarif-customer/source-options", handler.GetSourceCustomerTarifOptions)
+
 		}
 	}
 
