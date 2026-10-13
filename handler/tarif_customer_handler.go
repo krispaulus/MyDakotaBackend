@@ -402,3 +402,74 @@ func DeleteBulkCargoTarif(c *gin.Context) {
 		"message": fmt.Sprintf("Berhasil menghapus %d rute tarif", len(req.IDs)),
 	})
 }
+
+// Endpoint Lookup Tarif saat input form BTT
+// GET /btt/lookup-tarif?customer_id=0010000021&serv_id=1&propinsi=BALI&kota=BADUNG&kecamatan=KUTA&berat=120
+func LookupTarifBTT(c *gin.Context) {
+	db := getTarifCustomerDB(c)
+
+	customerID := strings.TrimSpace(c.Query("customer_id"))
+	servID := strings.TrimSpace(c.DefaultQuery("serv_id", "1"))
+	propinsi := strings.TrimSpace(c.Query("propinsi"))
+	kota := strings.TrimSpace(c.Query("kota"))
+	kecamatan := strings.TrimSpace(c.Query("kecamatan"))
+	berat, _ := strconv.ParseFloat(c.DefaultQuery("berat", "0"), 64)
+
+	type TarifResult struct {
+		IsTarifKhusus      bool    `json:"is_tarif_khusus"`
+		LayananNama        string  `json:"layanan_nama"`
+		LT                 string  `json:"lt"`
+		Dasar              float64 `json:"dasar"`
+		KgMin              float64 `json:"kg_min"`
+		KgNext             float64 `json:"kg_next"`
+		HargaPenerus       float64 `json:"harga_penerus"`
+		EstimasiBiayaKirim float64 `json:"estimasi_biaya_kirim"`
+	}
+
+	var row struct {
+		MinimalKg          float64
+		HargaPokok         float64
+		BypassKg           float64
+		HargaKgSelanjutnya float64
+		BiayaTambahan      float64
+		EstimasiHari       string
+	}
+
+	// 1. Cek Tarif Khusus Customer
+	err := db.Table("public.mkt_m_eharga_pelanggan").
+		Select("minimalkg, hargapokok, bypasskg, hargakgselanjutnya, biayatambahan, estimasihari").
+		Where("TRIM(customerid) = ? AND TRIM(servid::text) = ? AND TRIM(tujuan_propinsi) = ? AND TRIM(tujuan_kabupaten) = ? AND TRIM(tujuan_kecamatan) = ?",
+			customerID, servID, propinsi, kota, kecamatan).
+		Scan(&row).Error
+
+	if err == nil && row.HargaPokok > 0 {
+		// Hitung biaya kirim khusus
+		biayaKirim := row.HargaPokok
+		if row.BypassKg > 0 && berat >= row.BypassKg {
+			biayaKirim = berat * row.HargaKgSelanjutnya
+		} else if berat > row.MinimalKg {
+			biayaKirim = row.HargaPokok + ((berat - row.MinimalKg) * row.HargaKgSelanjutnya)
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status": "success",
+			"data": TarifResult{
+				IsTarifKhusus:      true,
+				LayananNama:        "DARAT REGULER (KHUSUS)",
+				LT:                 row.EstimasiHari,
+				Dasar:              row.HargaPokok,
+				KgMin:              row.MinimalKg,
+				KgNext:             row.HargaKgSelanjutnya,
+				HargaPenerus:       row.BiayaTambahan,
+				EstimasiBiayaKirim: biayaKirim,
+			},
+		})
+		return
+	}
+
+	// 2. Jika tidak ada tarif khusus, fallback ke tarif umum/reguler
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "not_found",
+		"message": "Tarif khusus tidak ditemukan, gunakan tarif reguler standar.",
+	})
+}

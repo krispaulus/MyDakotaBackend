@@ -15,6 +15,109 @@ import (
 	"gorm.io/gorm"
 )
 
+type UpdateBTTPayload struct {
+	NoBTT          string `json:"no_btt" binding:"required"`
+	PenerimaNama   string `json:"penerima_nama"`
+	PenerimaAlamat string `json:"penerima_alamat"`
+	PenerimaTelp   string `json:"penerima_telp"`
+	NoSuratJalan   string `json:"no_surat_jalan"`
+	Keterangan     string `json:"keterangan"`
+	MetodeBayar    string `json:"metode_bayar"`
+
+	// Field Khusus Keuangan / Tarif
+	BiayaKirim     float64 `json:"biaya_kirim"`
+	BiayaPenerus   float64 `json:"biaya_penerus"`
+	BiayaPacking   float64 `json:"biaya_packing"`
+	TotalBiaya     float64 `json:"total_biaya"`
+	AlasanOverride string  `json:"alasan_override"` // Wajib jika supervisor bypass harga
+}
+
+func UpdateBTT(c *gin.Context) {
+	db := getTarifCustomerDB(c)
+
+	// Ambil role user dari JWT / Context
+	userRole := strings.ToUpper(fmt.Sprintf("%v", c.MustGet("role_akses")))
+	userID := fmt.Sprintf("%v", c.MustGet("user_id"))
+
+	var req UpdateBTTPayload
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	// 1. Ambil data eksisting BTT untuk perbandingan
+	var existingBTT struct {
+		BiayaKirim float64
+		TotalBiaya float64
+	}
+	err := db.Table("public.mkt_t_btt").
+		Select("biaya_kirim, total_biaya").
+		Where("no_btt = ?", req.NoBTT).
+		Scan(&existingBTT).Error
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data BTT tidak ditemukan"})
+		return
+	}
+
+	// 2. Proteksi Wewenang: Jika bukan Supervisor/Manager tapi mencoba ubah harga
+	isSupervisor := userRole == "SUPERVISOR" || userRole == "MANAGER" || userRole == "SUPERADMIN"
+	priceChanged := (req.BiayaKirim != existingBTT.BiayaKirim) || (req.TotalBiaya != existingBTT.TotalBiaya)
+
+	if priceChanged && !isSupervisor {
+		c.JSON(http.StatusForbidden, gin.H{
+			"status":  "error",
+			"message": "Akses Ditolak: Hanya Supervisor yang berhak melakukan bypass/edit harga BTT.",
+		})
+		return
+	}
+
+	tx := db.Begin()
+
+	// 3. Update Data BTT
+	updateData := map[string]interface{}{
+		"penerima_nama":   req.PenerimaNama,
+		"penerima_alamat": req.PenerimaAlamat,
+		"penerima_telp":   req.PenerimaTelp,
+		"no_surat_jalan":  req.NoSuratJalan,
+		"keterangan":      req.Keterangan,
+		"metode_bayar":    req.MetodeBayar,
+	}
+
+	// Hanya update harga jika Supervisor yang mengubahnya
+	if isSupervisor {
+		updateData["biaya_kirim"] = req.BiayaKirim
+		updateData["biaya_penerus"] = req.BiayaPenerus
+		updateData["biaya_packing"] = req.BiayaPacking
+		updateData["total_biaya"] = req.TotalBiaya
+		updateData["is_price_overridden"] = priceChanged
+
+		// Catat ke Audit Log jika harga diubah manual
+		if priceChanged {
+			logEntry := map[string]interface{}{
+				"no_btt":          req.NoBTT,
+				"user_id":         userID,
+				"biaya_awal":      existingBTT.BiayaKirim,
+				"biaya_baru":      req.BiayaKirim,
+				"alasan_override": req.AlasanOverride,
+			}
+			tx.Table("public.mkt_t_btt_price_audit").Create(&logEntry)
+		}
+	}
+
+	if err := tx.Table("public.mkt_t_btt").Where("no_btt = ?", req.NoBTT).Updates(updateData).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	tx.Commit()
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Data BTT berhasil diperbarui",
+	})
+}
+
 func GetBTT(c *gin.Context) {
 	var data []models.BTT
 	ptID, exists := c.Get("pt_id")
