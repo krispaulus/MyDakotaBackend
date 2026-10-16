@@ -43,42 +43,67 @@ func GetListLeadTime(c *gin.Context) {
 	}
 	offset := (page - 1) * limit
 
-	// Trim whitespace
 	customerID := strings.TrimSpace(c.Query("customer_id"))
 	kotaAsal := strings.TrimSpace(c.Query("kota_asal"))
 	kotaTujuan := strings.TrimSpace(c.Query("kota_tujuan"))
 
-	// Base Query
-	dbQuery := database.Table("public.opr_t_transportplanningleadtime lt").
-		Select("lt.customer_id, COALESCE(c.cust_name, lt.customer_id) as cust_name, lt.kota_asal, lt.kota_tujuan, lt.kabupaten, lt.darat, lt.laut, lt.udara").
-		Joins("LEFT JOIN public.mkt_m_customer c ON c.cust_id = lt.customer_id")
+	type LeadTimeRow struct {
+		CustomerID string `gorm:"column:customer_id" json:"customer_id"`
+		CustName   string `gorm:"column:cust_name" json:"cust_name"`
+		KotaAsal   string `gorm:"column:kota_asal" json:"kota_asal"`
+		KotaTujuan string `gorm:"column:kota_tujuan" json:"kota_tujuan"`
+		Kabupaten  string `gorm:"column:kabupaten" json:"kabupaten"`
+		Darat      int    `gorm:"column:darat" json:"darat"`
+		Laut       int    `gorm:"column:laut" json:"laut"`
+		Udara      int    `gorm:"column:udara" json:"udara"`
+	}
 
-	// 🟢 Filter hanya berjalan jika string TIDAK kosong
+	var results []LeadTimeRow
+
+	sqlQuery := `
+		SELECT 
+			COALESCE(lt.customer_id, '') AS customer_id,
+			COALESCE(c.cust_name, lt.customer_id, '') AS cust_name,
+			COALESCE(lt.kota_asal, '') AS kota_asal,
+			COALESCE(lt.kota_tujuan, '') AS kota_tujuan,
+			COALESCE(lt.kabupaten, '') AS kabupaten,
+			COALESCE(lt.darat, 0) AS darat,
+			COALESCE(lt.laut, 0) AS laut,
+			COALESCE(lt.udara, 0) AS udara
+		FROM public.opr_t_transportplanningleadtime lt
+		LEFT JOIN public.mkt_m_customer c ON TRIM(UPPER(c.cust_id)) = TRIM(UPPER(lt.customer_id))
+		WHERE 1=1
+	`
+	var args []interface{}
+
 	if len(customerID) > 0 {
-		dbQuery = dbQuery.Where("UPPER(lt.customer_id) LIKE UPPER(?)", "%"+customerID+"%")
+		sqlQuery += " AND UPPER(lt.customer_id) LIKE UPPER(?)"
+		args = append(args, "%"+customerID+"%")
 	}
 	if len(kotaAsal) > 0 {
-		dbQuery = dbQuery.Where("UPPER(lt.kota_asal) LIKE UPPER(?)", "%"+kotaAsal+"%")
+		sqlQuery += " AND UPPER(lt.kota_asal) LIKE UPPER(?)"
+		args = append(args, "%"+kotaAsal+"%")
 	}
 	if len(kotaTujuan) > 0 {
-		dbQuery = dbQuery.Where("UPPER(lt.kota_tujuan) LIKE UPPER(?)", "%"+kotaTujuan+"%")
+		sqlQuery += " AND UPPER(lt.kota_tujuan) LIKE UPPER(?)"
+		args = append(args, "%"+kotaTujuan+"%")
 	}
 
-	// Inisialisasi slice
-	results := make([]models.TransportPlanningLeadTime, 0)
+	sqlQuery += " ORDER BY lt.customer_id ASC, lt.kota_asal ASC, lt.kota_tujuan ASC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
 
-	// Fetch Data
-	err := dbQuery.Order("lt.customer_id ASC, lt.kota_asal ASC, lt.kota_tujuan ASC").
-		Offset(offset).
-		Limit(limit).
-		Scan(&results).Error
-
-	if err != nil {
+	if err := database.Raw(sqlQuery, args...).Scan(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  "error",
 			"message": "Gagal mengambil data lead time: " + err.Error(),
 		})
 		return
+	}
+
+	// Cetak sampel 1 baris data asli di terminal
+	if len(results) > 0 {
+		fmt.Printf("DATA ASLI DB -> CustID: [%s] | CustName: [%s] | Asal: [%s] | Tujuan: [%s] | Kab: [%s]\n",
+			results[0].CustomerID, results[0].CustName, results[0].KotaAsal, results[0].KotaTujuan, results[0].Kabupaten)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -162,4 +187,30 @@ func DeleteLeadTime(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Data lead time berhasil dihapus"})
+}
+
+func GetActiveCustomerList(c *gin.Context) {
+	database := getDynamicDB(c)
+
+	type CustOption struct {
+		CustID   string `gorm:"column:cust_id" json:"cust_id"`
+		CustName string `gorm:"column:cust_name" json:"cust_name"`
+	}
+
+	var customers []CustOption
+	err := database.Table("public.mkt_m_customer").
+		Select("cust_id, cust_name").
+		Where("cust_aktifyn = 'Y'").
+		Order("cust_name ASC").
+		Scan(&customers).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   customers,
+	})
 }

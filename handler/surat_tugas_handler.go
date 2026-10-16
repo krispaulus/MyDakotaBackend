@@ -246,3 +246,146 @@ func DeleteSuratTugas(c *gin.Context) {
 		"message": "Surat Tugas berhasil dihapus!",
 	})
 }
+
+// 🔍 5. GET SEARCH UANG MUKA (TRAYEK + RINCIAN BIAYA)
+// 🔍 5. GET SEARCH UANG MUKA (TRAYEK + RINCIAN BIAYA)
+func GetUangMukaList(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	search := strings.TrimSpace(c.Query("q"))
+
+	// 1. Ambil Header Trayek Uang Muka
+	queryHeader := `
+		SELECT 
+			RTRIM(LTRIM(trh_id)) AS trh_id, 
+			RTRIM(LTRIM(trh_name)) AS trh_name 
+		FROM public.opr_m_trayekh 
+		WHERE trh_aktifyn = 'Y' 
+		  AND (UPPER(trh_id) LIKE UPPER(?) OR UPPER(trh_name) LIKE UPPER(?))
+		ORDER BY trh_name ASC
+		LIMIT 25
+	`
+
+	type UMRincian struct {
+		NamaBiaya string  `json:"nama_biaya"`
+		Nominal   float64 `json:"nominal"`
+	}
+
+	type UMHeader struct {
+		KodeUangMuka string      `json:"kode_uang_muka"`
+		Nama         string      `json:"nama"`
+		Total        float64     `json:"total"`
+		Details      []UMRincian `json:"details"`
+	}
+
+	type HeaderRow struct {
+		TRHID   string `gorm:"column:trh_id" json:"trh_id"`
+		TRHName string `gorm:"column:trh_name" json:"trh_name"`
+	}
+
+	var headers []HeaderRow
+	likeParam := "%" + search + "%"
+	if err := database.Raw(queryHeader, likeParam, likeParam).Scan(&headers).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal query uang muka: " + err.Error()})
+		return
+	}
+
+	// 2. Query Detail Rincian Biaya per Trayek (Langsung ambil dari opr_m_trayekbplk tanpa join tabel lain)
+	queryDetail := `
+		SELECT 
+			'BIAYA OPERASIONAL' AS nama_biaya,
+			COALESCE(tri_nominal, 0) AS nominal
+		FROM public.opr_m_trayekbplk
+		WHERE RTRIM(LTRIM(tri_hid)) = RTRIM(LTRIM(?)) 
+		  AND tri_umyn = 'Y'
+		ORDER BY tri_bplksubid ASC
+	`
+
+	type DetailRow struct {
+		NamaBiaya string  `gorm:"column:nama_biaya"`
+		Nominal   float64 `gorm:"column:nominal"`
+	}
+
+	var result []UMHeader
+	for _, h := range headers {
+		if h.TRHID == "" {
+			continue
+		}
+
+		var details []DetailRow
+		database.Raw(queryDetail, h.TRHID).Scan(&details)
+
+		var total float64
+		var detailList []UMRincian
+		for _, d := range details {
+			total += d.Nominal
+			detailList = append(detailList, UMRincian{
+				NamaBiaya: d.NamaBiaya,
+				Nominal:   d.Nominal,
+			})
+		}
+
+		result = append(result, UMHeader{
+			KodeUangMuka: h.TRHID,
+			Nama:         h.TRHName,
+			Total:        total,
+			Details:      detailList,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   result,
+	})
+}
+
+// 🖨️ 6. GET DETAIL SURAT TUGAS UNTUK CETAK (PRINT)
+func GetSuratTugasDetailPrint(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	sjhID := c.Query("sjh_id")
+	if sjhID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Parameter sjh_id wajib disertakan"})
+		return
+	}
+
+	query := `
+		SELECT 
+			s.sjh_id,
+			TO_CHAR(s.sjh_tanggal, 'DD/MM/YYYY HH24:MI:SS') AS sjh_tanggal,
+			TO_CHAR(s.sjh_tanggalkembali, 'DD/MM/YYYY HH24:MI:SS') AS sjh_tanggalkembali,
+			COALESCE(s.sjh_kendid, '-') AS sjh_kendid,
+			COALESCE(s.sjh_sopir1_nip, '-') AS sjh_sopir1_nip,
+			COALESCE(s.sjh_sopir2_nip, '-') AS sjh_sopir2_nip,
+			COALESCE(sp1.kry_nama, '-') AS nmsopir1,
+			COALESCE(sp2.kry_nama, '-') AS nmsopir2,
+			COALESCE(a.ass_nama, '-') AS ass_nama,
+			COALESCE(cStart.agen_nama, 'BEKASI KOTA') AS cbgmulai,
+			TO_CHAR(CURRENT_DATE, 'DD TMMonth YYYY') AS tgl_cetak
+		FROM public.opr_t_esuratjalan s
+		LEFT JOIN public.hrd_m_karyawan sp1 ON CAST(s.sjh_sopir1_nip AS VARCHAR) = CAST(sp1.kry_nip AS VARCHAR)
+		LEFT JOIN public.hrd_m_karyawan sp2 ON CAST(s.sjh_sopir2_nip AS VARCHAR) = CAST(sp2.kry_nip AS VARCHAR)
+		LEFT JOIN public.glb_m_agen cStart ON CAST(s.sjh_startagenid AS VARCHAR) = CAST(cStart.agen_id AS VARCHAR)
+		LEFT JOIN public.opr_m_assignment a ON CAST(s.sjh_assid AS VARCHAR) = CAST(a.ass_id AS VARCHAR)
+		WHERE s.sjh_id = ?
+		LIMIT 1
+	`
+
+	var printData map[string]interface{}
+	if err := database.Raw(query, sjhID).Scan(&printData).Error; err != nil || len(printData) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data cetak tidak ditemukan"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": printData})
+}

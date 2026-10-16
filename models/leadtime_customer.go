@@ -2,7 +2,7 @@ package models
 
 type TransportPlanningLeadTime struct {
 	CustomerID string `gorm:"column:customer_id;primaryKey" json:"customer_id"`
-	CustName   string `gorm:"column:cust_name;->;" json:"cust_name,omitempty"` // Read only dari JOIN
+	CustName   string `gorm:"column:cust_name" json:"cust_name"`
 	KotaAsal   string `gorm:"column:kota_asal;primaryKey" json:"kota_asal"`
 	KotaTujuan string `gorm:"column:kota_tujuan;primaryKey" json:"kota_tujuan"`
 	Kabupaten  string `gorm:"column:kabupaten;primaryKey" json:"kabupaten"`
@@ -11,12 +11,10 @@ type TransportPlanningLeadTime struct {
 	Udara      int    `gorm:"column:udara" json:"udara"`
 }
 
-// TableName mengarahkan GORM ke nama tabel & schema PostgreSQL yang tepat
 func (TransportPlanningLeadTime) TableName() string {
-	return `"public"."opr_t_transportplanningleadtime"` // 🟢 WAJIB SERTAKAN "public".
+	return `"public"."opr_t_transportplanningleadtime"`
 }
 
-// Struct untuk Pagination & Filter Request
 type LeadTimeFilter struct {
 	CustomerID string `form:"customer_id"`
 	KotaAsal   string `form:"kota_asal"`

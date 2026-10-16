@@ -316,13 +316,21 @@ func main() {
 			authorized.PUT("/master/perawatan-kendaraan/update/:id", handler.UpdateKendaraanBaru)
 			authorized.DELETE("/master/perawatan-kendaraan/delete/:id", handler.DeleteKendaraanBaru)
 
-			leadTimeGroup := authorized.Group("/master/leadtime-customer")
-			{
-				leadTimeGroup.GET("/list", handler.GetListLeadTime)
-				leadTimeGroup.POST("/add", handler.CreateLeadTime)
-				leadTimeGroup.PUT("/update", handler.UpdateLeadTime)
-				leadTimeGroup.DELETE("/delete", handler.DeleteLeadTime)
-			}
+			// leadTimeGroup := authorized.Group("/master/leadtime-customer")
+			// {
+			// 	leadTimeGroup.GET("/list", handler.GetListLeadTime)
+			// 	leadTimeGroup.POST("/add", handler.CreateLeadTime)
+			// 	leadTimeGroup.PUT("/update", handler.UpdateLeadTime)
+			// 	leadTimeGroup.DELETE("/delete", handler.DeleteLeadTime)
+			// }
+
+			authorized.GET("/master/leadtime-customer/list", handler.GetListLeadTime)
+			authorized.POST("/master/leadtime-customer/add", handler.CreateLeadTime)
+			authorized.PUT("/master/leadtime-customer/update", handler.UpdateLeadTime)
+			authorized.DELETE("/master/leadtime-customer/delete", handler.DeleteLeadTime)
+
+			// 🟢 Tambahkan ini agar dropdown customer tidak 404 lagi:
+			authorized.GET("/master/customer/active-list", handler.GetActiveCustomerList)
 
 			tarifCustGroup := authorized.Group("/master/tarif-customer")
 			{
@@ -373,6 +381,9 @@ func main() {
 			authorized.POST("/operasional/surattugas-create", handler.CreateSuratTugas)
 			authorized.PUT("/operasional/surattugas-update", handler.UpdateSuratTugas)
 			authorized.DELETE("/operasional/surattugas-delete", handler.DeleteSuratTugas)
+			authorized.GET("/operasional/surattugas/gps-history", handler.GetSuratTugasGpsHistory)
+			authorized.GET("/operasional/surattugas/uang-muka-search", handler.GetUangMukaList)
+			authorized.GET("/operasional/surattugas/detail-print", handler.GetSuratTugasDetailPrint)
 
 			// 📄 OPERASIONAL: SURAT MUATAN UDARA (SMU)
 			authorized.GET("/operasional/smu-list", handler.GetSMUList)
