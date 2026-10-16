@@ -110,6 +110,7 @@ func GetSuratTugasList(c *gin.Context) {
 }
 
 // 💾 2. CREATE SURAT TUGAS / SURAT JALAN
+// 💾 2. CREATE SURAT TUGAS / SURAT JALAN
 func CreateSuratTugas(c *gin.Context) {
 	ptID, _ := c.Get("pt_id")
 	username, _ := c.Get("username")
@@ -125,24 +126,56 @@ func CreateSuratTugas(c *gin.Context) {
 		return
 	}
 
-	now := time.Now().Format("2006-01-02 15:04:05")
+	nowTime := time.Now()
+	nowStr := nowTime.Format("2006-01-02 15:04:05")
+
 	if req.SJHTanggal == "" {
-		req.SJHTanggal = now
+		req.SJHTanggal = nowStr
+	}
+
+	// 🌟 AUTO-GENERATE NOMOR SURAT TUGAS JIKA KOSONG DARI FORM TAMBAH
+	if strings.TrimSpace(req.SJHID) == "" {
+		cabangCode := strings.TrimSpace(req.SJHStartAgenID)
+		if len(cabangCode) >= 3 {
+			cabangCode = cabangCode[:3]
+		} else {
+			cabangCode = "001"
+		}
+
+		datePrefix := nowTime.Format("20060102") // YYYYMMDD
+		prefix := fmt.Sprintf("%sJC%s", cabangCode, datePrefix)
+
+		var lastID string
+		database.Raw(`
+            SELECT sjh_id 
+            FROM public.opr_t_esuratjalan 
+            WHERE sjh_id LIKE ? 
+            ORDER BY sjh_id DESC 
+            LIMIT 1
+        `, prefix+"%").Scan(&lastID)
+
+		urut := 1
+		if len(lastID) >= len(prefix)+4 {
+			suffix := lastID[len(prefix):]
+			fmt.Sscanf(suffix, "%d", &urut)
+			urut++
+		}
+		req.SJHID = fmt.Sprintf("%s%04d", prefix, urut)
 	}
 
 	insertHeader := `
-		INSERT INTO public.opr_t_esuratjalan (
-			sjh_id, sjh_tanggal, sjh_tanggalkembali, sjh_kendid, sjh_sopir1_nip, sjh_sopir2_nip,
-			sjh_assid, sjh_trayekid, sjh_startagenid, sjh_endagenid, sjh_keterangan,
-			sjh_completeyn, sjh_aktifyn, sjh_updateid, sjh_updatetime
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'N', 'Y', ?, ?)
-	`
+        INSERT INTO public.opr_t_esuratjalan (
+            sjh_id, sjh_tanggal, sjh_tanggalkembali, sjh_kendid, sjh_sopir1_nip, sjh_sopir2_nip,
+            sjh_assid, sjh_trayekid, sjh_startagenid, sjh_endagenid, sjh_keterangan,
+            sjh_completeyn, sjh_aktifyn, sjh_updateid, sjh_updatetime
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'N', 'Y', ?, ?)
+    `
 
 	if err := database.Exec(
 		insertHeader,
 		req.SJHID, req.SJHTanggal, req.SJHTanggalKembali, req.SJHKendID, req.SJHSopir1Nip, req.SJHSopir2Nip,
 		req.SJHAssID, req.SJHTrayekID, req.SJHStartAgenID, req.SJHEndAgenID, req.SJHKeterangan,
-		fmt.Sprintf("%v", username), now,
+		fmt.Sprintf("%v", username), nowStr,
 	).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan header Surat Tugas: " + err.Error()})
 		return
@@ -150,15 +183,16 @@ func CreateSuratTugas(c *gin.Context) {
 
 	if req.NominalUM > 0 {
 		insertUM := `
-			INSERT INTO public.opr_t_esuratjalanrealisasi (sjr_sjhid, sjr_ket, sjr_nominal, sjr_nominalum)
-			VALUES (?, 'UANG MUKA OPERASIONAL', ?, ?)
-		`
+            INSERT INTO public.opr_t_esuratjalanrealisasi (sjr_sjhid, sjr_ket, sjr_nominal, sjr_nominalum)
+            VALUES (?, 'UANG MUKA OPERASIONAL', ?, ?)
+        `
 		database.Exec(insertUM, req.SJHID, req.NominalUM, req.NominalUM)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
-		"message": "Surat Tugas/Jalan berhasil direkam!",
+		"message": fmt.Sprintf("Surat Tugas nomor %s berhasil direkam!", req.SJHID),
+		"sjh_id":  req.SJHID,
 	})
 }
 

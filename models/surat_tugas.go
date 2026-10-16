@@ -53,18 +53,17 @@ func (OprTESuratJalanRealisasi) TableName() string {
 	return "opr_t_esuratjalanrealisasi"
 }
 
-// Request Payload untuk Tambah / Update Surat Tugas
 type SuratTugasReq struct {
-	SJHID             string  `json:"sjh_id" binding:"required"`
+	SJHID             string  `json:"sjh_id"` // Hapus binding:"required"
 	SJHTanggal        string  `json:"sjh_tanggal"`
 	SJHTanggalKembali string  `json:"sjh_tanggalkembali"`
-	SJHKendID         string  `json:"sjh_kendid" binding:"required"`
+	SJHKendID         string  `json:"sjh_kendid"`
 	SJHSopir1Nip      string  `json:"sjh_sopir1_nip"`
 	SJHSopir2Nip      string  `json:"sjh_sopir2_nip"`
-	SJHAssID          string  `json:"sjh_assid" binding:"required"`
+	SJHAssID          string  `json:"sjh_assid"`
 	SJHTrayekID       string  `json:"sjh_trayekid"`
-	SJHStartAgenID    string  `json:"sjh_startagenid" binding:"required"`
-	SJHEndAgenID      string  `json:"sjh_endagenid" binding:"required"`
+	SJHStartAgenID    string  `json:"sjh_startagenid"`
+	SJHEndAgenID      string  `json:"sjh_endagenid"`
 	SJHKeterangan     string  `json:"sjh_keterangan"`
 	NominalUM         float64 `json:"nominal_um"`
 }
