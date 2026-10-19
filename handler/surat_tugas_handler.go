@@ -387,13 +387,14 @@ func GetSuratTugasDetailPrint(c *gin.Context) {
 		return
 	}
 
-	sjhID := c.Query("sjh_id")
+	sjhID := strings.TrimSpace(c.Query("sjh_id"))
 	if sjhID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Parameter sjh_id wajib disertakan"})
 		return
 	}
 
-	query := `
+	// 1. Ambil Header Surat Tugas
+	queryHeader := `
 		SELECT 
 			s.sjh_id,
 			TO_CHAR(s.sjh_tanggal, 'DD/MM/YYYY HH24:MI:SS') AS sjh_tanggal,
@@ -404,6 +405,8 @@ func GetSuratTugasDetailPrint(c *gin.Context) {
 			COALESCE(sp1.kry_nama, '-') AS nmsopir1,
 			COALESCE(sp2.kry_nama, '-') AS nmsopir2,
 			COALESCE(a.ass_nama, '-') AS ass_nama,
+			COALESCE(s.sjh_trayekid, '') AS sjh_trayekid,
+			COALESCE(trh.trh_name, '') AS nama_trayek,
 			COALESCE(cStart.agen_nama, 'BEKASI KOTA') AS cbgmulai,
 			TO_CHAR(CURRENT_DATE, 'DD TMMonth YYYY') AS tgl_cetak
 		FROM public.opr_t_esuratjalan s
@@ -411,15 +414,102 @@ func GetSuratTugasDetailPrint(c *gin.Context) {
 		LEFT JOIN public.hrd_m_karyawan sp2 ON CAST(s.sjh_sopir2_nip AS VARCHAR) = CAST(sp2.kry_nip AS VARCHAR)
 		LEFT JOIN public.glb_m_agen cStart ON CAST(s.sjh_startagenid AS VARCHAR) = CAST(cStart.agen_id AS VARCHAR)
 		LEFT JOIN public.opr_m_assignment a ON CAST(s.sjh_assid AS VARCHAR) = CAST(a.ass_id AS VARCHAR)
+		LEFT JOIN public.opr_m_trayekh trh ON CAST(s.sjh_trayekid AS VARCHAR) = CAST(trh.trh_id AS VARCHAR)
 		WHERE s.sjh_id = ?
 		LIMIT 1
 	`
 
-	var printData map[string]interface{}
-	if err := database.Raw(query, sjhID).Scan(&printData).Error; err != nil || len(printData) == 0 {
+	var headerData map[string]interface{}
+	if err := database.Raw(queryHeader, sjhID).Scan(&headerData).Error; err != nil || len(headerData) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data cetak tidak ditemukan"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success", "data": printData})
+	// 2. Ambil Rincian Biaya BPLK jika sjh_trayekid ada
+	trayekID := fmt.Sprintf("%v", headerData["sjh_trayekid"])
+	type BiayaItem struct {
+		Kode      string  `json:"kode"`
+		NamaBiaya string  `json:"nama_biaya"`
+		Nominal   float64 `json:"nominal"`
+	}
+
+	var rincianBiaya []BiayaItem
+	var totalBPLK float64 = 0
+
+	if trayekID != "" && trayekID != "<nil>" {
+		queryBiaya := `
+			SELECT 
+				COALESCE(tb.tri_bplksubid, '') AS kode,
+				CASE 
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '137' THEN 'BBM LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '138' THEN 'Biaya Operasional BPLK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '139' THEN 'Biaya Retribusi LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '140' THEN 'Biaya Tol LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '141' THEN 'Biaya Retribusi LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '142' THEN 'Biaya Penyebrangan LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '144' THEN 'Biaya Bongkar Muat / Parkir'
+					ELSE 'BIAYA OPERASIONAL'
+				END AS nama_biaya,
+				COALESCE(tb.tri_nominal, 0) AS nominal
+			FROM public.opr_m_trayekbplk tb
+			WHERE RTRIM(LTRIM(tb.tri_hid)) = RTRIM(LTRIM(?))
+			  AND tb.tri_umyn = 'Y'
+			ORDER BY tb.tri_bplksubid ASC
+		`
+		database.Raw(queryBiaya, trayekID).Scan(&rincianBiaya)
+
+		for _, b := range rincianBiaya {
+			totalBPLK += b.Nominal
+		}
+	}
+
+	// Masukkan rincian dan total ke response
+	headerData["rincian_biaya"] = rincianBiaya
+	headerData["total_bplk"] = totalBPLK
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": headerData})
+}
+
+func GetAgenList(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	query := `
+        SELECT 
+            RTRIM(LTRIM(agen_id)) AS agen_id, 
+            CASE 
+                -- Jika nama PUSAT DAKOTA atau kode PST001 / 001, ubah menjadi DLI PUSAT
+                WHEN UPPER(RTRIM(LTRIM(agen_nama))) = 'PUSAT DAKOTA' OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001') THEN 'DLI PUSAT'
+                ELSE RTRIM(LTRIM(agen_nama))
+            END AS agen_nama 
+        FROM public.glb_m_agen 
+        WHERE agen_aktifyn = 'Y' 
+          AND UPPER(agen_nama) NOT LIKE '%XXX%'
+        ORDER BY 
+            CASE 
+                WHEN UPPER(RTRIM(LTRIM(agen_nama))) = 'PUSAT DAKOTA' OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001') THEN 0
+                ELSE 1
+            END,
+            agen_nama ASC
+    `
+
+	type AgenRow struct {
+		AgenID   string `gorm:"column:agen_id" json:"agen_id"`
+		AgenNama string `gorm:"column:agen_nama" json:"agen_nama"`
+	}
+
+	var list []AgenRow
+	if err := database.Raw(query).Scan(&list).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   list,
+	})
 }
