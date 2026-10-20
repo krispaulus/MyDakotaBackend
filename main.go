@@ -762,6 +762,10 @@ func main() {
 			authorized.DELETE("/master/uang-muka/biaya-delete", handler.DeleteMasterUangMukaBiayaHandler)
 			authorized.GET("/master/uang-muka/kamus-biaya", handler.GetMasterKamusBiayaHandler)
 
+			authorized.GET("/piutang/penerimaan-pembayaran-kredit/unpaid-invoices", handler.GetUnpaidInvoicesHandler)
+			authorized.POST("/piutang/penerimaan-pembayaran-kredit/posting", handler.PostingPenerimaanPembayaranKreditHandler)
+			authorized.POST("/piutang/penerimaan-pembayaran-kredit/unposting", handler.UnpostingPenerimaanPembayaranKreditHandler)
+
 		}
 	}
 
