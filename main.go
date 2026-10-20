@@ -753,6 +753,15 @@ func main() {
 
 			authorized.GET("/tarif-customer/source-options", handler.GetSourceCustomerTarifOptions)
 
+			authorized.GET("/master/uang-muka", handler.GetMasterUangMukaListHandler)
+			authorized.GET("/master/uang-muka/detail/:id", handler.GetMasterUangMukaDetailHandler)
+			authorized.POST("/master/uang-muka/toggle-status", handler.ToggleUangMukaStatusHandler)
+			authorized.GET("/master/jenis-kendaraan", handler.GetMasterJenisKendaraanHandler)
+
+			authorized.POST("/master/uang-muka/biaya-save", handler.SaveMasterUangMukaBiayaHandler)
+			authorized.DELETE("/master/uang-muka/biaya-delete", handler.DeleteMasterUangMukaBiayaHandler)
+			authorized.GET("/master/uang-muka/kamus-biaya", handler.GetMasterKamusBiayaHandler)
+
 		}
 	}
 
