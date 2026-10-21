@@ -659,3 +659,217 @@ func UnpostingPenerimaanPembayaranKreditHandler(c *gin.Context) {
 		"message": "Transaksi berhasil di-unposting menjadi Draft",
 	})
 }
+
+// GET /api/piutang/penerimaan-pembayaran-kredit/rekapitulasi-tipe2
+func GetRekapitulasiTipe2Handler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+	cabang := c.Query("cabang")
+	customer := c.Query("customer")
+	noReceipt := c.Query("no_receipt")
+	postingYN := c.Query("posting_yn")
+
+	type SubBTT struct {
+		BTTID   string  `json:"btt_id"`
+		Tanggal string  `json:"tanggal"`
+		Jumlah  float64 `json:"jumlah"`
+	}
+
+	type InvoiceDetail struct {
+		NoFPUM   string   `json:"no_fpum"`
+		Tanggal  string   `json:"tanggal"`
+		BTT      float64  `json:"btt"`
+		Asuransi float64  `json:"asuransi"`
+		Tagihan  float64  `json:"tagihan"`
+		Terbayar float64  `json:"terbayar"`
+		SubBTTs  []SubBTT `json:"sub_btts"`
+	}
+
+	type RekapHeader struct {
+		NoReceipt     string          `json:"no_receipt"`
+		NoJurnal      string          `json:"no_jurnal"`
+		Tanggal       string          `json:"tanggal"`
+		CustID        string          `json:"cust_id"`
+		CustName      string          `json:"cust_name"`
+		Cash          float64         `json:"cash"`
+		BG            float64         `json:"bg"`
+		Transfer      float64         `json:"transfer"`
+		Kurang        float64         `json:"kurang"`
+		Lebih         float64         `json:"lebih"`
+		Invoices      []InvoiceDetail `json:"invoices"`
+		TotalKalUang  float64         `json:"total_kal_uang"`
+		TotalKalTrans float64         `json:"total_kal_trans"`
+	}
+
+	// 1. Ambil data header penerimaan
+	query := `
+		SELECT 
+			TRIM(h.trecth_no) AS no_receipt,
+			COALESCE(TRIM(h.trecth_tjurhno), '-') AS no_jurnal,
+			TO_CHAR(h.trecth_tanggal, 'YYYY-MM-DD') AS tanggal,
+			COALESCE(TRIM(h.trecth_custid), '') AS cust_id,
+			COALESCE(TRIM(h.trecth_custname), '') AS cust_name
+		FROM public.art_t_receipth h
+		WHERE COALESCE(h.trecth_deleteyn, 'N') <> 'Y'
+	`
+	var args []interface{}
+	if startDate != "" && endDate != "" {
+		query += " AND h.trecth_tanggal BETWEEN ? AND ?"
+		args = append(args, startDate+" 00:00:00", endDate+" 23:59:59")
+	}
+	// Menggunakan variabel cabang agar tidak memicu error 'declared and not used'
+	if cabang != "" && cabang != "ALL" {
+		query += " AND (h.trecth_no LIKE ? OR h.trecth_custname LIKE ?)"
+		args = append(args, "%"+cabang+"%", "%"+cabang+"%")
+	}
+	if customer != "" {
+		query += " AND h.trecth_custname ILIKE ?"
+		args = append(args, "%"+customer+"%")
+	}
+	if noReceipt != "" {
+		query += " AND h.trecth_no ILIKE ?"
+		args = append(args, "%"+noReceipt+"%")
+	}
+	if postingYN != "" && postingYN != "ALL" {
+		query += " AND h.trecth_postingyn = ?"
+		args = append(args, postingYN)
+	}
+	query += " ORDER BY h.trecth_tanggal DESC, h.trecth_no DESC"
+
+	var rawHeaders []struct {
+		NoReceipt string `gorm:"column:no_receipt"`
+		NoJurnal  string `gorm:"column:no_jurnal"`
+		Tanggal   string `gorm:"column:tanggal"`
+		CustID    string `gorm:"column:cust_id"`
+		CustName  string `gorm:"column:cust_name"`
+	}
+
+	if err := database.Raw(query, args...).Scan(&rawHeaders).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	var results []RekapHeader
+
+	for _, rh := range rawHeaders {
+		item := RekapHeader{
+			NoReceipt: rh.NoReceipt,
+			NoJurnal:  rh.NoJurnal,
+			Tanggal:   rh.Tanggal,
+			CustID:    rh.CustID,
+			CustName:  rh.CustName,
+			Invoices:  []InvoiceDetail{},
+		}
+
+		// Hitung Pembayaran Cash (0), Giro (1), Transfer (2)
+		var pays []struct {
+			Tipe  string  `gorm:"column:trectd_type"`
+			Nilai float64 `gorm:"column:nilai"`
+		}
+		database.Raw("SELECT trectd_type, SUM(COALESCE(trectd_nilai, 0)) AS nilai FROM public.art_t_receiptd WHERE TRIM(trectd_trecthno) = ? GROUP BY trectd_type", rh.NoReceipt).Scan(&pays)
+		for _, p := range pays {
+			if p.Tipe == "0" {
+				item.Cash += p.Nilai
+			} else if p.Tipe == "1" {
+				item.BG += p.Nilai
+			} else {
+				item.Transfer += p.Nilai
+			}
+		}
+
+		// Hitung Kurang (K) / Lebih (L)
+		var hubs []struct {
+			KodeLK string  `gorm:"column:thrd_kodelk"`
+			Jumlah float64 `gorm:"column:jumlah"`
+		}
+		database.Raw("SELECT thrd_kodelk, SUM(COALESCE(thrd_jumlah, 0)) AS jumlah FROM public.art_t_hubrectd WHERE TRIM(thrd_trecthno) = ? GROUP BY thrd_kodelk", rh.NoReceipt).Scan(&hubs)
+		for _, hb := range hubs {
+			if hb.KodeLK == "K" {
+				item.Kurang += hb.Jumlah
+			} else if hb.KodeLK == "L" {
+				item.Lebih += hb.Jumlah
+			}
+		}
+
+		// Ambil Pelunasan Faktur
+		var invRows []struct {
+			NoFPUM   string  `gorm:"column:trectdd_nofpum"`
+			Jumlah   float64 `gorm:"column:trectdd_jumlah"`
+			Tanggal  string  `gorm:"column:tanggal"`
+			TotalTag float64 `gorm:"column:total_tag"`
+		}
+		invQuery := `
+			SELECT 
+				TRIM(d.trectdd_nofpum) AS trectdd_nofpum,
+				COALESCE(d.trectdd_jumlah, 0) AS trectdd_jumlah,
+				COALESCE(TO_CHAR(i.artih_tanggal, 'YYYY-MM-DD'), '-') AS tanggal,
+				COALESCE(i.artih_total, 0) AS total_tag
+			FROM public.art_t_receiptdd d
+			LEFT JOIN public.art_t_invoiceh i ON TRIM(d.trectdd_nofpum) = TRIM(i.artih_nokw)
+			WHERE TRIM(d.trectdd_trectdtrecthno) = ?
+		`
+		database.Raw(invQuery, rh.NoReceipt).Scan(&invRows)
+
+		var totalFakturTerbayar float64 = 0
+
+		for _, ir := range invRows {
+			inv := InvoiceDetail{
+				NoFPUM:   ir.NoFPUM,
+				Tanggal:  ir.Tanggal,
+				Tagihan:  ir.TotalTag,
+				Terbayar: ir.Jumlah,
+				SubBTTs:  []SubBTT{},
+			}
+			if strings.HasSuffix(strings.ToUpper(ir.NoFPUM), "ASR") {
+				inv.Asuransi = ir.Jumlah
+			} else {
+				inv.BTT = ir.Jumlah
+			}
+
+			// Sub BTT (jika faktur eConote)
+			if !strings.HasSuffix(strings.ToUpper(ir.NoFPUM), "ASR") {
+				var btts []struct {
+					BTTID   string  `gorm:"column:bttt_id"`
+					Tanggal string  `gorm:"column:bttt_tanggal"`
+					Harga   float64 `gorm:"column:harga"`
+				}
+				bttQuery := `
+					SELECT 
+						TRIM(e.bttt_id) AS bttt_id,
+						COALESCE(TO_CHAR(e.bttt_tanggal, 'YYYY-MM-DD'), '-') AS bttt_tanggal,
+						COALESCE(e.bttt_harga, 0) + COALESCE(e.bttt_biayapenerus, 0) + COALESCE(pck.pck_biaya, 0) AS harga
+					FROM public.art_t_invoiceh inv
+					JOIN public.art_t_invoiced invd ON TRIM(inv.artih_id) = TRIM(invd.artid_artihid)
+					JOIN public.mkt_t_econote e ON TRIM(invd.artid_bttid) = TRIM(e.bttt_id)
+					LEFT JOIN public.pck_t_packing pck ON TRIM(e.bttt_packingid) = TRIM(pck.pck_id)
+					WHERE TRIM(inv.artih_nokw) = ?
+					ORDER BY e.bttt_id ASC
+				`
+				database.Raw(bttQuery, ir.NoFPUM).Scan(&btts)
+				for _, b := range btts {
+					inv.SubBTTs = append(inv.SubBTTs, SubBTT{
+						BTTID:   b.BTTID,
+						Tanggal: b.Tanggal,
+						Jumlah:  b.Harga,
+					})
+				}
+			}
+
+			totalFakturTerbayar += ir.Jumlah
+			item.Invoices = append(item.Invoices, inv)
+		}
+
+		item.TotalKalUang = item.Cash + item.Transfer + item.BG + item.Kurang
+		item.TotalKalTrans = totalFakturTerbayar + item.Lebih
+
+		results = append(results, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": results})
+}

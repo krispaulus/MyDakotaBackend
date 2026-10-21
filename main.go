@@ -765,6 +765,7 @@ func main() {
 			authorized.GET("/piutang/penerimaan-pembayaran-kredit/unpaid-invoices", handler.GetUnpaidInvoicesHandler)
 			authorized.POST("/piutang/penerimaan-pembayaran-kredit/posting", handler.PostingPenerimaanPembayaranKreditHandler)
 			authorized.POST("/piutang/penerimaan-pembayaran-kredit/unposting", handler.UnpostingPenerimaanPembayaranKreditHandler)
+			authorized.GET("/piutang/penerimaan-pembayaran-kredit/rekapitulasi-tipe2", handler.GetRekapitulasiTipe2Handler)
 
 		}
 	}
