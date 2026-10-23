@@ -98,6 +98,9 @@ func main() {
 			authorized.GET("/master/kota", handler.GetMasterKotaHandler)
 			authorized.GET("/master/karyawan", handler.GetMasterKaryawanHandler)
 
+			authorized.GET("/kota", handler.GetMasterKotaHandler)
+			authorized.GET("/karyawan", handler.GetMasterKaryawanHandler)
+
 			authorized.GET("/profile", handler.GetProfile)
 			authorized.PUT("/profile/update", handler.UpdateProfile)
 			authorized.POST("/profile/change-password", handler.ChangePassword)
