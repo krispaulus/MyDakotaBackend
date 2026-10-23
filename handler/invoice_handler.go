@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -491,15 +492,22 @@ func SaveInvoiceHandler(c *gin.Context) {
 	}
 
 	// Aturan PPN Dakota Multi-Tahun
-	subtotalKenaPajak := jbttTotal + bpckTotal
-	var dppNilai float64 = subtotalKenaPajak
-	var ppnNilai float64 = 0
+	// subtotalKenaPajak := jbttTotal + bpckTotal
+	// var dppNilai float64 = subtotalKenaPajak
+	// var ppnNilai float64 = 0
 
-	if tgl.Year() >= 2025 {
-		ppnNilai = dppNilai * 0.012 // Tarif PPN 1.2%
-	} else {
-		ppnNilai = subtotalKenaPajak * 0.011 // Default 1.1% jika masa pajak lama
-	}
+	// if tgl.Year() >= 2025 {
+	// 	ppnNilai = dppNilai * 0.012 // Tarif PPN 1.2%
+	// } else {
+	// 	ppnNilai = subtotalKenaPajak * 0.011 // Default 1.1% jika masa pajak lama
+	// }
+
+	// grandTotalInvoice := subtotalKenaPajak + ppnNilai + basrTotal
+
+	// Tarif PPN Tetap 1.1%
+	subtotalKenaPajak := jbttTotal + bpckTotal
+	dppNilai := subtotalKenaPajak
+	ppnNilai := dppNilai * 0.011 // Murni 1.1%
 
 	grandTotalInvoice := subtotalKenaPajak + ppnNilai + basrTotal
 
@@ -932,27 +940,54 @@ func PostingInvoiceHandler(c *gin.Context) {
 		username = "system"
 	}
 
-	// 1. Ambil header invoice untuk mendapatkan tanggal, total, dan agen
+	// 1. Ambil data Header Invoice
 	var invHeader struct {
-		ArtihID      string    `gorm:"column:artih_id"`
-		ArtihTanggal time.Time `gorm:"column:artih_tanggal"`
-		ArtihTotal   float64   `gorm:"column:artih_total"`
-		ArtihAgenID  string    `gorm:"column:artih_agenid"`
+		ArtihID       string    `gorm:"column:artih_id"`
+		ArtihTanggal  time.Time `gorm:"column:artih_tanggal"`
+		ArtihTotal    float64   `gorm:"column:artih_total"`
+		ArtihDPP      float64   `gorm:"column:artih_dpp"`
+		ArtihPPN      float64   `gorm:"column:artih_ppn"`
+		ArtihFktPajak string    `gorm:"column:artih_fktpajak"`
+		ArtihNoKW     string    `gorm:"column:artih_nokw"`
+		CabangCode    string    `gorm:"column:cabang_code"`
 	}
 
-	if err := database.Table("public.art_t_invoiceh").
-		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", invoiceID).
-		Take(&invHeader).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Invoice tidak ditemukan"})
+	cleanSearchID := invoiceID
+	if strings.Contains(cleanSearchID, "/FP") {
+		digits := regexp.MustCompile(`\D`).ReplaceAllString(cleanSearchID, "")
+		if len(digits) >= 7 {
+			cleanSearchID = digits[:7]
+		}
+	}
+
+	err := database.Table("public.art_t_invoiceh").
+		Select(`
+			artih_id,
+			artih_tanggal,
+			COALESCE(artih_total::numeric, 0) AS artih_total,
+			COALESCE(artih_dpp::numeric, 0) AS artih_dpp,
+			COALESCE(artih_ppn::numeric, 0) AS artih_ppn,
+			COALESCE(artih_fktpajak, '') AS artih_fktpajak,
+			COALESCE(artih_nokw, '') AS artih_nokw,
+			LPAD(LEFT(artih_id, 3), 3, '0') AS cabang_code
+		`).
+		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?)) OR TRIM(LOWER(artih_nokw)) = TRIM(LOWER(?)) OR artih_id ILIKE ?",
+			invoiceID, invoiceID, "%"+cleanSearchID+"%").
+		Take(&invHeader).Error
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Invoice tidak ditemukan: " + err.Error()})
 		return
 	}
 
-	// Normalisasi agenID (hindari OTA, pastikan '001')
+	realInvoiceID := strings.TrimSpace(invHeader.ArtihID)
+
+	// Normalisasi agenID
 	agenID := strings.TrimSpace(req.AgenID)
-	if agenID == "" {
-		agenID = strings.TrimSpace(invHeader.ArtihAgenID)
+	if agenID == "" || strings.ToUpper(agenID) == "OTA" || agenID == "0" || agenID == "000" {
+		agenID = strings.TrimSpace(invHeader.CabangCode)
 	}
-	if strings.ToUpper(agenID) == "OTA" || agenID == "" || agenID == "0" || agenID == "000" {
+	if agenID == "" || strings.ToUpper(agenID) == "OTA" {
 		agenID = "001"
 	}
 
@@ -961,100 +996,176 @@ func PostingInvoiceHandler(c *gin.Context) {
 		tglInvoice = time.Now()
 	}
 
-	// 2. 🎯 GENERATE NOMOR JURNAL RESMI GL (Contoh: 2609001J00001)
+	// 2. Format Keterangan Persis Sistem Lawas: "PENJUALAN KREDIT [Nomor Invoice /FP]"
+	var invoiceNoResmi string
+	if strings.Contains(invoiceID, "/FP") {
+		invoiceNoResmi = invoiceID
+	} else {
+		// Bentuk format 0010001/10/2026/FP
+		digits := regexp.MustCompile(`\D`).ReplaceAllString(realInvoiceID, "")
+		urutStr := "0001"
+		if len(digits) >= 4 {
+			urutStr = digits[len(digits)-4:]
+		}
+		invoiceNoResmi = fmt.Sprintf("%s%s/%s/%s/FP", agenID, urutStr, tglInvoice.Format("01"), tglInvoice.Format("2006"))
+	}
+	keteranganJurnal := fmt.Sprintf("PENJUALAN KREDIT %s", invoiceNoResmi)
+
+	// 3. Hitung Biaya Packing dari BTT terkait
+	type BttSummary struct {
+		TotalPacking float64 `gorm:"column:tot_packing"`
+	}
+	var bttSum BttSummary
+	database.Table("public.art_t_invoiced d").
+		Select("COALESCE(SUM(p.pck_biaya), 0) AS tot_packing").
+		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id::varchar) = TRIM(d.artid_bttid::varchar)").
+		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
+		Where("TRIM(d.artid_artihid::varchar) = TRIM(?)", realInvoiceID).
+		Scan(&bttSum)
+
+	packingNominal := bttSum.TotalPacking
+
+	// 🌟 4. KALKULASI DPP & PPN IDENTIK SISTEM LAWAS
+	dppNominal := invHeader.ArtihDPP
+	ppnNominal := dppNominal * 0.011
+	totalTagihan := invHeader.ArtihTotal
+
+	// Jika di database bernilai 0, hitung otomatis dari total tagihan
+	if dppNominal <= 0 && invHeader.ArtihTotal > 0 {
+		dppNominal = math.Round(invHeader.ArtihTotal / 1.011)
+	}
+
+	if ppnNominal <= 0 && totalTagihan > 0 {
+		ppnNominal = totalTagihan - dppNominal
+	}
+
+	// Pendapatan Jasa Kirim Kredit = DPP dikurangi packing
+	pendapatanKirim := dppNominal - packingNominal
+	if pendapatanKirim < 0 {
+		pendapatanKirim = dppNominal
+	}
+
+	// Total Debet Piutang Usaha = DPP + PPN (Menjamin balance 100%)
+	totalDebetPiutang := dppNominal + ppnNominal
+
+	// 5. Generate Nomor Jurnal Resmi GL
 	noJurnalResmi := generateNoJurnalGL(database, tglInvoice, agenID, "J")
 
-	// 3. 🎯 SIMPAN HEADER JURNAL DI gl_t_jurnalh
+	// 6. TRANSAKSI DATABASE (ACID SAFE)
+	tx := database.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 🧹 PEMBERSIHAN MUTLAK: Hapus seluruh sisa jurnal lama untuk invoice ini
+	var oldJournals []string
+	tx.Table("public.gl_t_jurnalh").
+		Select("tjurh_no").
+		Where("tjurh_keterangan ILIKE ? OR tjurh_keterangan ILIKE ?", "%"+realInvoiceID+"%", "%"+invoiceNoResmi+"%").
+		Scan(&oldJournals)
+
+	if len(oldJournals) > 0 {
+		tx.Exec("DELETE FROM public.gl_t_jurnald WHERE tjurd_tjurhno IN ?", oldJournals)
+		tx.Exec("DELETE FROM public.gl_t_jurnalh WHERE tjurh_no IN ?", oldJournals)
+	}
+
+	// Simpan Header Jurnal di gl_t_jurnalh
 	insertJH := map[string]interface{}{
 		"tjurh_no":         noJurnalResmi,
 		"tjurh_tanggal":    tglInvoice,
-		"tjurh_keterangan": fmt.Sprintf("PENJUALAN KREDIT %s", invoiceID),
+		"tjurh_keterangan": keteranganJurnal,
 		"tjurh_type":       "J",
 		"tjurh_deleteyn":   "N",
 		"tjurh_postyn":     "Y",
 		"tjurh_updateid":   username,
 		"tjurh_updatetime": time.Now(),
 	}
-	if err := database.Table("public.gl_t_jurnalh").Create(&insertJH).Error; err != nil {
+	if err := tx.Table("public.gl_t_jurnalh").Create(&insertJH).Error; err != nil {
+		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal simpan header jurnal: " + err.Error()})
 		return
 	}
 
-	// 4. Hitung rincian biaya packing dari detail BTT terkait
-	type BttSummary struct {
-		TotalPacking float64 `gorm:"column:tot_packing"`
-	}
-	var bttSum BttSummary
-	database.Table("public.art_t_invoiced d").
-		Select("COALESCE(SUM(b.biaya_packing), 0) AS tot_packing").
-		Joins("LEFT JOIN public.btt_t_btt b ON b.bttt_id = d.artid_btttid").
-		Where("TRIM(d.artid_artihid) = TRIM(?)", invoiceID).
-		Scan(&bttSum)
-
-	totalTagihan := invHeader.ArtihTotal
-	packingNominal := bttSum.TotalPacking
-	ppnNominal := 0.0 // Set nominal PPN jika transaksi bertarif PPN
-	pendapatanKirim := totalTagihan - packingNominal - ppnNominal
-
-	// 5. 🎯 SUSUN DETAIL BARIS JURNAL (gl_t_jurnald)
+	// 🌟 Susun 3 Baris Akun Sesuai Gambar 2 (Lawas):
 	var details []map[string]interface{}
 
-	// Akun A102010100: Piutang Usaha (Debet)
+	// 1. Akun A102010100: PIUTANG USAHA (Debet)
 	details = append(details, map[string]interface{}{
 		"tjurd_tjurhno":    noJurnalResmi,
 		"tjurd_acccode":    "A102010100",
 		"tjurd_agenid":     agenID,
-		"tjurd_keterangan": fmt.Sprintf("PENJUALAN KREDIT %s", invoiceID),
-		"tjurd_debet":      totalTagihan,
+		"tjurd_keterangan": keteranganJurnal,
+		"tjurd_debet":      totalDebetPiutang,
 		"tjurd_kredit":     0,
 	})
 
-	// Akun B102010600: Utang PPN (Kredit)
-	details = append(details, map[string]interface{}{
-		"tjurd_tjurhno":    noJurnalResmi,
-		"tjurd_acccode":    "B102010600",
-		"tjurd_agenid":     agenID,
-		"tjurd_keterangan": fmt.Sprintf("UTANG PPN : UTANG PPN PENJUALAN KREDIT %s", invoiceID),
-		"tjurd_debet":      0,
-		"tjurd_kredit":     ppnNominal,
-	})
+	// 2. Akun B102010600: UTANG PPN (Kredit)
+	if ppnNominal > 0 {
+		details = append(details, map[string]interface{}{
+			"tjurd_tjurhno":    noJurnalResmi,
+			"tjurd_acccode":    "B102010600",
+			"tjurd_agenid":     agenID,
+			"tjurd_keterangan": fmt.Sprintf("UTANG PPN : UTANG PPN %s", keteranganJurnal),
+			"tjurd_debet":      0,
+			"tjurd_kredit":     ppnNominal,
+		})
+	}
 
-	// Akun D101010200: Pendapatan Kredit (Kredit)
+	// 3. Akun D101010200: PENDAPATAN KREDIT (Kredit)
 	details = append(details, map[string]interface{}{
 		"tjurd_tjurhno":    noJurnalResmi,
 		"tjurd_acccode":    "D101010200",
 		"tjurd_agenid":     agenID,
-		"tjurd_keterangan": fmt.Sprintf("PENJUALAN KREDIT %s", invoiceID),
+		"tjurd_keterangan": keteranganJurnal,
 		"tjurd_debet":      0,
 		"tjurd_kredit":     pendapatanKirim,
 	})
 
-	// Akun D102010300: Pendapatan Jasa Packing (Kredit - jika ada)
+	// 4. Akun D102010300: PENDAPATAN JASA PACKING (Kredit - jika ada)
 	if packingNominal > 0 {
 		details = append(details, map[string]interface{}{
 			"tjurd_tjurhno":    noJurnalResmi,
 			"tjurd_acccode":    "D102010300",
 			"tjurd_agenid":     agenID,
-			"tjurd_keterangan": fmt.Sprintf("BIAYA PACKING PENJUALAN KREDIT %s", invoiceID),
+			"tjurd_keterangan": fmt.Sprintf("BIAYA PACKING %s", keteranganJurnal),
 			"tjurd_debet":      0,
 			"tjurd_kredit":     packingNominal,
 		})
 	}
 
-	// Simpan seluruh rincian ke database gl_t_jurnald
+	// Simpan detail jurnal
 	for _, d := range details {
-		database.Table("public.gl_t_jurnald").Create(&d)
+		if err := tx.Table("public.gl_t_jurnald").Create(&d).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal simpan rincian jurnal: " + err.Error()})
+			return
+		}
 	}
 
-	// 6. 🎯 UPDATE STATUS INVOICE DI art_t_invoiceh
-	database.Table("public.art_t_invoiceh").
-		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", invoiceID).
+	// 7. Update Status Invoice di art_t_invoiceh
+	if err := tx.Table("public.art_t_invoiceh").
+		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", realInvoiceID).
 		Updates(map[string]interface{}{
-			"artih_postingyn": "Y",
-			"artih_journalid": noJurnalResmi,
-		})
+			"artih_postingyn":  "Y",
+			"artih_journalid":  noJurnalResmi,
+			"artih_dpp":        dppNominal,
+			"artih_ppn":        ppnNominal,
+			"artih_total":      totalDebetPiutang,
+			"artih_updateid":   username,
+			"artih_updatetime": time.Now(),
+		}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update status invoice: " + err.Error()})
+		return
+	}
 
-	// 7. 🎯 KIRIM RESPONS SUKSES KE FRONTEND REACT
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal commit database: " + err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"status":     "success",
 		"message":    "Invoice berhasil diposting",
