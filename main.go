@@ -95,6 +95,8 @@ func main() {
 			authorized.POST("/master/kodepos", handler.CreateKodePos)
 			authorized.PUT("/master/kodepos/:id", handler.UpdateKodePos)
 			authorized.DELETE("/master/kodepos/:id", handler.DeleteKodePos)
+			authorized.GET("/master/kota", handler.GetMasterKotaHandler)
+			authorized.GET("/master/karyawan", handler.GetMasterKaryawanHandler)
 
 			authorized.GET("/profile", handler.GetProfile)
 			authorized.PUT("/profile/update", handler.UpdateProfile)

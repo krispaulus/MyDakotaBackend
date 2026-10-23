@@ -13,22 +13,23 @@ import (
 )
 
 type InvoiceListRow struct {
-	ARTIHID         string     `json:"artih_id" gorm:"column:artih_id"`
-	ARTIHTanggal    time.Time  `json:"artih_tanggal" gorm:"column:artih_tanggal"`
-	ARTIHCustID     string     `json:"artih_custid" gorm:"column:artih_custid"`
-	CustName        string     `json:"cust_name" gorm:"column:cust_name"`
-	ARTIHCustName   string     `json:"artih_custname" gorm:"column:artih_custname"`
-	ARTIHKeterangan string     `json:"artih_keterangan" gorm:"column:artih_keterangan"`
-	ARTIHDelete     string     `json:"artih_delete" gorm:"column:artih_delete"`
-	ARTIHNoKW       string     `json:"artih_nokw" gorm:"column:artih_nokw"`
-	ARTIHFktPajak   string     `json:"artih_fktpajak" gorm:"column:artih_fktpajak"`
-	ARTIHTotal      float64    `json:"artih_total" gorm:"column:artih_total"`
-	Terbayar        float64    `json:"terbayar" gorm:"column:terbayar"`
-	ARTIHJenis      string     `json:"artih_jenis" gorm:"column:artih_jenis"`
-	ARTIHPostingYN  string     `json:"artih_postingyn" gorm:"column:artih_postingyn"`
-	ARTIHJournalID  *string    `json:"artih_journalid" gorm:"column:artih_journalid"` // <-- Tambahkan ini
-	ARTIHTglACC     *time.Time `json:"artih_tglacc" gorm:"column:artih_tglacc"`
-	AgenNama        string     `json:"agen_nama" gorm:"column:agen_nama"`
+	ArtihID         string     `json:"artih_id"`
+	ArtihTanggal    time.Time  `json:"artih_tanggal"`
+	ArtihCustID     string     `json:"artih_custid"`
+	CustName        string     `json:"cust_name"`
+	ArtihCustName   string     `json:"artih_custname"`
+	CustAlamat      string     `json:"cust_alamat"` // 🌟 Tambahan untuk Alamat Customer
+	NoPO            string     `json:"nopo"`        // 🌟 Tambahan untuk Nomor PO
+	ArtihKeterangan string     `json:"artih_keterangan"`
+	ArtihDelete     string     `json:"artih_delete"`
+	ArtihNoKW       string     `json:"artih_nokw"`
+	ArtihFktPajak   string     `json:"artih_fktpajak"`
+	ArtihTotal      float64    `json:"artih_total"`
+	ArtihJenis      string     `json:"artih_jenis"`
+	ArtihPostingYN  string     `json:"artih_postingyn"`
+	ArtihJournalID  string     `json:"artih_journalid"`
+	ArtihTglAcc     *time.Time `json:"artih_tglacc"`
+	AgenNama        string     `json:"agen_nama"`
 }
 
 type InvoiceBTTDetailRow struct {
@@ -176,7 +177,6 @@ func GetInvoiceListHandler(c *gin.Context) {
 	})
 }
 
-// 2. GET /api/piutang/invoice/detail
 func GetInvoiceDetailHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
@@ -190,15 +190,19 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 	}
 	invoiceID = strings.TrimPrefix(invoiceID, "/")
 
-	// 1. Query Header Invoice
-	var header InvoiceListRow
+	// 1. Query Header Invoice Fleksibel (Map Anti-Truncate GORM)
+	var header map[string]interface{}
 	err := database.Table("public.art_t_invoiceh h").
 		Select(`
 			h.artih_id,
 			h.artih_tanggal,
 			h.artih_custid,
-			COALESCE(c.cust_name, h.artih_custname) AS cust_name,
-			COALESCE(h.artih_custname, c.cust_name) AS artih_custname,
+			COALESCE(c.cust_name, h.artih_custname, '') AS cust_name,
+			COALESCE(h.artih_custname, c.cust_name, '') AS artih_custname,
+			COALESCE(c.cust_alamat1, '') AS cust_alamat,
+			COALESCE(c.cust_alamat1, '') AS cust_alamat1,
+			COALESCE(po.nopo, po2.nopo, '') AS nopo,
+			COALESCE(po.nopo, po2.nopo, '') AS no_po,
 			COALESCE(h.artih_keterangan, '') AS artih_keterangan,
 			COALESCE(h.artih_delete, 'N') AS artih_delete,
 			COALESCE(h.artih_nokw, '') AS artih_nokw,
@@ -210,9 +214,11 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			h.artih_tglacc,
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama
 		`).
-		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id) = TRIM(h.artih_custid)").
+		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(LOWER(c.cust_id)) = TRIM(LOWER(h.artih_custid))").
+		Joins("LEFT JOIN public.mkt_m_customer_nopo po ON TRIM(LOWER(po.cust_id)) = TRIM(LOWER(h.artih_custid))").
+		Joins("LEFT JOIN public.mkt_m_customer_nopo po2 ON TRIM(LOWER(po2.cust_id)) = TRIM(LOWER(c.cust_id))").
 		Joins("LEFT JOIN public.glb_m_agen a ON a.agen_id::varchar = LPAD(LEFT(h.artih_id, 3), 3, '0')").
-		Where("TRIM(LOWER(h.artih_id)) = TRIM(LOWER(?))", invoiceID).
+		Where("TRIM(LOWER(h.artih_id)) = TRIM(LOWER(?)) OR TRIM(LOWER(h.artih_nokw)) = TRIM(LOWER(?))", invoiceID, invoiceID).
 		Take(&header).Error
 
 	if err != nil {
@@ -221,7 +227,6 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 	}
 
 	// 2. Query Detail BTT (Lengkap dengan Kodepos & Via dari mkt_t_econote)
-	// 2. Query Detail BTT
 	var bttList []InvoiceBTTDetailRow
 	err = database.Table("public.art_t_invoiced d").
 		Select(`
@@ -261,7 +266,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// 3. Query Kepala Akunting dari Parameter glb_m_param (Murni dari Database)
+	// 3. Query Kepala Akunting dari Parameter glb_m_param
 	var accHead string
 	database.Table("public.glb_m_param").
 		Select("COALESCE(set_varvalue, '')").
@@ -270,6 +275,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		Limit(1).
 		Scan(&accHead)
 
+	// Kirim response
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "success",
 		"header":   header,
