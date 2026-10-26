@@ -178,6 +178,7 @@ func GetInvoiceListHandler(c *gin.Context) {
 	})
 }
 
+// 2. GET /api/piutang/invoice/detail
 func GetInvoiceDetailHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
@@ -190,6 +191,17 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		invoiceID = strings.TrimSpace(c.Param("id"))
 	}
 	invoiceID = strings.TrimPrefix(invoiceID, "/")
+
+	// 🎯 Dukung pencarian nomor format resmi /FP (contoh: 0010001/10/2026/FP)
+	cleanSearchID := invoiceID
+	if strings.Contains(cleanSearchID, "/FP") {
+		d := regexp.MustCompile(`\D`).ReplaceAllString(cleanSearchID, "")
+		if len(d) >= 11 {
+			cleanSearchID = fmt.Sprintf("%s%s%s%s", d[:3], d[7:9], d[11:13], d[3:7])
+		} else if len(d) >= 7 {
+			cleanSearchID = d[:7]
+		}
+	}
 
 	// 1. Query Header Invoice Fleksibel (Map Anti-Truncate GORM)
 	var header map[string]interface{}
@@ -209,6 +221,8 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			COALESCE(h.artih_nokw, '') AS artih_nokw,
 			COALESCE(h.artih_fktpajak, '') AS artih_fktpajak,
 			COALESCE(h.artih_total::numeric, 0) AS artih_total,
+			COALESCE(h.artih_dpp::numeric, 0) AS artih_dpp,
+			COALESCE(h.artih_ppn::numeric, 0) AS artih_ppn,
 			COALESCE(h.artih_jenis, 'K') AS artih_jenis,
 			COALESCE(h.artih_postingyn, 'N') AS artih_postingyn,
 			COALESCE(h.artih_journalid, '') AS artih_journalid,
@@ -219,7 +233,8 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		Joins("LEFT JOIN public.mkt_m_customer_nopo po ON TRIM(LOWER(po.cust_id)) = TRIM(LOWER(h.artih_custid))").
 		Joins("LEFT JOIN public.mkt_m_customer_nopo po2 ON TRIM(LOWER(po2.cust_id)) = TRIM(LOWER(c.cust_id))").
 		Joins("LEFT JOIN public.glb_m_agen a ON a.agen_id::varchar = LPAD(LEFT(h.artih_id, 3), 3, '0')").
-		Where("TRIM(LOWER(h.artih_id)) = TRIM(LOWER(?)) OR TRIM(LOWER(h.artih_nokw)) = TRIM(LOWER(?))", invoiceID, invoiceID).
+		Where("TRIM(LOWER(h.artih_id)) = TRIM(LOWER(?)) OR TRIM(LOWER(h.artih_nokw)) = TRIM(LOWER(?)) OR h.artih_id ILIKE ?",
+			invoiceID, invoiceID, "%"+cleanSearchID+"%").
 		Take(&header).Error
 
 	if err != nil {
@@ -258,7 +273,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(LOWER(e.bttt_id::varchar)) = TRIM(LOWER(d.artid_bttid::varchar))").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Joins("LEFT JOIN public.mkt_t_asuransi asr ON TRIM(asr.bttt_id::varchar) = TRIM(d.artid_bttid::varchar)").
-		Where("TRIM(LOWER(d.artid_artihid::varchar)) = TRIM(LOWER(?))", invoiceID).
+		Where("TRIM(LOWER(d.artid_artihid::varchar)) = TRIM(LOWER(?))", strings.TrimSpace(header["artih_id"].(string))).
 		Order("COALESCE(e.bttt_tanggal, NOW()) ASC, d.artid_bttid ASC").
 		Scan(&bttList).Error
 
@@ -283,8 +298,9 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		"acc_head": strings.TrimSpace(accHead),
 		"btt_list": bttList,
 	})
-}
+} // 🌟 Pastikan kurung tutup ini ada sebelum func GetUnbilledBTTHandler
 
+// 3. GET /api/piutang/invoice/unbilled-btt
 func GetUnbilledBTTHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
