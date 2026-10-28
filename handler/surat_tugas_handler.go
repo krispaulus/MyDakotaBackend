@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -511,5 +512,168 @@ func GetAgenList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"data":   list,
+	})
+}
+
+// Format: 001JC2026108439 ([agen3digit]JC[tahun4digit][bulan2digit][urut4digit])
+func FormatNoSuratTugasResmi(rawNo string, agenID string, tgl time.Time) string {
+	raw := strings.TrimSpace(rawNo)
+
+	// Normalisasi agen 3 digit (contoh PST -> 001)
+	cleanAgen := strings.TrimSpace(agenID)
+	if cleanAgen == "" || strings.ToUpper(cleanAgen) == "PST" || strings.ToUpper(cleanAgen) == "OTA" {
+		cleanAgen = "001"
+	}
+	if len(cleanAgen) < 3 {
+		cleanAgen = fmt.Sprintf("%03s", cleanAgen)
+	} else if len(cleanAgen) > 3 {
+		cleanAgen = cleanAgen[:3]
+	}
+
+	// Ekstrak nomor urut dari raw string (ambil 4 digit numerik terakhir)
+	digits := regexp.MustCompile(`\D`).ReplaceAllString(raw, "")
+	urut := "0001"
+	if len(digits) >= 4 {
+		urut = digits[len(digits)-4:]
+	}
+
+	if tgl.IsZero() {
+		tgl = time.Now()
+	}
+
+	return fmt.Sprintf("%sJC%s%s%s", cleanAgen, tgl.Format("2006"), tgl.Format("01"), urut)
+}
+
+// 1. GET DETAIL UNTUK TAMPILAN HP
+func GetPublicSuratTugasDetailHandler(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = c.Query("pt_id")
+		if ptID == "" {
+			ptID = "C" // Default DLI Corporate
+		}
+	}
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	noSuratTugas := strings.TrimSpace(c.Query("no"))
+	if noSuratTugas == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nomor surat tugas wajib diisi"})
+		return
+	}
+
+	// Ekstrak 4 digit urut untuk fallback pencocokan
+	digits := regexp.MustCompile(`\D`).ReplaceAllString(noSuratTugas, "")
+	urut := ""
+	if len(digits) >= 4 {
+		urut = digits[len(digits)-4:]
+	}
+
+	query := `
+		SELECT 
+			s.sjh_id AS no_surat_tugas,
+			TO_CHAR(s.sjh_tanggal, 'YYYY-MM-DD HH24:MI:SS') AS tgl_berangkat,
+			TO_CHAR(s.sjh_tanggalkembali, 'YYYY-MM-DD HH24:MI:SS') AS tgl_kedatangan,
+			COALESCE(s.sjh_kendid, '-') AS no_kendaraan,
+			COALESCE(sp1.kry_nama, s.sjh_sopir1_nip, '-') AS pengemudi,
+			COALESCE(sp2.kry_nama, s.sjh_sopir2_nip, '-') AS pengemudi_2,
+			COALESCE(a.ass_nama, 'CHARTER') AS tugas,
+			COALESCE(trh.trh_name, cEnd.agen_nama, '-') AS trayek_nama,
+			COALESCE(cStart.agen_nama, 'DLI PUSAT') AS cbg_asal,
+			COALESCE(cEnd.agen_nama, '-') AS cbg_tujuan,
+			CASE 
+				WHEN COALESCE(s.sjh_completeyn, 'N') = 'Y' OR s.sjh_approve = 'PROSES' THEN 'PROSES'
+				ELSE 'DRAFT'
+			END AS status,
+			COALESCE(s.sjh_keterangan, '-') AS keterangan,
+			COALESCE(r.sjr_nominalum, r.sjr_nominal, 0) AS nominal_um
+		FROM public.opr_t_esuratjalan s
+		LEFT JOIN public.hrd_m_karyawan sp1 ON CAST(s.sjh_sopir1_nip AS VARCHAR) = CAST(sp1.kry_nip AS VARCHAR)
+		LEFT JOIN public.hrd_m_karyawan sp2 ON CAST(s.sjh_sopir2_nip AS VARCHAR) = CAST(sp2.kry_nip AS VARCHAR)
+		LEFT JOIN public.glb_m_agen cStart ON CAST(s.sjh_startagenid AS VARCHAR) = CAST(cStart.agen_id AS VARCHAR)
+		LEFT JOIN public.glb_m_agen cEnd ON CAST(s.sjh_endagenid AS VARCHAR) = CAST(cEnd.agen_id AS VARCHAR)
+		LEFT JOIN public.opr_m_assignment a ON CAST(s.sjh_assid AS VARCHAR) = CAST(a.ass_id AS VARCHAR)
+		LEFT JOIN public.opr_m_trayekh trh ON CAST(s.sjh_trayekid AS VARCHAR) = CAST(trh.trh_id AS VARCHAR)
+		LEFT JOIN public.opr_t_esuratjalanrealisasi r ON s.sjh_id = r.sjr_sjhid
+		WHERE s.sjh_id = ? OR s.sjh_id LIKE ?
+		ORDER BY s.sjh_tanggal DESC
+		LIMIT 1
+	`
+
+	var detail map[string]interface{}
+	err := database.Raw(query, noSuratTugas, "%"+urut).Scan(&detail).Error
+
+	if err != nil || len(detail) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Surat tugas tidak ditemukan"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   detail,
+	})
+}
+
+// 2. UPDATE STATUS MENJADI PROSES
+func UpdateStatusProsesSuratTugasHandler(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = c.Query("pt_id")
+		if ptID == "" {
+			ptID = "C"
+		}
+	}
+
+	// Ambil username login dari context auth JWT
+	userLogin, _ := c.Get("username")
+	userNameStr := fmt.Sprintf("%v", userLogin)
+	if userNameStr == "" || userNameStr == "<nil>" {
+		userNameStr = "CHECKER"
+	}
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	var req struct {
+		NoSuratTugas string `json:"no_surat_tugas" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	digits := regexp.MustCompile(`\D`).ReplaceAllString(req.NoSuratTugas, "")
+	urut := ""
+	if len(digits) >= 4 {
+		urut = digits[len(digits)-4:]
+	}
+
+	nowStr := time.Now().Format("2006-01-02 15:04:05")
+
+	// Update status dan catat username pengubah (sjh_updateid)
+	err := database.Exec(`
+        UPDATE public.opr_t_esuratjalan 
+        SET sjh_completeyn = 'Y',
+            sjh_approve = 'PROSES',
+            sjh_updateid = ?,
+            sjh_updatetime = ?
+        WHERE sjh_id = ? OR sjh_id LIKE ?
+    `, userNameStr, nowStr, req.NoSuratTugas, "%"+urut).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memproses surat tugas: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("Surat Tugas berhasil diproses oleh %s", userNameStr),
 	})
 }

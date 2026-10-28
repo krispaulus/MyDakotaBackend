@@ -734,6 +734,9 @@ func main() {
 			authorized.GET("/settings/operasional", handler.GetSettingOperasionalHandler)
 			authorized.POST("/settings/operasional", handler.SaveSettingOperasionalHandler)
 
+			authorized.GET("/operasional/surat-tugas/public-detail", handler.GetPublicSuratTugasDetailHandler)
+			authorized.POST("/operasional/surat-tugas/update-status-proses", handler.UpdateStatusProsesSuratTugasHandler)
+
 			authorized.GET("/settings/login-banner", handler.GetLoginBannerHandler)
 			authorized.POST("/settings/login-banner", handler.SaveLoginBannerHandler)
 			authorized.POST("/settings/upload-login-banner", handler.UploadLoginBannerHandler)
