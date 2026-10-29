@@ -35,6 +35,19 @@ type BTTCSVRow struct {
 // 1. SUGGEST CUSTOMER UNTUK UPLOAD BTT
 // GET /marketing/upload-btt/suggest-customer?q=xxx
 func SuggestCustomerBTT(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = c.Query("pt_id")
+		if ptID == "" {
+			ptID = "C"
+		}
+	}
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		database = db.DB
+	}
+
 	q := strings.TrimSpace(c.Query("q"))
 	if len(q) < 2 {
 		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []interface{}{}})
@@ -42,19 +55,25 @@ func SuggestCustomerBTT(c *gin.Context) {
 	}
 
 	type CustItem struct {
-		CustID   string `json:"cust_id"`
-		CustName string `json:"cust_name"`
+		CustID   string `gorm:"column:cust_id" json:"cust_id"`
+		CustName string `gorm:"column:cust_name" json:"cust_name"`
 	}
 	var list []CustItem
 
-	err := db.DB.Table("mkt_m_customer").
-		Select("DISTINCT cust_id, cust_name").
-		Where("cust_name ILIKE ?", "%"+q+"%").
-		Order("cust_name ASC").
-		Limit(20).
-		Scan(&list).Error
+	likeParam := "%" + q + "%"
 
-	if err != nil {
+	query := `
+		SELECT DISTINCT 
+			RTRIM(LTRIM(cust_id)) AS cust_id, 
+			RTRIM(LTRIM(cust_name)) AS cust_name 
+		FROM public.mkt_m_customer 
+		WHERE (UPPER(cust_name) LIKE UPPER(?) OR UPPER(cust_id) LIKE UPPER(?))
+		  AND COALESCE(cust_aktifyn, 'Y') = 'Y'
+		ORDER BY cust_name ASC 
+		LIMIT 60
+	`
+
+	if err := database.Raw(query, likeParam, likeParam).Scan(&list).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
 	}
