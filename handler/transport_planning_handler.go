@@ -576,6 +576,7 @@ func CalculatePreview2(c *gin.Context) {
 		database = db.DB
 	}
 
+	// 1. Definisi Struct Request (Hanya SATU KALI deklarasi)
 	type CalcReq struct {
 		CustomerID string                        `json:"customer_id" binding:"required"`
 		Rows       []TransportPlanningGroupedRow `json:"rows" binding:"required"`
@@ -583,11 +584,18 @@ func CalculatePreview2(c *gin.Context) {
 
 	var req CalcReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Format data tidak valid"})
+		fmt.Printf("❌ [CalculatePreview2] Bind JSON Error: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Format data tidak valid: " + err.Error()})
 		return
 	}
 
-	// 1. Kumpulkan seluruh DN dari baris yang diunggah
+	fmt.Printf("\n=======================================================\n")
+	fmt.Printf("⚡ [CalculatePreview2] Request Diterima!\n")
+	fmt.Printf("   Customer ID : %s\n", req.CustomerID)
+	fmt.Printf("   Total Baris : %d BTT\n", len(req.Rows))
+	fmt.Printf("=======================================================\n")
+
+	// 2. Kumpulkan seluruh DN dari baris yang diunggah
 	var allDNs []string
 	for _, r := range req.Rows {
 		if r.DNList != "" {
@@ -601,7 +609,7 @@ func CalculatePreview2(c *gin.Context) {
 		}
 	}
 
-	// 2. Query ke OPR_T_TransportLSPB untuk Customer ini
+	// 3. Query ke OPR_T_TransportLSPB untuk cek duplikasi nomor DN
 	mapExistingDN := make(map[string]string)
 	if len(allDNs) > 0 {
 		type DNBTTItem struct {
@@ -610,7 +618,6 @@ func CalculatePreview2(c *gin.Context) {
 		}
 		var existingDNs []DNBTTItem
 
-		// Ambil seluruh histori nomor DN & BTT milik customer ini
 		database.Raw(`
 			SELECT COALESCE(dn_od_sj, '') AS dn_od_sj, COALESCE(nomorbtt, '') AS nomorbtt 
 			FROM public.opr_t_transportlspb 
@@ -628,7 +635,7 @@ func CalculatePreview2(c *gin.Context) {
 			}
 		}
 
-		fmt.Printf("[DEBUG DUPLIKAT] Customer: %s | Total DN di LSPB: %d nomor DN\n", req.CustomerID, len(mapExistingDN))
+		fmt.Printf("🔍 [CalculatePreview2] Total Nomor DN Terdaftar di Database: %d\n", len(mapExistingDN))
 	}
 
 	var processedRows []TransportPlanningGroupedRow
@@ -695,36 +702,36 @@ func CalculatePreview2(c *gin.Context) {
 				database.Raw(`
 					SELECT COALESCE(bttt_harga, 0) 
 					FROM public.mkt_t_econote 
-					WHERE TRIM(bttt_asalcustid) = TRIM(?) 
+					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
 					  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?)) 
 					  AND UPPER(TRIM(bttt_charterjnskend)) = UPPER(TRIM(?))
 					  AND COALESCE(bttt_harga, 0) > 0
 					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, row.Consignee, row.KodeKendaraan).Scan(&tarifCarter)
+				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee, row.KodeKendaraan).Scan(&tarifCarter)
 			}
 
 			if tarifCarter == 0 {
 				database.Raw(`
 					SELECT COALESCE(bttt_harga, 0) 
 					FROM public.mkt_t_econote 
-					WHERE TRIM(bttt_asalcustid) = TRIM(?) 
+					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
 					  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?)) 
 					  AND UPPER(TRIM(bttt_service)) = 'C'
 					  AND COALESCE(bttt_harga, 0) > 0
 					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, row.Consignee).Scan(&tarifCarter)
+				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee).Scan(&tarifCarter)
 			}
 
 			if tarifCarter == 0 && row.Kota != "" && row.Kota != "-" {
 				database.Raw(`
 					SELECT COALESCE(bttt_harga, 0) 
 					FROM public.mkt_t_econote 
-					WHERE TRIM(bttt_asalcustid) = TRIM(?) 
+					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
 					  AND UPPER(TRIM(bttt_tujuankota)) LIKE UPPER(TRIM(?)) 
 					  AND UPPER(TRIM(bttt_charterjnskend)) = UPPER(TRIM(?))
 					  AND COALESCE(bttt_harga, 0) > 0
 					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, "%"+row.Kota+"%", row.KodeKendaraan).Scan(&tarifCarter)
+				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), "%"+row.Kota+"%", row.KodeKendaraan).Scan(&tarifCarter)
 			}
 
 			if tarifCarter > 0 {
@@ -737,21 +744,21 @@ func CalculatePreview2(c *gin.Context) {
 			database.Raw(`
 				SELECT COALESCE(bttt_harga, 0) 
 				FROM public.mkt_t_econote 
-				WHERE TRIM(bttt_asalcustid) = TRIM(?) 
+				WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
 				  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?))
 				  AND COALESCE(bttt_harga, 0) > 0
 				ORDER BY bttt_tanggal DESC LIMIT 1
-			`, req.CustomerID, row.Consignee).Scan(&tarifReguler)
+			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee).Scan(&tarifReguler)
 
 			if tarifReguler == 0 && row.Kota != "" && row.Kota != "-" {
 				database.Raw(`
 					SELECT COALESCE(bttt_harga, 0) 
 					FROM public.mkt_t_econote 
-					WHERE TRIM(bttt_asalcustid) = TRIM(?) 
+					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
 					  AND UPPER(TRIM(bttt_tujuankota)) LIKE UPPER(TRIM(?))
 					  AND COALESCE(bttt_harga, 0) > 0
 					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, "%"+row.Kota+"%").Scan(&tarifReguler)
+				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), "%"+row.Kota+"%").Scan(&tarifReguler)
 			}
 
 			if tarifReguler > 0 {
@@ -773,6 +780,9 @@ func CalculatePreview2(c *gin.Context) {
 
 		processedRows = append(processedRows, row)
 	}
+
+	fmt.Printf("✅ [CalculatePreview2] Selesai: %d Akan Diproses, %d Dilewati (Duplikat). Total: Rp %.0f\n\n",
+		totalAkanProses, totalDilewati, grandTotalHarga)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":              "success",
