@@ -724,9 +724,16 @@ func main() {
 			authorized.POST("/marketing/btt-upload-v2/parse-csv", handler.ParseBTTV2CSV)
 			authorized.POST("/marketing/btt-upload-v2/save-batch", handler.SaveBTTV2CSVBatch)
 
+			// 🚚 MARKETING / UPLOAD TRANSPORT PLANNING (CSV)
+			//authorized.GET("/marketing/transport-planning/suggest-customer", handler.SuggestCustomerPlanning)
+			//authorized.POST("/marketing/transport-planning/parse-csv", handler.ParseTransportPlanningCSV)
+			authorized.POST("/marketing/transport-planning/calculate-preview2", handler.CalculatePreview2)
+			//authorized.POST("/marketing/transport-planning/save-batch", handler.SaveTransportPlanningBatch)
+
 			// 📑 MARKETING / UPLOAD DN/OJ
 			authorized.GET("/marketing/dn-upload/outstanding", handler.GetDNBelumMasukLSPB)
 			authorized.POST("/marketing/dn-upload/upload", handler.UploadDNCSV)
+
 			// 🚚 MARKETING / OPERASIONAL: UPLOAD CSV DATA LOPERAN SUPIR
 			authorized.POST("/marketing/hasil-loper/parse-csv", handler.ParseHasilLoperCSV)
 			authorized.POST("/marketing/hasil-loper/save-batch", handler.SaveHasilLoperBatch)
