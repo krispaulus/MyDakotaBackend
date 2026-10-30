@@ -725,9 +725,8 @@ func main() {
 			authorized.POST("/marketing/btt-upload-v2/save-batch", handler.SaveBTTV2CSVBatch)
 
 			// 🚚 MARKETING / UPLOAD TRANSPORT PLANNING (CSV)
-			//authorized.GET("/marketing/transport-planning/suggest-customer", handler.SuggestCustomerPlanning)
-			//authorized.POST("/marketing/transport-planning/parse-csv", handler.ParseTransportPlanningCSV)
 			authorized.POST("/marketing/transport-planning/calculate-preview2", handler.CalculatePreview2)
+			authorized.POST("/marketing/transport-planning/save-wilayah-history", handler.SaveCustomerWilayahHistory)
 			//authorized.POST("/marketing/transport-planning/save-batch", handler.SaveTransportPlanningBatch)
 
 			// 📑 MARKETING / UPLOAD DN/OJ

@@ -861,3 +861,74 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 		"batch_id": batchID,
 	})
 }
+
+// POST /marketing/transport-planning/save-wilayah-history
+// Menyimpan / memperbarui master riwayat wilayah saat user melengkapi di Preview 1
+func SaveCustomerWilayahHistory(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = c.Query("pt_id")
+		if ptID == "" {
+			ptID = "C"
+		}
+	}
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		database = db.DB
+	}
+
+	var req struct {
+		Consignee string `json:"consignee" binding:"required"`
+		Address   string `json:"address"`
+		Propinsi  string `json:"propinsi" binding:"required"`
+		Kota      string `json:"kota" binding:"required"`
+		Kecamatan string `json:"kecamatan" binding:"required"`
+		Kelurahan string `json:"kelurahan" binding:"required"`
+		Kodepos   string `json:"kodepos"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Data wilayah tidak lengkap"})
+		return
+	}
+
+	cleanConsignee := strings.ToUpper(strings.TrimSpace(req.Consignee))
+	cleanAddress := strings.ToUpper(strings.TrimSpace(req.Address))
+	cleanProp := strings.ToUpper(strings.TrimSpace(req.Propinsi))
+	cleanKota := strings.ToUpper(strings.TrimSpace(req.Kota))
+	cleanKec := strings.ToUpper(strings.TrimSpace(req.Kecamatan))
+	cleanKel := strings.ToUpper(strings.TrimSpace(req.Kelurahan))
+	cleanPos := strings.TrimSpace(req.Kodepos)
+
+	// 🔍 Cek apakah data anak customer dengan kemiripan alamat ini sudah ada
+	var existingID int
+	database.Raw(`
+		SELECT id 
+		FROM public.mkt_m_customer_history_merck 
+		WHERE UPPER(TRIM(penerima_tujuan)) = ? 
+		  AND (UPPER(TRIM(tujuan)) = ? OR UPPER(TRIM(tujuan)) LIKE ? OR ? LIKE CONCAT('%', UPPER(TRIM(tujuan)), '%'))
+		ORDER BY id DESC LIMIT 1
+	`, cleanConsignee, cleanAddress, "%"+cleanAddress+"%", cleanAddress).Scan(&existingID)
+
+	if existingID > 0 {
+		// 🔄 UPDATE jika data sudah ada
+		database.Exec(`
+			UPDATE public.mkt_m_customer_history_merck 
+			SET propinsi = ?, kota = ?, kecamatan = ?, kelurahan = ?, kodepos = ?
+			WHERE id = ?
+		`, cleanProp, cleanKota, cleanKec, cleanKel, cleanPos, existingID)
+	} else {
+		// ➕ INSERT BARU jika belum pernah ada
+		database.Exec(`
+			INSERT INTO public.mkt_m_customer_history_merck (
+				penerima_tujuan, tujuan, propinsi, kota, kecamatan, kelurahan, kodepos
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, cleanConsignee, cleanAddress, cleanProp, cleanKota, cleanKec, cleanKel, cleanPos)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Master wilayah berhasil diperbarui ke database!",
+	})
+}
