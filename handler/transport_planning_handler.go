@@ -863,7 +863,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 }
 
 // POST /marketing/transport-planning/save-wilayah-history
-// Menyimpan / memperbarui master riwayat wilayah saat user melengkapi di Preview 1
+// Validasi pintar: Cegah dobel, lengkapi yang kosong, dan simpan data termutakhir
 func SaveCustomerWilayahHistory(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
@@ -901,34 +901,67 @@ func SaveCustomerWilayahHistory(c *gin.Context) {
 	cleanKel := strings.ToUpper(strings.TrimSpace(req.Kelurahan))
 	cleanPos := strings.TrimSpace(req.Kodepos)
 
-	// 🔍 Cek apakah data anak customer dengan kemiripan alamat ini sudah ada
-	var existingID int
-	database.Raw(`
-		SELECT id 
-		FROM public.mkt_m_customer_history_merck 
-		WHERE UPPER(TRIM(penerima_tujuan)) = ? 
-		  AND (UPPER(TRIM(tujuan)) = ? OR UPPER(TRIM(tujuan)) LIKE ? OR ? LIKE CONCAT('%', UPPER(TRIM(tujuan)), '%'))
-		ORDER BY id DESC LIMIT 1
-	`, cleanConsignee, cleanAddress, "%"+cleanAddress+"%", cleanAddress).Scan(&existingID)
+	// 1. Cek apakah record sudah ada berdasarkan Penerima & Kemiripan Alamat
+	type ExistingRecord struct {
+		ID        int    `gorm:"column:id"`
+		Kecamatan string `gorm:"column:kecamatan"`
+		Kelurahan string `gorm:"column:kelurahan"`
+		Kodepos   string `gorm:"column:kodepos"`
+	}
+	var existing ExistingRecord
 
-	if existingID > 0 {
-		// 🔄 UPDATE jika data sudah ada
-		database.Exec(`
-			UPDATE public.mkt_m_customer_history_merck 
-			SET propinsi = ?, kota = ?, kecamatan = ?, kelurahan = ?, kodepos = ?
+	database.Raw(`
+		SELECT id, COALESCE(kecamatan, '') AS kecamatan, COALESCE(kelurahan, '') AS kelurahan, COALESCE(kodepos, '') AS kodepos
+		FROM public.mkt_m_customer_history_merck
+		WHERE UPPER(TRIM(penerima_tujuan)) = ?
+		  AND (UPPER(TRIM(tujuan)) = ? 
+		       OR UPPER(TRIM(tujuan)) LIKE ? 
+		       OR ? LIKE CONCAT('%', UPPER(TRIM(tujuan)), '%'))
+		ORDER BY id DESC LIMIT 1
+	`, cleanConsignee, cleanAddress, "%"+cleanAddress+"%", cleanAddress).Scan(&existing)
+
+	// 2. Eksekusi Berdasarkan Kondisi Data
+	if existing.ID > 0 {
+		// KONDISI A: Data sudah ada -> Lakukan UPDATE data terakhir (menghindari duplikasi baris baru)
+		err := database.Exec(`
+			UPDATE public.mkt_m_customer_history_merck
+			SET propinsi = ?,
+			    kota = ?,
+			    kecamatan = ?,
+			    kelurahan = ?,
+			    kodepos = ?,
+			    tujuan = CASE WHEN tujuan IS NULL OR TRIM(tujuan) = '' THEN ? ELSE tujuan END
 			WHERE id = ?
-		`, cleanProp, cleanKota, cleanKec, cleanKel, cleanPos, existingID)
-	} else {
-		// ➕ INSERT BARU jika belum pernah ada
-		database.Exec(`
-			INSERT INTO public.mkt_m_customer_history_merck (
-				penerima_tujuan, tujuan, propinsi, kota, kecamatan, kelurahan, kodepos
-			) VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, cleanConsignee, cleanAddress, cleanProp, cleanKota, cleanKec, cleanKel, cleanPos)
+		`, cleanProp, cleanKota, cleanKec, cleanKel, cleanPos, cleanAddress, existing.ID).Error
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memperbarui master wilayah"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"action":  "updated",
+			"message": "Data wilayah berhasil diperbarui ke record yang ada tanpa duplikasi!",
+		})
+		return
+	}
+
+	// KONDISI B: Data belum ada sama sekali -> Lakukan INSERT baru
+	err := database.Exec(`
+		INSERT INTO public.mkt_m_customer_history_merck (
+			penerima_tujuan, tujuan, propinsi, kota, kecamatan, kelurahan, kodepos
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, cleanConsignee, cleanAddress, cleanProp, cleanKota, cleanKec, cleanKel, cleanPos).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan master wilayah baru"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
-		"message": "Master wilayah berhasil diperbarui ke database!",
+		"action":  "inserted",
+		"message": "Data wilayah baru berhasil ditambahkan ke master riwayat!",
 	})
 }
