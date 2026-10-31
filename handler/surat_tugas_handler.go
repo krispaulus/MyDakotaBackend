@@ -677,3 +677,57 @@ func UpdateStatusProsesSuratTugasHandler(c *gin.Context) {
 		"message": fmt.Sprintf("Surat Tugas berhasil diproses oleh %s", userNameStr),
 	})
 }
+
+// POST /operasional/surat-tugas/verify-scan
+func VerifySuratTugasScan(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = "C"
+	}
+	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
+
+	var req struct {
+		NoSuratTugas string `json:"no_surat_tugas" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nomor surat tugas wajib diisi"})
+		return
+	}
+
+	cleanNo := strings.TrimSpace(req.NoSuratTugas)
+
+	type SuratTugasDetail struct {
+		NomorSuratTugas string `gorm:"column:nomor_surat_tugas" json:"nomor_surat_tugas"`
+		Tugas           string `gorm:"column:tugas" json:"tugas"`
+		NoPolisi        string `gorm:"column:no_polisi" json:"no_polisi"`
+		NamaSupir       string `gorm:"column:nama_supir" json:"nama_supir"`
+		StatusTugas     string `gorm:"column:status" json:"status_tugas"`
+	}
+	var data SuratTugasDetail
+
+	// Sesuaikan nama tabel surat tugas Anda di database (misal: opr_t_surattugas)
+	err := database.Raw(`
+		SELECT 
+			COALESCE(nosurattugas, ?) AS nomor_surat_tugas,
+			COALESCE(jenistugas, 'LOPER') AS tugas,
+			COALESCE(nokendaraan, '') AS no_polisi,
+			COALESCE(namasupir, '') AS nama_supir,
+			'VALID & TERDAFTAR' AS status
+		FROM public.opr_t_surattugas
+		WHERE UPPER(TRIM(nosurattugas)) = UPPER(TRIM(?))
+		LIMIT 1
+	`, cleanNo, cleanNo).Scan(&data).Error
+
+	if err != nil || data.NoPolisi == "" {
+		c.JSON(http.StatusNotFound, gin.H{
+			"status":  "error",
+			"message": fmt.Sprintf("Surat tugas %s tidak ditemukan dalam database!", cleanNo),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   data,
+	})
+}
