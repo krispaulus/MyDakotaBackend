@@ -664,15 +664,16 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 	var listBTT []BTTItem
 	queryBTT := `
 		SELECT 
-			COALESCE(d.sjd_bttid, d.sjd_nobtt, '-') AS nobtt,
-			COALESCE(a.agen_nama, d.sjd_tujuan, 'PASURUAN KAB.') AS tujuan,
-			COALESCE(d.sjd_koli, d.sjd_colly, 3) AS colly,
-			COALESCE(d.sjd_koli_scan, d.sjd_koli, 3) AS discan,
-			GREATEST(0, COALESCE(d.sjd_koli, d.sjd_colly, 3) - COALESCE(d.sjd_koli_scan, d.sjd_koli, 3)) AS kurang,
+			TRIM(COALESCE(d.sjd_bttid, d.sjd_nobtt, '-')) AS nobtt,
+			TRIM(COALESCE(a.agen_nama, d.sjd_tujuan, '-')) AS tujuan,
+			COALESCE(d.sjd_koli, d.sjd_colly, 0) AS colly,
+			COALESCE(d.sjd_koli_scan, d.sjd_colly_scan, COALESCE(d.sjd_koli, d.sjd_colly, 0)) AS discan,
+			GREATEST(0, COALESCE(d.sjd_koli, d.sjd_colly, 0) - COALESCE(d.sjd_koli_scan, d.sjd_colly_scan, COALESCE(d.sjd_koli, d.sjd_colly, 0))) AS kurang,
 			'SESUAI' AS keterangan
 		FROM public.opr_t_esuratjalandetil d
 		LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(d.sjd_agenid::varchar)
-		WHERE d.sjd_sjhid = ? OR d.sjd_sjhid LIKE ?
+		WHERE TRIM(d.sjd_sjhid) = TRIM(?) 
+		   OR TRIM(d.sjd_sjhid) LIKE ?
 		ORDER BY d.sjd_bttid ASC
 	`
 	database.Raw(queryBTT, detail.RawSJHID, "%"+urut).Scan(&listBTT)
@@ -681,7 +682,7 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 		"status": "success",
 		"data": gin.H{
 			"raw_sjh_id":     detail.RawSJHID,
-			"no_surat_tugas": officialNo, // Mengirim 001JC2026119422 ke Frontend
+			"no_surat_tugas": officialNo,
 			"tgl_berangkat":  detail.TglBerangkat,
 			"tgl_kedatangan": detail.TglKembali,
 			"no_kendaraan":   detail.NoKendaraan,
@@ -692,7 +693,7 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 			"trayek_nama":    detail.TrayekNama,
 			"cbg_asal":       detail.CbgAsal,
 			"cbg_tujuan":     detail.CbgTujuan,
-			"status":         detail.Status,
+			"status":         detail.Status, // 'DRAFT' atau 'PROSES'
 			"keterangan":     detail.Keterangan,
 			"nominal_um":     detail.NominalUM,
 			"btt_list":       listBTT,
