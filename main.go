@@ -771,10 +771,13 @@ func main() {
 			authorized.GET("/master/uang-muka/detail/:id", handler.GetMasterUangMukaDetailHandler)
 			authorized.POST("/master/uang-muka/toggle-status", handler.ToggleUangMukaStatusHandler)
 			authorized.GET("/master/jenis-kendaraan", handler.GetMasterJenisKendaraanHandler)
+			authorized.POST("/master/uang-muka/update-header", handler.UpdateMasterUangMukaHeaderHandler)
 
 			authorized.POST("/master/uang-muka/biaya-save", handler.SaveMasterUangMukaBiayaHandler)
 			authorized.DELETE("/master/uang-muka/biaya-delete", handler.DeleteMasterUangMukaBiayaHandler)
 			authorized.GET("/master/uang-muka/kamus-biaya", handler.GetMasterKamusBiayaHandler)
+			authorized.GET("/master/uang-muka/export-csv", handler.ExportMasterUangMukaCSVHandler)
+			authorized.POST("/master/uang-muka/import-csv", handler.ImportMasterUangMukaCSVHandler)
 
 			authorized.GET("/piutang/penerimaan-pembayaran-kredit/unpaid-invoices", handler.GetUnpaidInvoicesHandler)
 			authorized.POST("/piutang/penerimaan-pembayaran-kredit/posting", handler.PostingPenerimaanPembayaranKreditHandler)

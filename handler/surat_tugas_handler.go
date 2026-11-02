@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"encoding/csv"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -333,12 +336,24 @@ func GetUangMukaList(c *gin.Context) {
 	// 2. Query Detail Rincian Biaya per Trayek (Langsung ambil dari opr_m_trayekbplk tanpa join tabel lain)
 	queryDetail := `
 		SELECT 
-			'BIAYA OPERASIONAL' AS nama_biaya,
-			COALESCE(tri_nominal, 0) AS nominal
-		FROM public.opr_m_trayekbplk
-		WHERE RTRIM(LTRIM(tri_hid)) = RTRIM(LTRIM(?)) 
-		  AND tri_umyn = 'Y'
-		ORDER BY tri_bplksubid ASC
+			COALESCE(bu.bplku_nama, b.bplk_nama, 
+				CASE 
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '137' THEN 'BBM LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '138' THEN 'Biaya Operasional BPLK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '140' THEN 'Biaya Tol LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '141' THEN 'Biaya Retribusi LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '142' THEN 'Biaya Penyebrangan LK'
+					WHEN RIGHT(RTRIM(LTRIM(tb.tri_bplksubid)), 3) = '144' THEN 'Biaya Bongkar Muat / Parkir'
+					ELSE 'BIAYA OPERASIONAL'
+				END
+			) AS nama_biaya,
+			COALESCE(tb.tri_nominal, 0) AS nominal
+		FROM public.opr_m_trayekbplk tb
+		LEFT JOIN public.opr_m_bplk_urut bu ON RTRIM(LTRIM(bu.bplku_id)) = RTRIM(LTRIM(tb.tri_bplksubid))
+		LEFT JOIN public.opr_m_bplk b ON RTRIM(LTRIM(b.bplk_id)) = RTRIM(LTRIM(tb.tri_bplksubid))
+		WHERE RTRIM(LTRIM(tb.tri_hid)) = RTRIM(LTRIM(?)) 
+		  AND tb.tri_umyn = 'Y'
+		ORDER BY tb.tri_bplksubid ASC
 	`
 
 	type DetailRow struct {
@@ -515,11 +530,10 @@ func GetAgenList(c *gin.Context) {
 	})
 }
 
-// Format: 001JC2026108439 ([agen3digit]JC[tahun4digit][bulan2digit][urut4digit])
 func FormatNoSuratTugasResmi(rawNo string, agenID string, tgl time.Time) string {
 	raw := strings.TrimSpace(rawNo)
 
-	// Normalisasi agen 3 digit (contoh PST -> 001)
+	// 1. Normalisasi Cabang (PST / OTA / kosong -> 001)
 	cleanAgen := strings.TrimSpace(agenID)
 	if cleanAgen == "" || strings.ToUpper(cleanAgen) == "PST" || strings.ToUpper(cleanAgen) == "OTA" {
 		cleanAgen = "001"
@@ -530,7 +544,7 @@ func FormatNoSuratTugasResmi(rawNo string, agenID string, tgl time.Time) string 
 		cleanAgen = cleanAgen[:3]
 	}
 
-	// Ekstrak nomor urut dari raw string (ambil 4 digit numerik terakhir)
+	// 2. Ambil 4 digit urut terakhir
 	digits := regexp.MustCompile(`\D`).ReplaceAllString(raw, "")
 	urut := "0001"
 	if len(digits) >= 4 {
@@ -541,16 +555,16 @@ func FormatNoSuratTugasResmi(rawNo string, agenID string, tgl time.Time) string 
 		tgl = time.Now()
 	}
 
+	// 3. Tanpa tanggal hari (hanya Tahun & Bulan) -> 001JC2026119422
 	return fmt.Sprintf("%sJC%s%s%s", cleanAgen, tgl.Format("2006"), tgl.Format("01"), urut)
 }
 
-// 1. GET DETAIL UNTUK TAMPILAN HP
 func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
 		ptID = c.Query("pt_id")
 		if ptID == "" {
-			ptID = "C" // Default DLI Corporate
+			ptID = "C"
 		}
 	}
 
@@ -566,7 +580,7 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// Ekstrak 4 digit urut untuk fallback pencocokan
+	// Ekstrak 4 digit nomor urut terakhir (misal: 9422)
 	digits := regexp.MustCompile(`\D`).ReplaceAllString(noSuratTugas, "")
 	urut := ""
 	if len(digits) >= 4 {
@@ -575,21 +589,24 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 
 	query := `
 		SELECT 
-			s.sjh_id AS no_surat_tugas,
+			s.sjh_id AS raw_sjh_id,
+			s.sjh_tanggal,
 			TO_CHAR(s.sjh_tanggal, 'YYYY-MM-DD HH24:MI:SS') AS tgl_berangkat,
 			TO_CHAR(s.sjh_tanggalkembali, 'YYYY-MM-DD HH24:MI:SS') AS tgl_kedatangan,
 			COALESCE(s.sjh_kendid, '-') AS no_kendaraan,
 			COALESCE(sp1.kry_nama, s.sjh_sopir1_nip, '-') AS pengemudi,
+			COALESCE(sp1.kry_nip, '-') AS nip_pengemudi,
 			COALESCE(sp2.kry_nama, s.sjh_sopir2_nip, '-') AS pengemudi_2,
-			COALESCE(a.ass_nama, 'CHARTER') AS tugas,
-			COALESCE(trh.trh_name, cEnd.agen_nama, '-') AS trayek_nama,
+			COALESCE(a.ass_nama, 'LOPER') AS tugas,
+			COALESCE(trh.trh_name, cEnd.agen_nama, 'LOPER DALAM KOTA') AS trayek_nama,
 			COALESCE(cStart.agen_nama, 'DLI PUSAT') AS cbg_asal,
+			COALESCE(s.sjh_startagenid, '001') AS start_agen_id,
 			COALESCE(cEnd.agen_nama, '-') AS cbg_tujuan,
 			CASE 
 				WHEN COALESCE(s.sjh_completeyn, 'N') = 'Y' OR s.sjh_approve = 'PROSES' THEN 'PROSES'
 				ELSE 'DRAFT'
 			END AS status,
-			COALESCE(s.sjh_keterangan, '-') AS keterangan,
+			COALESCE(s.sjh_keterangan, 'LOPER DALAM KOTA') AS keterangan,
 			COALESCE(r.sjr_nominalum, r.sjr_nominal, 0) AS nominal_um
 		FROM public.opr_t_esuratjalan s
 		LEFT JOIN public.hrd_m_karyawan sp1 ON CAST(s.sjh_sopir1_nip AS VARCHAR) = CAST(sp1.kry_nip AS VARCHAR)
@@ -599,42 +616,96 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 		LEFT JOIN public.opr_m_assignment a ON CAST(s.sjh_assid AS VARCHAR) = CAST(a.ass_id AS VARCHAR)
 		LEFT JOIN public.opr_m_trayekh trh ON CAST(s.sjh_trayekid AS VARCHAR) = CAST(trh.trh_id AS VARCHAR)
 		LEFT JOIN public.opr_t_esuratjalanrealisasi r ON s.sjh_id = r.sjr_sjhid
-		WHERE s.sjh_id = ? OR s.sjh_id LIKE ?
+		WHERE s.sjh_id = ? 
+		   OR s.sjh_id LIKE ? 
+		   OR s.sjh_id LIKE ?
 		ORDER BY s.sjh_tanggal DESC
 		LIMIT 1
 	`
 
-	var detail map[string]interface{}
-	err := database.Raw(query, noSuratTugas, "%"+urut).Scan(&detail).Error
+	var detail struct {
+		RawSJHID     string    `gorm:"column:raw_sjh_id"`
+		SJHTanggal   time.Time `gorm:"column:sjh_tanggal"`
+		TglBerangkat string    `gorm:"column:tgl_berangkat"`
+		TglKembali   string    `gorm:"column:tgl_kedatangan"`
+		NoKendaraan  string    `gorm:"column:no_kendaraan"`
+		Pengemudi    string    `gorm:"column:pengemudi"`
+		NipPengemudi string    `gorm:"column:nip_pengemudi"`
+		Pengemudi2   string    `gorm:"column:pengemudi_2"`
+		Tugas        string    `gorm:"column:tugas"`
+		TrayekNama   string    `gorm:"column:trayek_nama"`
+		CbgAsal      string    `gorm:"column:cbg_asal"`
+		StartAgenID  string    `gorm:"column:start_agen_id"`
+		CbgTujuan    string    `gorm:"column:cbg_tujuan"`
+		Status       string    `gorm:"column:status"`
+		Keterangan   string    `gorm:"column:keterangan"`
+		NominalUM    float64   `gorm:"column:nominal_um"`
+	}
 
-	if err != nil || len(detail) == 0 {
+	err := database.Raw(query, noSuratTugas, "%"+noSuratTugas+"%", "%"+urut).Scan(&detail).Error
+	if err != nil || detail.RawSJHID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Surat tugas tidak ditemukan"})
 		return
 	}
 
+	// 🌟 Ubah nomor menjadi standar resmi: 001JC2026119422
+	officialNo := FormatNoSuratTugasResmi(detail.RawSJHID, detail.StartAgenID, detail.SJHTanggal)
+
+	// Ambil rincian BTT
+	type BTTItem struct {
+		NoBTT      string `gorm:"column:nobtt" json:"no_btt"`
+		Tujuan     string `gorm:"column:tujuan" json:"tujuan"`
+		Colly      int    `gorm:"column:colly" json:"colly"`
+		Discan     int    `gorm:"column:discan" json:"discan"`
+		Kurang     int    `gorm:"column:kurang" json:"kurang"`
+		Keterangan string `gorm:"column:keterangan" json:"keterangan"`
+	}
+
+	var listBTT []BTTItem
+	queryBTT := `
+		SELECT 
+			COALESCE(d.sjd_bttid, d.sjd_nobtt, '-') AS nobtt,
+			COALESCE(a.agen_nama, d.sjd_tujuan, 'PASURUAN KAB.') AS tujuan,
+			COALESCE(d.sjd_koli, d.sjd_colly, 3) AS colly,
+			COALESCE(d.sjd_koli_scan, d.sjd_koli, 3) AS discan,
+			GREATEST(0, COALESCE(d.sjd_koli, d.sjd_colly, 3) - COALESCE(d.sjd_koli_scan, d.sjd_koli, 3)) AS kurang,
+			'SESUAI' AS keterangan
+		FROM public.opr_t_esuratjalandetil d
+		LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(d.sjd_agenid::varchar)
+		WHERE d.sjd_sjhid = ? OR d.sjd_sjhid LIKE ?
+		ORDER BY d.sjd_bttid ASC
+	`
+	database.Raw(queryBTT, detail.RawSJHID, "%"+urut).Scan(&listBTT)
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
-		"data":   detail,
+		"data": gin.H{
+			"raw_sjh_id":     detail.RawSJHID,
+			"no_surat_tugas": officialNo, // Mengirim 001JC2026119422 ke Frontend
+			"tgl_berangkat":  detail.TglBerangkat,
+			"tgl_kedatangan": detail.TglKembali,
+			"no_kendaraan":   detail.NoKendaraan,
+			"pengemudi":      detail.Pengemudi,
+			"nip_pengemudi":  detail.NipPengemudi,
+			"pengemudi_2":    detail.Pengemudi2,
+			"tugas":          detail.Tugas,
+			"trayek_nama":    detail.TrayekNama,
+			"cbg_asal":       detail.CbgAsal,
+			"cbg_tujuan":     detail.CbgTujuan,
+			"status":         detail.Status,
+			"keterangan":     detail.Keterangan,
+			"nominal_um":     detail.NominalUM,
+			"btt_list":       listBTT,
+			"total_btt":      len(listBTT),
+		},
 	})
 }
 
-// 2. UPDATE STATUS MENJADI PROSES
 func UpdateStatusProsesSuratTugasHandler(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
-		ptID = c.Query("pt_id")
-		if ptID == "" {
-			ptID = "C"
-		}
+		ptID = "C"
 	}
-
-	// Ambil username login dari context auth JWT
-	userLogin, _ := c.Get("username")
-	userNameStr := fmt.Sprintf("%v", userLogin)
-	if userNameStr == "" || userNameStr == "<nil>" {
-		userNameStr = "CHECKER"
-	}
-
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
@@ -655,9 +726,14 @@ func UpdateStatusProsesSuratTugasHandler(c *gin.Context) {
 		urut = digits[len(digits)-4:]
 	}
 
+	userLogin, _ := c.Get("username")
+	userNameStr := fmt.Sprintf("%v", userLogin)
+	if userNameStr == "" || userNameStr == "<nil>" {
+		userNameStr = "CHECKER"
+	}
+
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 
-	// Update status dan catat username pengubah (sjh_updateid)
 	err := database.Exec(`
         UPDATE public.opr_t_esuratjalan 
         SET sjh_completeyn = 'Y',
@@ -668,14 +744,11 @@ func UpdateStatusProsesSuratTugasHandler(c *gin.Context) {
     `, userNameStr, nowStr, req.NoSuratTugas, "%"+urut).Error
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memproses surat tugas: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update status: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": fmt.Sprintf("Surat Tugas berhasil diproses oleh %s", userNameStr),
-	})
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Surat Tugas berhasil diproses!"})
 }
 
 // POST /operasional/surat-tugas/verify-scan
@@ -729,5 +802,329 @@ func VerifySuratTugasScan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"data":   data,
+	})
+}
+
+func ExportMasterUangMukaCSVHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	search := strings.TrimSpace(c.Query("q"))
+
+	whereSQL := `WHERE EXISTS (
+		SELECT 1 FROM public.opr_m_trayekbplk tb 
+		WHERE TRIM(tb.tri_hid) = TRIM(th.trh_id) 
+		  AND COALESCE(TRIM(tb.tri_bplkid), '') <> ''
+	)`
+	var args []interface{}
+	if search != "" {
+		whereSQL += " AND (th.trh_id ILIKE ? OR th.trh_name ILIKE ?)"
+		args = append(args, "%"+search+"%", "%"+search+"%")
+	}
+
+	// Query rincian lengkap untuk di-export (Trayek Header + Komponen Biaya)
+	query := fmt.Sprintf(`
+		SELECT 
+			TRIM(th.trh_id) AS kode_trayek,
+			TRIM(th.trh_name) AS nama_trayek,
+			COALESCE(TRIM(th.trh_jnskend::varchar), '') AS kode_kendaraan,
+			COALESCE(TRIM(jk.jnskend_nama), '-') AS nama_kendaraan,
+			COALESCE(TRIM(th.trh_aktifyn), 'Y') AS status_aktif,
+			COALESCE(TRIM(tb.tri_bplksubid), '') AS kode_biaya,
+			COALESCE(TRIM(bu.bplku_nama), 'BIAYA OPERASIONAL') AS nama_biaya,
+			COALESCE(tb.tri_nominal, 0) AS nominal,
+			COALESCE(TRIM(tb.tri_umyn), 'Y') AS uang_muka_yn
+		FROM public.opr_m_trayekh th
+		LEFT JOIN public.glb_m_jnskend jk ON TRIM(jk.jnskend_id::varchar) = TRIM(th.trh_jnskend::varchar)
+		LEFT JOIN public.opr_m_trayekbplk tb ON TRIM(tb.tri_hid) = TRIM(th.trh_id)
+		LEFT JOIN public.opr_m_bplk_urut bu ON TRIM(bu.bplku_id) = TRIM(tb.tri_bplksubid)
+		%s
+		ORDER BY th.trh_name ASC, tb.tri_bplksubid ASC
+	`, whereSQL)
+
+	type ExportRow struct {
+		KodeTrayek    string  `gorm:"column:kode_trayek"`
+		NamaTrayek    string  `gorm:"column:nama_trayek"`
+		KodeKendaraan string  `gorm:"column:kode_kendaraan"`
+		NamaKendaraan string  `gorm:"column:nama_kendaraan"`
+		StatusAktif   string  `gorm:"column:status_aktif"`
+		KodeBiaya     string  `gorm:"column:kode_biaya"`
+		NamaBiaya     string  `gorm:"column:nama_biaya"`
+		Nominal       float64 `gorm:"column:nominal"`
+		UangMukaYN    string  `gorm:"column:uang_muka_yn"`
+	}
+
+	var rows []ExportRow
+	if err := database.Raw(query, args...).Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal export master: " + err.Error()})
+		return
+	}
+
+	// Buat Header CSV Response
+	fileName := fmt.Sprintf("Master_Uang_Muka_BPLK_%s.csv", time.Now().Format("20060102_150405"))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+
+	writer := csv.NewWriter(c.Writer)
+	defer writer.Flush()
+
+	// Tulis Baris Header Kolom
+	writer.Write([]string{
+		"KODE_TRAYEK",
+		"NAMA_TRAYEK",
+		"KODE_KENDARAAN",
+		"NAMA_KENDARAAN",
+		"STATUS_AKTIF",
+		"KODE_BIAYA",
+		"NAMA_BIAYA",
+		"NOMINAL",
+		"UANG_MUKA_YN",
+	})
+
+	for _, r := range rows {
+		writer.Write([]string{
+			r.KodeTrayek,
+			r.NamaTrayek,
+			r.KodeKendaraan,
+			r.NamaKendaraan,
+			r.StatusAktif,
+			r.KodeBiaya,
+			r.NamaBiaya,
+			fmt.Sprintf("%.0f", r.Nominal),
+			r.UangMukaYN,
+		})
+	}
+}
+
+// =========================================================================
+// 5. POST /api/master/uang-muka/import-csv (IMPORT & AUTO-UPSERT FILE CSV)
+// =========================================================================
+func ImportMasterUangMukaCSVHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "File CSV wajib diunggah"})
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membuka file: " + err.Error()})
+		return
+	}
+	defer file.Close()
+
+	// Deteksi Delimiter (koma atau titik koma)
+	buf := make([]byte, 1024)
+	n, _ := file.Read(buf)
+	file.Seek(0, io.SeekStart)
+
+	firstLine := string(buf[:n])
+	reader := csv.NewReader(file)
+	if strings.Count(firstLine, ";") > strings.Count(firstLine, ",") {
+		reader.Comma = ';'
+	} else {
+		reader.Comma = ','
+	}
+	reader.LazyQuotes = true
+
+	totalSuccessHeader := 0
+	totalSuccessBiaya := 0
+	userID := "IMPORT-CSV"
+
+	tx := database.Begin()
+	rowIndex := 0
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+		rowIndex++
+		if rowIndex == 1 {
+			continue // Lewati Header baris 1
+		}
+
+		if len(record) < 3 {
+			continue
+		}
+
+		kodeTrayek := strings.TrimSpace(record[0])
+		namaTrayek := strings.TrimSpace(record[1])
+		if kodeTrayek == "" || namaTrayek == "" {
+			continue
+		}
+
+		kodeKendaraan := ""
+		if len(record) > 2 {
+			kodeKendaraan = strings.TrimSpace(record[2])
+		}
+
+		namaKendaraan := ""
+		if len(record) > 3 {
+			namaKendaraan = strings.TrimSpace(record[3])
+		}
+
+		// 🛡️ 1. PEMBERSIHAN NAMA KENDARAAN (jika ada angka menempel di depan, misal "1 Colt Diesel Double")
+		if strings.HasPrefix(namaKendaraan, "1 ") {
+			if kodeKendaraan == "" {
+				kodeKendaraan = "001"
+			}
+			namaKendaraan = strings.TrimPrefix(namaKendaraan, "1 ")
+		}
+
+		// 🛡️ 2. JIKA KODE KENDARAAN KOSONG, CARI BERDASARKAN NAMA KENDARAAN DARI DATABASE
+		if kodeKendaraan == "" && namaKendaraan != "" {
+			var foundKendID string
+			database.Raw(`
+				SELECT TRIM(jnskend_id) 
+				FROM public.glb_m_jnskend 
+				WHERE UPPER(TRIM(jnskend_nama)) = UPPER(TRIM(?))
+				   OR UPPER(TRIM(jnskend_nama)) LIKE UPPER(TRIM(?))
+				LIMIT 1
+			`, namaKendaraan, "%"+namaKendaraan+"%").Scan(&foundKendID)
+
+			if foundKendID != "" {
+				kodeKendaraan = foundKendID
+			}
+		}
+
+		// 🛡️ 3. STANDARISASI FORMAT KODE KENDARAAN (misal "1" menjadi "001")
+		if len(kodeKendaraan) > 0 && len(kodeKendaraan) < 3 {
+			kodeKendaraan = fmt.Sprintf("%03s", kodeKendaraan)
+		}
+
+		statusAktif := "Y"
+		if len(record) > 4 && strings.ToUpper(strings.TrimSpace(record[4])) == "N" {
+			statusAktif = "N"
+		}
+
+		// 1. Upsert Header Trayek ke opr_m_trayekh
+		upsertHeaderQuery := `
+			INSERT INTO public.opr_m_trayekh (trh_id, trh_name, trh_jnskend, trh_aktifyn, trh_updateid, trh_updatetime)
+			VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT (trh_id) 
+			DO UPDATE SET 
+				trh_name = EXCLUDED.trh_name,
+				trh_jnskend = CASE WHEN EXCLUDED.trh_jnskend <> '' THEN EXCLUDED.trh_jnskend ELSE opr_m_trayekh.trh_jnskend END,
+				trh_aktifyn = EXCLUDED.trh_aktifyn,
+				trh_updateid = EXCLUDED.trh_updateid,
+				trh_updatetime = CURRENT_TIMESTAMP
+		`
+		if err := tx.Exec(upsertHeaderQuery, kodeTrayek, namaTrayek, kodeKendaraan, statusAktif, userID).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": fmt.Sprintf("Baris %d: Gagal simpan trayek %s: %v", rowIndex, kodeTrayek, err)})
+			return
+		}
+		totalSuccessHeader++
+
+		// 2. Jika baris memiliki komponen biaya (Kolom 5 & 7)
+		if len(record) >= 8 {
+			kodeBiaya := strings.TrimSpace(record[5])
+
+			// 🛡️ Proteksi Auto-Padding Leading Zero dari Excel (Standar Kode Biaya Dakota 12 Karakter)
+			if len(kodeBiaya) > 0 && len(kodeBiaya) < 12 {
+				// Ubah angka Excel seperti 8400000137 kembali utuh menjadi 084000000137
+				kodeBiaya = fmt.Sprintf("%012s", kodeBiaya)
+			}
+
+			cleanNominal := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(record[7]), ".", ""), ",", ".")
+			nominal, _ := strconv.ParseFloat(cleanNominal, 64)
+
+			umYN := "Y"
+			if len(record) > 8 && (strings.ToUpper(strings.TrimSpace(record[8])) == "N" || strings.ToUpper(strings.TrimSpace(record[8])) == "TIDAK") {
+				umYN = "N"
+			}
+
+			if kodeBiaya != "" && nominal > 0 {
+				upsertBiayaQuery := `
+					INSERT INTO public.opr_m_trayekbplk (tri_hid, tri_bplkid, tri_bplksubid, tri_nominal, tri_umyn, tri_updateid, tri_updatetime)
+					VALUES (?, '084000000029', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+					ON CONFLICT (tri_hid, tri_bplksubid)
+					DO UPDATE SET 
+						tri_nominal = EXCLUDED.tri_nominal,
+						tri_umyn = EXCLUDED.tri_umyn,
+						tri_updateid = EXCLUDED.tri_updateid,
+						tri_updatetime = CURRENT_TIMESTAMP
+				`
+				if err := tx.Exec(upsertBiayaQuery, kodeTrayek, kodeBiaya, nominal, umYN, userID).Error; err != nil {
+					tx.Rollback()
+					c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": fmt.Sprintf("Baris %d: Gagal simpan biaya %s: %v", rowIndex, kodeBiaya, err)})
+					return
+				}
+				totalSuccessBiaya++
+			}
+		}
+	}
+
+	tx.Commit()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":       "success",
+		"message":      fmt.Sprintf("Import selesai! %d data trayek dan %d rincian biaya berhasil disimpan/diperbarui.", totalSuccessHeader, totalSuccessBiaya),
+		"total_header": totalSuccessHeader,
+		"total_biaya":  totalSuccessBiaya,
+	})
+}
+
+// POST /api/master/uang-muka/update-header
+func UpdateMasterUangMukaHeaderHandler(c *gin.Context) {
+	database := getJurnalDB(c)
+	if database == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	var req struct {
+		TrhID      string `json:"trh_id" binding:"required"`
+		TrhName    string `json:"trh_name" binding:"required"`
+		TrhJnsKend string `json:"trh_jnskend" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Data tidak lengkap: " + err.Error()})
+		return
+	}
+
+	trhID := strings.TrimSpace(req.TrhID)
+	trhName := strings.TrimSpace(req.TrhName)
+
+	// 🛡️ Bersihkan BOM / Karakter Kotor tersembunyi (∩╗┐ atau \ufeff)
+	cleanKend := strings.TrimSpace(req.TrhJnsKend)
+	cleanKend = strings.TrimPrefix(cleanKend, "\ufeff")
+	cleanKend = strings.ReplaceAll(cleanKend, "∩╗┐", "")
+
+	// Jika formatnya angka (misal "1"), jadikan 3 digit ("001")
+	if len(cleanKend) > 0 && len(cleanKend) < 3 {
+		cleanKend = fmt.Sprintf("%03s", cleanKend)
+	}
+
+	err := database.Exec(`
+		UPDATE public.opr_m_trayekh 
+		SET trh_name = ?, 
+		    trh_jnskend = ?,
+		    trh_updatetime = CURRENT_TIMESTAMP
+		WHERE TRIM(trh_id) = TRIM(?)
+	`, trhName, cleanKend, trhID).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update master trayek: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("Trayek %s berhasil diperbarui!", trhID),
 	})
 }
