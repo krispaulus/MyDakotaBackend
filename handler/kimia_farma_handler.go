@@ -31,12 +31,29 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 	}
 	defer file.Close()
 
-	reader := csv.NewReader(file)
+	// 🎯 AUTO-DETECT DELIMITER DARI STREAM FILE
+	chosenDelimiter := ';'
 	if delimiterStr == "," {
-		reader.Comma = ','
+		chosenDelimiter = ','
+	} else if delimiterStr == ";" {
+		chosenDelimiter = ';'
 	} else {
-		reader.Comma = ';'
+		buf := make([]byte, 1024)
+		n, _ := file.Read(buf)
+		fileSample := string(buf[:n])
+
+		// Reset pointer file ke awal
+		if seeker, ok := file.(io.Seeker); ok {
+			seeker.Seek(0, io.SeekStart)
+		}
+
+		if strings.Count(fileSample, ";") < strings.Count(fileSample, ",") {
+			chosenDelimiter = ','
+		}
 	}
+
+	reader := csv.NewReader(file)
+	reader.Comma = chosenDelimiter
 	reader.LazyQuotes = true
 
 	// Baca Header (Baris 1)
@@ -85,13 +102,12 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			continue
 		}
 
-		// 🎯 Gunakan custName jika nama pengirim di CSV kosong:
 		pengirimName := getVal("Pengirim", "Nama_Pengirim")
 		if pengirimName == "" {
 			pengirimName = custName
 		}
 
-		// Mapping ke kolom econote
+		// Mapping ke kolom mkt_t_econote
 		econoteRow := map[string]interface{}{
 			"bttt_id":              noDN,
 			"bttt_asalcustid":      custID,
@@ -133,7 +149,6 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 
 	tx.Commit()
 
-	// 🎯 Variabel custName juga ikut ditampilkan pada balasan response:
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": fmt.Sprintf("Sukses mengimpor %d pesanan %s (%s).", totalSuccess, custName, tipe),
