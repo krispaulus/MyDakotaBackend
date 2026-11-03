@@ -515,3 +515,139 @@ func GetMasterItemBiayaHandler(c *gin.Context) {
 		"data":   list,
 	})
 }
+
+// Struct untuk Laporan Cash Flow
+type CashFlowReportItem struct {
+	CBDKet         string  `json:"cbd_ket"`
+	ItemOwnCAID    string  `json:"item_owncaid"`
+	ItemTipe       string  `json:"item_tipe"` // 'K' = Kredit, 'T'/'D' = Debet
+	CBDHargaSatuan float64 `json:"cbd_hargasatuan"`
+	Debet          float64 `json:"debet"`
+	Kredit         float64 `json:"kredit"`
+}
+
+type CashFlowReportHeader struct {
+	CBID      string               `json:"cb_id"`
+	CBTanggal string               `json:"cb_tanggal"`
+	CBKet     string               `json:"cb_ket"`
+	CBTipe    string               `json:"cb_tipe"`
+	SubDebet  float64              `json:"sub_debet"`
+	SubKredit float64              `json:"sub_kredit"`
+	Details   []CashFlowReportItem `json:"details"`
+}
+
+// GET /api/gl/cashbank/laporan-cashflow
+func GetLaporanCashFlowHandler(c *gin.Context) {
+	database := getCashBankDB(c)
+	startDate := strings.TrimSpace(c.Query("start_date"))
+	endDate := strings.TrimSpace(c.Query("end_date"))
+	cabangNama := strings.TrimSpace(c.Query("cabang_nama"))
+
+	query := database.Table("public.gl_t_cashbank cb").
+		Select(`
+			TRIM(BOTH FROM CAST(cb.cb_id AS VARCHAR)) AS cb_id, 
+			TO_CHAR(cb.cb_tanggal, 'YYYY-MM-DD') AS cb_tanggal, 
+			cb.cb_tipe, 
+			COALESCE(cb.cb_ket, '-') AS cb_ket
+		`).
+		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(BOTH FROM a.agen_id::varchar) = TRIM(BOTH FROM COALESCE(cb.cb_transagenid, cb.cb_agenid, '1')::varchar)").
+		Where("COALESCE(cb.cb_aktifyn, 'Y') = 'Y'")
+
+	if startDate != "" && endDate != "" {
+		query = query.Where("cb.cb_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
+	}
+	if cabangNama != "" && cabangNama != "-- SEMUA CABANG --" {
+		query = query.Where("a.agen_nama = ?", cabangNama)
+	}
+
+	type RawHeader struct {
+		CBID      string `gorm:"column:cb_id"`
+		CBTanggal string `gorm:"column:cb_tanggal"`
+		CBTipe    string `gorm:"column:cb_tipe"`
+		CBKet     string `gorm:"column:cb_ket"`
+	}
+
+	var headers []RawHeader
+	if err := query.Order("cb.cb_tanggal ASC, cb.cb_id ASC").Scan(&headers).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal query header: " + err.Error()})
+		return
+	}
+
+	var reportList []CashFlowReportHeader
+	var grandTotalDebet, grandTotalKredit float64
+
+	for _, h := range headers {
+		type RawDetail struct {
+			CBDKet         string  `gorm:"column:cbd_ket"`
+			ItemCAID       string  `gorm:"column:item_caid"`
+			CBDQuantity    float64 `gorm:"column:cbd_quantity"`
+			CBDHargaSatuan float64 `gorm:"column:cbd_hargasatuan"`
+		}
+
+		var rawDetails []RawDetail
+		// Query detail aman dengan CAST VARCHAR dan COALESCE
+		database.Table("public.gl_t_cashbankdetil cbd").
+			Select(`
+				COALESCE(cbd.cbd_ket, '') AS cbd_ket,
+				COALESCE(it.item_caid, '') AS item_caid,
+				COALESCE(cbd.cbd_quantity, 1) AS cbd_quantity,
+				COALESCE(cbd.cbd_hargasatuan, 0) AS cbd_hargasatuan
+			`).
+			Joins("LEFT JOIN public.gl_m_item it ON TRIM(BOTH FROM it.item_id::varchar) = TRIM(BOTH FROM cbd.cbd_itemid::varchar)").
+			Where("TRIM(BOTH FROM CAST(cbd.cbd_cbid AS VARCHAR)) = ?", h.CBID).
+			Scan(&rawDetails)
+
+		var details []CashFlowReportItem
+		var subDebet, subKredit float64
+
+		for _, d := range rawDetails {
+			nominal := d.CBDQuantity * d.CBDHargaSatuan
+			if nominal <= 0 {
+				nominal = d.CBDHargaSatuan
+			}
+
+			var debet, kredit float64
+			// Sesuai kaidah kas: Tipe 'K' (Keluar Kas) = Kredit, Tipe 'T' (Terima Kas) = Debit
+			if strings.ToUpper(h.CBTipe) == "K" {
+				kredit = nominal
+				debet = 0
+			} else {
+				debet = nominal
+				kredit = 0
+			}
+
+			subDebet += debet
+			subKredit += kredit
+
+			details = append(details, CashFlowReportItem{
+				CBDKet:         d.CBDKet,
+				ItemOwnCAID:    d.ItemCAID,
+				ItemTipe:       h.CBTipe,
+				CBDHargaSatuan: nominal,
+				Debet:          debet,
+				Kredit:         kredit,
+			})
+		}
+
+		grandTotalDebet += subDebet
+		grandTotalKredit += subKredit
+
+		reportList = append(reportList, CashFlowReportHeader{
+			CBID:      h.CBID,
+			CBTanggal: h.CBTanggal,
+			CBKet:     h.CBKet,
+			CBTipe:    h.CBTipe,
+			SubDebet:  subDebet,
+			SubKredit: subKredit,
+			Details:   details,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":             "success",
+		"data":               reportList,
+		"grand_total_debet":  grandTotalDebet,
+		"grand_total_kredit": grandTotalKredit,
+		"sisa_kas":           grandTotalDebet - grandTotalKredit,
+	})
+}
