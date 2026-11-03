@@ -720,6 +720,8 @@ func main() {
 			authorized.POST("/marketing/upload-btt/parse-csv", handler.ParseBTTCSV)
 			authorized.POST("/marketing/upload-btt/save-batch", handler.SaveBTTCSVBatch)
 
+			authorized.POST("/marketing/customer-upload-CSV/upload-kimia-farma-csv", handler.UploadKimiaFarmaCSVHandler)
+
 			// 📦 MARKETING / UPLOAD CSV (BTT UPLOAD V2)
 			authorized.GET("/marketing/btt-upload-v2/suggest-customer", handler.SuggestCustomerBTTV2)
 			authorized.POST("/marketing/btt-upload-v2/parse-csv", handler.ParseBTTV2CSV)
@@ -784,8 +786,6 @@ func main() {
 			authorized.POST("/piutang/penerimaan-pembayaran-kredit/posting", handler.PostingPenerimaanPembayaranKreditHandler)
 			authorized.POST("/piutang/penerimaan-pembayaran-kredit/unposting", handler.UnpostingPenerimaanPembayaranKreditHandler)
 			authorized.GET("/piutang/penerimaan-pembayaran-kredit/rekapitulasi-tipe2", handler.GetRekapitulasiTipe2Handler)
-
-			authorized.POST("/marketing/upload-kimia-farma-csv", handler.UploadKimiaFarmaCSVHandler)
 
 		}
 	}
