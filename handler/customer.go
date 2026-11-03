@@ -303,9 +303,14 @@ func CreateCustomerHandler(c *gin.Context) {
 	finalCustID := fmt.Sprintf("%s%05d", idPrefixPattern, nextUrutan)
 
 	// 3. Mapping data ke tabel public.mkt_m_customer (HANYA KOLOM RESMI YANG ADA DI DB)
+	agenIDStr := "1"
+	if agenExists && fmt.Sprintf("%v", ctxAgenID) != "" {
+		agenIDStr = fmt.Sprintf("%v", ctxAgenID)
+	}
+
 	newCustomer := map[string]interface{}{
 		"cust_id":            finalCustID,
-		"cust_agenid":        1,
+		"cust_agenid":        agenIDStr,
 		"cust_name":          strings.ToUpper(valNama),
 		"cust_alamat1":       strings.ToUpper(valAlamat1),
 		"cust_alamat2":       strings.ToUpper(valAlamat2),
