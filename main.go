@@ -784,6 +784,8 @@ func main() {
 			authorized.POST("/piutang/penerimaan-pembayaran-kredit/unposting", handler.UnpostingPenerimaanPembayaranKreditHandler)
 			authorized.GET("/piutang/penerimaan-pembayaran-kredit/rekapitulasi-tipe2", handler.GetRekapitulasiTipe2Handler)
 
+			authorized.POST("/marketing/upload-kimia-farma-csv", handler.UploadKimiaFarmaCSVHandler)
+
 		}
 	}
 
