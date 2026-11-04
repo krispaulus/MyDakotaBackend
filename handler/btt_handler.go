@@ -1403,3 +1403,61 @@ func isPusatAllowedCreateBTT(db *gorm.DB) bool {
 	}
 	return strings.ToUpper(strings.TrimSpace(val)) == "Y"
 }
+
+// 🌟 GENERATOR NOMOR RESI BTT STANDAR DAKOTA (Contoh: 001112026C000171)
+// Format: [KODE_AGEN_3DIGIT][BULAN_2DIGIT][TAHUN_4DIGIT][KODE_PT][URUTAN_6DIGIT]
+func GenerateNomorResiBTTStandard(database *gorm.DB, ptID string, agenID string, tgl time.Time) string {
+	corpCode := strings.ToUpper(strings.TrimSpace(ptID))
+	if corpCode == "" {
+		corpCode = "C" // Default DLI
+	}
+
+	agenKode := strings.TrimSpace(agenID)
+	if agenKode == "" {
+		agenKode = "001"
+	}
+	// Pastikan kode agen 3 digit (contoh: "1" -> "001")
+	if len(agenKode) < 3 {
+		agenKode = fmt.Sprintf("%03s", agenKode)
+	} else if len(agenKode) > 3 {
+		agenKode = agenKode[:3]
+	}
+
+	bulanStr := tgl.Format("01")   // "11"
+	tahunStr := tgl.Format("2006") // "2026"
+
+	// Prefix Resi: Contoh "001112026C"
+	prefixResi := fmt.Sprintf("%s%s%s%s", agenKode, bulanStr, tahunStr, corpCode)
+
+	var lastResi string
+	database.Table("public.mkt_t_econote").
+		Select("bttt_id").
+		Where("bttt_id LIKE ?", prefixResi+"%").
+		Order("bttt_id DESC").
+		Limit(1).
+		Scan(&lastResi)
+
+	nextUrut := 1
+	prefixLen := len(prefixResi)
+	if lastResi != "" && len(lastResi) >= prefixLen+6 {
+		suffix := lastResi[prefixLen:]
+		if n, errN := strconv.Atoi(suffix); errN == nil {
+			nextUrut = n + 1
+		}
+	}
+
+	res := fmt.Sprintf("%s%06d", prefixResi, nextUrut)
+
+	// Guard loop anti-duplikasi race condition
+	for {
+		var cnt int64
+		err := database.Table("public.mkt_t_econote").Where("bttt_id = ?", res).Count(&cnt).Error
+		if err != nil || cnt == 0 {
+			break
+		}
+		nextUrut++
+		res = fmt.Sprintf("%s%06d", prefixResi, nextUrut)
+	}
+
+	return res
+}

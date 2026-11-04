@@ -146,13 +146,16 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			volClean = "0"
 		}
 
-		// 🌟 3. MAPPING DENGAN TIPE DATA YANG SESUAI TABEL mkt_t_econote
+		bttNoResmi := GenerateNomorResiBTTStandard(database, fmt.Sprintf("%v", ptID), "001", tglTrans)
+
+		// 🌟 2. Mapping ke tabel mkt_t_econote
 		econoteRow := map[string]interface{}{
-			"bttt_id":              noDN,
+			"bttt_id":              bttNoResmi, // 👈 Nomor Resi Resmi (Barcode atas: 001112026C000171)
+			"bttt_nosuratjalan":    noDN,       // 👈 Nomor SKB / DN Asli Kimia Farma (3000069205)
 			"bttt_tanggal":         tglTrans,
 			"bttt_spyn":            "Y",
 			"bttt_aktifyn":         "Y",
-			"bttt_asalagenid":      "001", // DLI Pusat
+			"bttt_asalagenid":      "001",
 			"bttt_asalcustid":      custID,
 			"bttt_asalname":        pengirimName,
 			"bttt_asalalamat":      getVal("AlamatPengirim", "Alamat_Pengirim"),
@@ -170,13 +173,12 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			"bttt_jmlunit":         int(toFloat(getVal("Koli", "Jumlah_Koli"))),
 			"bttt_berat":           toFloat(getVal("Berat")),
 			"bttt_beratvol":        toFloat(getVal("BeratVol", "Berat_Volume")),
-			"bttt_ukuran":          volClean, // 👈 WAJIB STRING/VARCHAR (contoh: "8.717"), bukan float64!
+			"bttt_ukuran":          volClean,
 			"bttt_biayapenerus":    toFloat(getVal("BiayaPenerus", "Biaya_Penerus")),
 			"bttt_harga":           toFloat(getVal("Harga")),
-			"bttt_nosuratjalan":    noDN,
 			"bttt_ket":             getVal("Keterangan"),
-			"bttt_jenisharga":      "2", // Kredit
-			"bttt_paketyn":         "Y", // Reguler
+			"bttt_jenisharga":      "2",
+			"bttt_paketyn":         "Y",
 			"bttt_servid":          "1",
 			"bttt_updateid":        "CSV_KIMIA_FARMA",
 		}
