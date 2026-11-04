@@ -119,15 +119,10 @@ func UpdateBTT(c *gin.Context) {
 }
 
 func GetBTT(c *gin.Context) {
-	var data []models.BTT
 	ptID, exists := c.Get("pt_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
-		return
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = "C"
 	}
-
-	// 🟢 Tangkap parameter filter agen_id dari URL request React (?agen_id=839)
-	agenID := c.Query("agen_id")
 
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
@@ -135,27 +130,138 @@ func GetBTT(c *gin.Context) {
 		return
 	}
 
-	// Buat Query Builder dasar GORM
-	query := database.Order("bttt_tanggal desc").Limit(100)
+	// 🟢 Tangkap seluruh parameter filter dari React
+	agenID := strings.TrimSpace(c.Query("agen_id"))
+	cabang := strings.TrimSpace(c.Query("cabang"))
+	startDate := strings.TrimSpace(c.Query("start_date"))
+	endDate := strings.TrimSpace(c.Query("end_date"))
+	bypassTanggal := c.Query("bypass_tanggal") == "Y" || c.Query("bypass_tanggal") == "true"
+	jenisBTT := strings.TrimSpace(c.Query("jenis_btt"))
+	customer := strings.TrimSpace(c.Query("customer"))
+	noBTT := strings.TrimSpace(c.Query("no_btt"))
+	kota := strings.TrimSpace(c.Query("kota"))
 
-	// 🟢 Jika parameter agen_id dikirim dari React, lakukan penyaringan ketat di query Postgres
-	if agenID != "" && agenID != "undefined" && agenID != "null" {
-		if _, err := strconv.Atoi(agenID); err == nil {
-			// Lolos sensor: agenID terbukti angka murni (e.g. 839, 515), aman masuk ke kolom integer Postgres!
-			query = query.Where("bttt_asalagenid = ?", agenID)
-		} else {
-			// Jika agenID berupa teks nama (e.g. "PUSAT DAKOTA"), otomatis dilewati (bypass) tanpa bikin SQL crash!
-			log.Printf("🏢 [Nusantara Guard] Parameter agen_id kustom/non-numeric terdeteksi [%s]. Filter WHERE di-bypass murni.", agenID)
-		}
+	// 🌟 CEK APAKAH USER ADALAH PUSAT / HOLDING
+	upperAgen := strings.ToUpper(agenID)
+	isHoldingUser := upperAgen == "1" || upperAgen == "839" || upperAgen == "001" ||
+		strings.Contains(upperAgen, "PUSAT") || strings.Contains(upperAgen, "HOLDING") ||
+		agenID == ""
+
+	type BTTGridRow struct {
+		ID               string    `json:"id" gorm:"column:id"`
+		Tanggal          time.Time `json:"tanggal" gorm:"column:tanggal"`
+		AsalName         string    `json:"asal_name" gorm:"column:asal_name"`
+		TujuanNama       string    `json:"tujuan_nama" gorm:"column:tujuan_nama"`
+		TujuanKota       string    `json:"tujuan_kota" gorm:"column:tujuan_kota"`
+		NamaBarang       string    `json:"nama_barang" gorm:"column:nama_barang"`
+		Harga            float64   `json:"harga" gorm:"column:harga"`
+		CreateBy         string    `json:"create_by" gorm:"column:create_by"` // 🌟 Kolom Create By
+		NoSuratJalan     string    `json:"no_surat_jalan" gorm:"column:no_surat_jalan"`
+		Keterangan       string    `json:"keterangan" gorm:"column:keterangan"`
+		JumlahKoli       int       `json:"jumlah_koli" gorm:"column:jumlah_koli"`
+		Berat            float64   `json:"berat" gorm:"column:berat"`
+		BeratVolume      float64   `json:"berat_volume" gorm:"column:berat_volume"`
+		Kubikasi         float64   `json:"kubikasi" gorm:"column:kubikasi"`
+		BiayaPenerus     float64   `json:"biaya_penerus" gorm:"column:biaya_penerus"`
+		BiayaPacking     float64   `json:"biaya_packing" gorm:"column:biaya_packing"`
+		MetodePembayaran string    `json:"metode_pembayaran" gorm:"column:metode_pembayaran"`
+		JenisLayanan     string    `json:"jenis_layanan" gorm:"column:jenis_layanan"`
+		AsalKota         string    `json:"asal_kota" gorm:"column:asal_kota"`
+		AgenNama         string    `json:"agen_nama" gorm:"column:agen_nama"`
 	}
 
-	err := query.Find(&data).Error
+	// 🌟 QUERY UTAMA TANPA JOIN KE sec_m_user (ANTI-CRASH)
+	query := database.Table("public.mkt_t_econote e").
+		Select(`
+			TRIM(BOTH FROM e.bttt_id::varchar) AS id,
+			e.bttt_tanggal AS tanggal,
+			COALESCE(e.bttt_asalname, '') AS asal_name,
+			COALESCE(e.bttt_tujuannama, '') AS tujuan_nama,
+			COALESCE(e.bttt_tujuankota, '') AS tujuan_kota,
+			COALESCE(e.bttt_namabarang, '') AS nama_barang,
+			COALESCE(e.bttt_harga, 0) AS harga,
+			-- Ambil nama pembuat dari bttt_up atau bttt_updateid jika ada nama, fallback ke STAFF
+			CASE 
+				WHEN e.bttt_updateid IS NOT NULL AND e.bttt_updateid <> '' AND e.bttt_updateid !~ '^[0-9]+$' THEN e.bttt_updateid
+				WHEN e.bttt_up IS NOT NULL AND e.bttt_up <> '' THEN e.bttt_up
+				ELSE 'STAFF'
+			END AS create_by,
+			COALESCE(e.bttt_nosuratjalan, '') AS no_surat_jalan,
+			COALESCE(e.bttt_ket, '') AS keterangan,
+			COALESCE(e.bttt_jmlunit, 1) AS jumlah_koli,
+			COALESCE(e.bttt_berat, 0) AS berat,
+			COALESCE(e.bttt_beratvol, 0) AS berat_volume,
+			COALESCE(NULLIF(regexp_replace(COALESCE(e.bttt_ukuran::text, '0'), '[^0-9.]', '', 'g'), '')::numeric, 0) AS kubikasi,
+			COALESCE(e.bttt_biayapenerus, 0) AS biaya_penerus,
+			COALESCE(p.pck_biaya, 0) AS biaya_packing,
+			CASE 
+				WHEN e.bttt_jenisharga = '0' THEN 'TUNAI'
+				WHEN e.bttt_jenisharga = '2' THEN 'KREDIT'
+				ELSE 'TAGIH TUJUAN'
+			END AS metode_pembayaran,
+			CASE 
+				WHEN e.bttt_paketyn = 'Y' THEN 'REGULER'
+				ELSE 'EKONOMIS'
+			END AS jenis_layanan,
+			COALESCE(e.bttt_asalkota, '') AS asal_kota,
+			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama
+		`).
+		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
+		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
+		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
+
+	// 1. Filter Tanggal
+	if !bypassTanggal && startDate != "" && endDate != "" {
+		query = query.Where("e.bttt_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
+	}
+
+	// 2. Filter Cabang (Jika memilih cabang tertentu di dropdown)
+	if cabang != "" && cabang != "-- SEMUA CABANG --" && cabang != "ALL" {
+		query = query.Where(`(
+			TRIM(BOTH FROM e.bttt_asalagenid::varchar) = TRIM(?) 
+			OR a.agen_kode = ? 
+			OR a.agen_nama ILIKE ?
+		)`, cabang, cabang, "%"+cabang+"%")
+	} else if !isHoldingUser && agenID != "" {
+		// Jika BUKAN pusat (misal agen cabang login), batasi ke cabangnya sendiri
+		query = query.Where(`(
+			TRIM(BOTH FROM e.bttt_asalagenid::varchar) = TRIM(?) 
+			OR a.agen_kode = ?
+		)`, agenID, agenID)
+	}
+	// Catatan: Jika isHoldingUser dan memilih "-- SEMUA CABANG --", filter cabang dilewati agar ke-168 data BTT muncul semua!
+
+	// 3. Filter Jenis Pembayaran (0=Tunai, 1=Tagih Turun, 2=Kredit)
+	if jenisBTT != "" {
+		query = query.Where("e.bttt_jenisharga = ?", jenisBTT)
+	}
+
+	// 4. Filter Customer / Pengirim
+	if customer != "" {
+		query = query.Where("(e.bttt_asalname ILIKE ? OR e.bttt_asalcustid ILIKE ?)", "%"+customer+"%", "%"+customer+"%")
+	}
+
+	// 5. Filter Nomor Resi BTT
+	if noBTT != "" {
+		query = query.Where("e.bttt_id ILIKE ?", "%"+noBTT+"%")
+	}
+
+	// 6. Filter Kota Tujuan
+	if kota != "" {
+		query = query.Where("(e.bttt_tujuankota ILIKE ? OR e.bttt_tujuankecamatan ILIKE ?)", "%"+kota+"%", "%"+kota+"%")
+	}
+
+	var list []BTTGridRow
+	err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Limit(500).Scan(&list).Error
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, data)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   list,
+	})
 }
 
 func CheckLockBTT(c *gin.Context) {
@@ -423,12 +529,17 @@ func CalculateTarif(c *gin.Context) {
 	})
 }
 
-// CreateBTT menghandle INSERT data transaksi BTT baru dari React Form ke mkt_t_econote
 func CreateBTT(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
 		return
+	}
+
+	// 1. Ambil identitas user pembuat BTT
+	userID, _ := c.Get("username")
+	if userID == nil || fmt.Sprintf("%v", userID) == "" {
+		userID = "SYSTEM"
 	}
 
 	var rawPayload map[string]interface{}
@@ -437,14 +548,14 @@ func CreateBTT(c *gin.Context) {
 		return
 	}
 
-	// 1. Resolve database sesuai tenant PT terlebih dahulu
+	// 2. Resolve database sesuai tenant PT
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Koneksi database gagal resolved"})
 		return
 	}
 
-	// 2. Cek apakah asal agen tergolong PUSAT / HOLDING
+	// 3. Cek apakah asal agen tergolong PUSAT / HOLDING
 	asalAgenRaw := strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalagenid"]))
 	upperAsalAgen := strings.ToUpper(asalAgenRaw)
 	asalKotaRaw := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalkota"])))
@@ -453,7 +564,6 @@ func CreateBTT(c *gin.Context) {
 		upperAsalAgen == "PUSAT DAKOTA" || strings.Contains(upperAsalAgen, "PUSAT") || strings.Contains(upperAsalAgen, "HOLDING") ||
 		strings.Contains(asalKotaRaw, "PUSAT") || strings.Contains(asalKotaRaw, "HOLDING")
 
-	// 🟢 JIKA PUSAT: Periksa tabel glb_m_param apakah toggle izin aktif
 	if isPusat {
 		allowPusat := isPusatAllowedCreateBTT(database)
 		if !allowPusat {
@@ -491,7 +601,6 @@ func CreateBTT(c *gin.Context) {
 			asalAgenIDFinal = valStr
 		}
 	}
-	// Fallback jika kosong: ambil dari token user login
 	if asalAgenIDFinal == "" {
 		if userAgenID, exists := c.Get("agen_id"); exists {
 			asalAgenIDFinal = strings.TrimSpace(fmt.Sprintf("%v", userAgenID))
@@ -512,7 +621,6 @@ func CreateBTT(c *gin.Context) {
 		}
 	}
 
-	// Jika belum ada ID tujuan, cari otomatis dari database glb_m_agen
 	if tujuanAgenIDFinal == "0" {
 		tujuanNamaRaw := strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_kodecabangagen"]))
 		if tujuanNamaRaw == "" || tujuanNamaRaw == "<nil>" {
@@ -641,7 +749,7 @@ func CreateBTT(c *gin.Context) {
 	}
 
 	// =========================================================================
-	// 4. MAP INSERT KE DATABASE DENGAN NILAI STRING YANG AMAN
+	// 4. MAP INSERT KE DATABASE (bttt_updateid tersimpan di sini)
 	// =========================================================================
 	dbRow := map[string]interface{}{
 		"bttt_id":              cleanStringVal(bttIDStr),
@@ -676,6 +784,7 @@ func CreateBTT(c *gin.Context) {
 		"bttt_aktifyn":         "Y",
 		"bttt_servid":          cleanStringVal(servIDFinal),
 		"bttt_asalagenid":      cleanStringVal(asalAgenIDFinal),
+		"bttt_updateid":        fmt.Sprintf("%v", userID), // 🌟 Tersimpan langsung di sini
 	}
 
 	err := database.Table("public.mkt_t_econote").Create(&dbRow).Error
