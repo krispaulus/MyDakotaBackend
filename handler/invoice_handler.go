@@ -298,7 +298,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		"acc_head": strings.TrimSpace(accHead),
 		"btt_list": bttList,
 	})
-} // 🌟 Pastikan kurung tutup ini ada sebelum func GetUnbilledBTTHandler
+}
 
 // 3. GET /api/piutang/invoice/unbilled-btt
 func GetUnbilledBTTHandler(c *gin.Context) {
@@ -342,16 +342,14 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
 
-	// 🔒 VALIDASI 1: FILTER ANTI-SUDAH BAYAR / LUNAS
-	// Kecualikan resi yang sudah lunas atau ada record pembayaran kas/receipt
+		// 🔒 VALIDASI 1: FILTER ANTI-SUDAH BAYAR / LUNAS
 	query = query.Where(`
-		COALESCE(e.bttt_lunasyn, 'N') <> 'Y' 
-		AND NOT EXISTS (
-			SELECT 1 FROM public.art_t_receiptdddd rc 
-			WHERE TRIM(BOTH FROM rc.trectddd_nobtt::varchar) = TRIM(BOTH FROM e.bttt_id::varchar)
-			  AND COALESCE(rc.trectddd_bayar, 0) > 0
-		)
-	`)
+        NOT EXISTS (
+            SELECT 1 FROM public.art_t_receiptdddd rc 
+            WHERE TRIM(BOTH FROM rc.trectddd_nobtt::varchar) = TRIM(BOTH FROM e.bttt_id::varchar)
+              AND COALESCE(rc.trectddd_bayar, 0) > 0
+        )
+    `)
 
 	// 🔒 VALIDASI 2: FILTER ANTI-DOUBLE INVOICE
 	// Resi yang sudah masuk ke Invoice yang masih aktif (artih_delete <> 'Y') TIDAK BOLEH TAMPIL
@@ -487,19 +485,12 @@ func SaveInvoiceHandler(c *gin.Context) {
 	// 2. Cek apakah ada BTT yang sudah lunas/terbayar di kasir / pelunasan piutang
 	var paidBTTs []string
 	tx.Raw(`
-		SELECT DISTINCT e.bttt_id 
-		FROM public.mkt_t_econote e
-		WHERE TRIM(e.bttt_id) IN ? 
-		  AND (
-			COALESCE(e.bttt_lunasyn, 'N') = 'Y' 
-			OR EXISTS (
-				SELECT 1 FROM public.art_t_receiptdddd r 
-				WHERE TRIM(r.trectddd_nobtt) = TRIM(e.bttt_id) 
-				  AND COALESCE(r.trectddd_bayar, 0) > 0
-			)
-		  )
-		LIMIT 5
-	`, req.BTTList).Scan(&paidBTTs)
+        SELECT DISTINCT rc.trectddd_nobtt 
+        FROM public.art_t_receiptdddd rc
+        WHERE TRIM(rc.trectddd_nobtt) IN ? 
+          AND COALESCE(rc.trectddd_bayar, 0) > 0
+        LIMIT 5
+    `, req.BTTList).Scan(&paidBTTs)
 
 	if len(paidBTTs) > 0 {
 		tx.Rollback()
@@ -811,19 +802,12 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 		// 🔒 Validasi: Pastikan BTT belum lunas/terbayar
 		var paidList []string
 		tx.Raw(`
-			SELECT DISTINCT e.bttt_id 
-			FROM public.mkt_t_econote e
-			WHERE TRIM(e.bttt_id) IN ? 
-			  AND (
-				COALESCE(e.bttt_lunasyn, 'N') = 'Y' 
-				OR EXISTS (
-					SELECT 1 FROM public.art_t_receiptdddd r 
-					WHERE TRIM(r.trectddd_nobtt) = TRIM(e.bttt_id) 
-					  AND COALESCE(r.trectddd_bayar, 0) > 0
-				)
-			  )
-			LIMIT 5
-		`, req.AddBTTList).Scan(&paidList)
+            SELECT DISTINCT rc.trectddd_nobtt 
+            FROM public.art_t_receiptdddd rc
+            WHERE TRIM(rc.trectddd_nobtt) IN ? 
+              AND COALESCE(rc.trectddd_bayar, 0) > 0
+            LIMIT 5
+        `, req.AddBTTList).Scan(&paidList)
 
 		if len(paidList) > 0 {
 			tx.Rollback()
