@@ -51,19 +51,23 @@ func GetProfile(c *gin.Context) {
 	// 2. AMBIL DAFTAR KODE CABANG MENGGUNAKAN VALUE DARI STRUCT dbUser
 	var cabangs []string
 	if strings.ToUpper(dbUser.All_cabangYN) == "Y" {
-		// Jika Super Admin (Y), ambil semua kode cabang aktif dari glb_m_agen
+		// Jika Super Admin (Y), ambil kode cabang aktif (gunakan COALESCE agar aman dari NULL)
 		err := activeDB.Table("glb_m_agen").
+			Select("COALESCE(NULLIF(agen_kode, ''), agen_id::text) AS kode").
 			Where("agen_aktifyn = ?", "Y").
 			Where("agen_nama NOT LIKE ?", "%XXX%").
-			Pluck("agen_kode", &cabangs).Error
+			Where("agen_id IS NOT NULL").
+			Pluck("kode", &cabangs).Error
 		if err != nil {
 			cabangs = []string{}
 		}
 	} else {
 		// Jika User Biasa (N), ambil daftar kode cabang dari weblogin_cabang
 		err := activeDB.Table("weblogin_cabang").
+			Select("COALESCE(kode_cabang, '') AS kode").
 			Where("LOWER(username) = LOWER(?)", username).
-			Pluck("kode_cabang", &cabangs).Error
+			Where("kode_cabang IS NOT NULL AND kode_cabang <> ''").
+			Pluck("kode", &cabangs).Error
 		if err != nil {
 			cabangs = []string{}
 		}

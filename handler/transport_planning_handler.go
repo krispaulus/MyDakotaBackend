@@ -706,12 +706,19 @@ func CalculatePreview2(c *gin.Context) {
 				HargaOverKgMax float64 `gorm:"column:hargaoverkgmax"`
 				HargaKgDG      float64 `gorm:"column:harga_kg_dg"`
 				KgMinDG        float64 `gorm:"column:kg_min_dg"`
+				KgMaxDG        float64 `gorm:"column:kg_max_dg"`
+				HargaOverKgDG  float64 `gorm:"column:hargaoverkgmax_dg"`
 				HargaExpressKg float64 `gorm:"column:hargaexpress_kg"`
 				KgExpressMin   float64 `gorm:"column:kgexpress_min"`
 			}
 			var md MultidropTarif
 
-			// A. Cari berdasarkan Kecamatan, fallback ke Kabupaten/Kota
+			// Bersihkan imbuhan wilayah
+			regStrip := regexp.MustCompile(`(?i)\b(KAB\.|KABUPATEN|KOTA|ADM\.)\b`)
+			cleanKota := strings.TrimSpace(regStrip.ReplaceAllString(row.Kota, ""))
+			cleanKecamatan := strings.TrimSpace(regStrip.ReplaceAllString(row.Kecamatan, ""))
+
+			// A. Ambil tarif master multidrop lengkap
 			errMD := database.Raw(`
 				SELECT 
 					COALESCE(harga_kg, 0) AS harga_kg,
@@ -720,54 +727,72 @@ func CalculatePreview2(c *gin.Context) {
 					COALESCE(hargaoverkgmax, 0) AS hargaoverkgmax,
 					COALESCE(harga_kg_dg, 0) AS harga_kg_dg,
 					COALESCE(kg_min_dg, 0) AS kg_min_dg,
+					COALESCE(kg_max_dg, 0) AS kg_max_dg,
+					COALESCE(hargaoverkgmax_dg, 0) AS hargaoverkgmax_dg,
 					COALESCE(hargaexpress_kg, 0) AS hargaexpress_kg,
 					COALESCE(kgexpress_min, 0) AS kgexpress_min
 				FROM public.mkt_m_eharga_pelanggan_multidrop
 				WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
 				  AND (
-				      UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?)) 
-				      OR UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
+				      UPPER(TRIM(tujuan_kecamatan)) LIKE UPPER(?) 
+				      OR UPPER(TRIM(tujuan_kabupaten)) LIKE UPPER(?)
+				      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kabupaten)), '%')
 				  )
 				ORDER BY 
 					CASE WHEN UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?)) THEN 1 ELSE 2 END ASC,
 					id DESC
 				LIMIT 1
-			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Kecamatan, row.Kota, row.Kecamatan).Scan(&md).Error
+			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), "%"+cleanKecamatan+"%", "%"+cleanKota+"%", cleanKota, cleanKecamatan).Scan(&md).Error
 
-			// B. Hitung Harga Multidrop Sesuai Aturan (DG B3 vs Reguler vs Express)
 			if errMD == nil && (md.HargaKg > 0 || md.HargaKgDG > 0 || md.HargaExpressKg > 0) {
-				beratHitung := row.TotalWeight
-				if beratHitung <= 0 {
-					beratHitung = 1
+				berat := row.TotalWeight
+				if berat <= 0 {
+					berat = 1
 				}
 
-				tarifPerKg := md.HargaKg
-				minimalKg := md.KgMin
+				// Tentukan parameter sesuai jenis kiriman (DG B3 vs Express vs Reguler)
+				hk := md.HargaKg
+				kmin := md.KgMin
+				kmax := md.KgMax
+				over := md.HargaOverKgMax
 
-				// Jika Kiriman B3 / Dangerous Goods (is_DG = 'Y')
+				// Jika Kiriman B3 / Dangerous Goods
 				if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" && md.HargaKgDG > 0 {
-					tarifPerKg = md.HargaKgDG
+					hk = md.HargaKgDG
 					if md.KgMinDG > 0 {
-						minimalKg = md.KgMinDG
+						kmin = md.KgMinDG
 					}
-					// Jika Kiriman Multidrop Express (is_multidrop = 'E')
+					if md.KgMaxDG > 0 {
+						kmax = md.KgMaxDG
+					}
+					if md.HargaOverKgDG > 0 {
+						over = md.HargaOverKgDG
+					}
+					// Jika Kiriman Multidrop Express
 				} else if strings.ToUpper(strings.TrimSpace(row.IsMultidrop)) == "E" && md.HargaExpressKg > 0 {
-					tarifPerKg = md.HargaExpressKg
+					hk = md.HargaExpressKg
 					if md.KgExpressMin > 0 {
-						minimalKg = md.KgExpressMin
+						kmin = md.KgExpressMin
 					}
 				}
 
-				// Rumus Multidrop Dakota: Berat Minimal x Tarif Per Kg (jika berat aktual < minimal)
-				if minimalKg > 0 && beratHitung < minimalKg {
-					hargaFinal = minimalKg * tarifPerKg
+				// Fallback safety jika batas over kg belum diisi di database
+				if over <= 0 {
+					over = hk
+				}
+
+				// B. FORMULA RESMI DARI hargaMultidrop.asp
+				if berat <= kmin {
+					hargaFinal = hk * kmin
+				} else if kmax > 0 && berat > kmax {
+					hargaFinal = (hk * kmax) + ((berat - kmax) * over)
 				} else {
-					hargaFinal = beratHitung * tarifPerKg
+					hargaFinal = hk * berat
 				}
 
 				sumberHarga = "TARIF MASTER"
 			} else {
-				// C. Fallback: Cari Histori BTT Terakhir Konsinyee Tersebut
+				// C. Fallback riwayat BTT jika master multidrop belum diset
 				var historiHarga float64
 				database.Raw(`
 					SELECT COALESCE(bttt_harga, 0)
