@@ -427,7 +427,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 			}
 		} else {
 			// =========================================================================
-			// 📍 AUTO-LOOKUP WILAYAH BERLAPIS (PROPINSI, KOTA, KECAMATAN, KELURAHAN, KODEPOS)
+			// 📍 AUTO-LOOKUP WILAYAH BERLAPIS (PRIORITAS 1: MASTER HISTORI MERCK TERBARU)
 			// =========================================================================
 			type LocLookup struct {
 				Pulau     string `gorm:"column:pulau"`
@@ -440,22 +440,58 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 
 			cleanAddr := strings.TrimSpace(strings.ReplaceAll(address, "\n", " "))
 
-			// 1. Prioritas 1: Dari riwayat BTT lama di mkt_t_econote (Penerima + Kemiripan Alamat)
+			// 1. PRIORITAS UTAMA (1): Ambil dari mkt_m_customer_history_merck (Penerima + Kemiripan Alamat)
 			database.Raw(`
 				SELECT 
-					bttt_tujuanpulau AS pulau, 
-					bttt_tujuankota AS kota, 
-					bttt_tujuankecamatan AS kecamatan, 
-					bttt_tujuankelurahan AS kelurahan, 
-					bttt_tujuankodepos AS kodepos
-				FROM public.mkt_t_econote
-				WHERE UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?)) 
-				  AND UPPER(TRIM(bttt_tujuanalamat)) LIKE UPPER(?) 
-				  AND (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
-				ORDER BY bttt_tanggal DESC LIMIT 1
-			`, consignee, "%"+cleanAddr+"%", customerID, strings.TrimLeft(customerID, "0")).Scan(&loc)
+					COALESCE(propinsi, '') AS pulau, 
+					COALESCE(kota, '') AS kota, 
+					COALESCE(kecamatan, '') AS kecamatan, 
+					COALESCE(kelurahan, '') AS kelurahan, 
+					COALESCE(kodepos, '') AS kodepos
+				FROM public.mkt_m_customer_history_merck
+				WHERE UPPER(TRIM(penerima_tujuan)) = UPPER(TRIM(?))
+				  AND (
+				      UPPER(TRIM(tujuan)) = UPPER(TRIM(?))
+				      OR UPPER(TRIM(tujuan)) LIKE UPPER(?) 
+				      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan)), '%')
+				  )
+				ORDER BY id DESC LIMIT 1
+			`, consignee, cleanAddr, "%"+cleanAddr+"%", cleanAddr).Scan(&loc)
 
-			// 2. Prioritas 2: Dari mkt_t_econote hanya berdasarkan Nama Penerima
+			// 2. PRIORITAS 2: Dari mkt_m_customer_history_merck berdasarkan Nama Penerima Terakhir
+			if loc.Kecamatan == "" || loc.Kecamatan == "-" {
+				database.Raw(`
+					SELECT 
+						COALESCE(propinsi, '') AS pulau, 
+						COALESCE(kota, '') AS kota, 
+						COALESCE(kecamatan, '') AS kecamatan, 
+						COALESCE(kelurahan, '') AS kelurahan, 
+						COALESCE(kodepos, '') AS kodepos
+					FROM public.mkt_m_customer_history_merck
+					WHERE UPPER(TRIM(penerima_tujuan)) = UPPER(TRIM(?))
+					  AND kecamatan IS NOT NULL AND kecamatan <> '' AND kecamatan <> '-'
+					ORDER BY id DESC LIMIT 1
+				`, consignee).Scan(&loc)
+			}
+
+			// 3. PRIORITAS 3 (FALLBACK): Dari riwayat transaksi lama di mkt_t_econote (Penerima + Kemiripan Alamat)
+			if loc.Kecamatan == "" || loc.Kecamatan == "-" {
+				database.Raw(`
+					SELECT 
+						bttt_tujuanpulau AS pulau, 
+						bttt_tujuankota AS kota, 
+						bttt_tujuankecamatan AS kecamatan, 
+						bttt_tujuankelurahan AS kelurahan, 
+						bttt_tujuankodepos AS kodepos
+					FROM public.mkt_t_econote
+					WHERE UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?)) 
+					  AND UPPER(TRIM(bttt_tujuanalamat)) LIKE UPPER(?) 
+					  AND (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
+					ORDER BY bttt_tanggal DESC LIMIT 1
+				`, consignee, "%"+cleanAddr+"%", customerID, strings.TrimLeft(customerID, "0")).Scan(&loc)
+			}
+
+			// 4. PRIORITAS 4: Dari mkt_t_econote hanya berdasarkan Nama Penerima
 			if loc.Kecamatan == "" || loc.Kecamatan == "-" {
 				database.Raw(`
 					SELECT 
@@ -472,38 +508,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 				`, consignee, customerID, strings.TrimLeft(customerID, "0")).Scan(&loc)
 			}
 
-			// 3. Prioritas 3 (UTAMA UNTUK DATA BARU MERCK): Dari master mkt_m_customer_history_merck
-			if loc.Kecamatan == "" || loc.Kecamatan == "-" {
-				database.Raw(`
-					SELECT 
-						COALESCE(propinsi, '') AS pulau, 
-						COALESCE(kota, '') AS kota, 
-						COALESCE(kecamatan, '') AS kecamatan, 
-						COALESCE(kelurahan, '') AS kelurahan, 
-						COALESCE(kodepos, '') AS kodepos
-					FROM public.mkt_m_customer_history_merck
-					WHERE UPPER(TRIM(penerima_tujuan)) = UPPER(TRIM(?))
-					  AND (UPPER(TRIM(tujuan)) LIKE UPPER(?) OR UPPER(?) LIKE UPPER(CONCAT('%', TRIM(tujuan), '%')))
-					LIMIT 1
-				`, consignee, "%"+cleanAddr+"%", cleanAddr).Scan(&loc)
-
-				if loc.Kecamatan == "" || loc.Kecamatan == "-" {
-					database.Raw(`
-						SELECT 
-							COALESCE(propinsi, '') AS pulau, 
-							COALESCE(kota, '') AS kota, 
-							COALESCE(kecamatan, '') AS kecamatan, 
-							COALESCE(kelurahan, '') AS kelurahan, 
-							COALESCE(kodepos, '') AS kodepos
-						FROM public.mkt_m_customer_history_merck
-						WHERE UPPER(TRIM(penerima_tujuan)) = UPPER(TRIM(?))
-						  AND kecamatan IS NOT NULL AND kecamatan <> '' AND kecamatan <> '-'
-						ORDER BY id DESC LIMIT 1
-					`, consignee).Scan(&loc)
-				}
-			}
-
-			// 4. Fallback jika masih kosong: Ambil Kota dari mkt_m_customer
+			// 5. PRIORITAS 5: Fallback Kota dari mkt_m_customer
 			if loc.Kota == "" {
 				if masterData, inMaster := mapMasterCustomer[upperConsignee]; inMaster && masterData.Kota != "" {
 					loc.Kota = masterData.Kota
