@@ -82,6 +82,9 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	now := time.Now().In(loc)
 
+	// 🌟 Tampung nomor resi yang berhasil digenerate untuk dicetak oleh frontend
+	var createdBttList []string
+
 	for {
 		rec, err := reader.Read()
 		if err == io.EOF {
@@ -102,7 +105,6 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 		}
 
 		toFloat := func(val string) float64 {
-			// Bersihkan titik ribuan dan ubah koma desimal ke titik (misal "8,717" -> 8.717)
 			clean := strings.TrimSpace(val)
 			clean = strings.ReplaceAll(clean, ".", "")
 			clean = strings.ReplaceAll(clean, ",", ".")
@@ -120,11 +122,10 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			pengirimName = custName
 		}
 
-		// 🌟 1. PARSING TANGGAL RESMI KIMIA FARMA: MM/DD/YYYY (Contoh: 11/03/2026 = 3 November 2026)
+		// Parsing Tanggal MM/DD/YYYY
 		tglStr := getVal("Tanggal", "Tgl")
 		tglTrans := now
 		if t, errParse := time.Parse("01/02/2006", tglStr); errParse == nil {
-			// Prioritaskan format MM/DD/YYYY (11/03/2026 -> 3 November 2026)
 			tglTrans = t
 		} else if t, errParse := time.Parse("02/01/2006", tglStr); errParse == nil {
 			tglTrans = t
@@ -132,26 +133,24 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			tglTrans = t
 		}
 
-		// Alamat dan Tujuan
 		tujuanAlamat := getVal("AlamatPenerima", "Alamat_Penerima")
 		propinsi := getVal("Propinsi", "Provinsi")
 		if propinsi != "" && !strings.Contains(tujuanAlamat, propinsi) {
 			tujuanAlamat = tujuanAlamat + ", " + propinsi
 		}
 
-		// 🌟 2. FORMAT KUBIKASI/VOLUME SEBAGAI VARCHAR (STRING)
 		volRaw := strings.TrimSpace(getVal("Volume"))
 		volClean := strings.ReplaceAll(volRaw, ",", ".")
 		if volClean == "" {
 			volClean = "0"
 		}
 
+		// 🌟 Generate Nomor Resi Resmi Dakota (contoh: 001112026C000145)
 		bttNoResmi := GenerateNomorResiBTTStandard(database, fmt.Sprintf("%v", ptID), "001", tglTrans)
 
-		// 🌟 2. Mapping ke tabel mkt_t_econote
 		econoteRow := map[string]interface{}{
-			"bttt_id":              bttNoResmi, // 👈 Nomor Resi Resmi (Barcode atas: 001112026C000171)
-			"bttt_nosuratjalan":    noDN,       // 👈 Nomor SKB / DN Asli Kimia Farma (3000069205)
+			"bttt_id":              bttNoResmi,
+			"bttt_nosuratjalan":    noDN,
 			"bttt_tanggal":         tglTrans,
 			"bttt_spyn":            "Y",
 			"bttt_aktifyn":         "Y",
@@ -183,10 +182,8 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			"bttt_updateid":        "CSV_KIMIA_FARMA",
 		}
 
-		// Hapus jika sudah ada sebelumnya agar tidak conflict primary key
-		tx.Table("public.mkt_t_econote").Where("bttt_id = ?", noDN).Delete(&map[string]interface{}{})
+		tx.Table("public.mkt_t_econote").Where("bttt_nosuratjalan = ? OR bttt_id = ?", noDN, bttNoResmi).Delete(&map[string]interface{}{})
 
-		// Simpan baru ke database
 		if errSave := tx.Table("public.mkt_t_econote").Create(&econoteRow).Error; errSave != nil {
 			tx.Rollback()
 			log.Printf("❌ [Kimia Farma Insert Gagal]: %v", errSave)
@@ -197,6 +194,7 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			return
 		}
 
+		createdBttList = append(createdBttList, bttNoResmi)
 		totalSuccess++
 	}
 
@@ -208,9 +206,16 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 		return
 	}
 
+	firstID := ""
+	if len(createdBttList) > 0 {
+		firstID = createdBttList[0]
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": fmt.Sprintf("Sukses mengimpor %d pesanan %s (%s).", totalSuccess, custName, tipe),
+		"status":       "success",
+		"message":      fmt.Sprintf("Sukses mengimpor %d pesanan %s (%s).", totalSuccess, custName, tipe),
+		"btt_list":     createdBttList,
+		"first_btt_id": firstID,
 	})
 }
 
