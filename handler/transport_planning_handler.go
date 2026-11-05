@@ -824,7 +824,7 @@ func CalculatePreview2(c *gin.Context) {
 				sumberHarga = "TARIF MASTER"
 			}
 
-			// 4. PRIORITAS 4: LAYANAN REGULER DARAT LUAR KOTA
+			// 4. PRIORITAS 4: LAYANAN REGULER / LUAR KOTA
 		} else {
 			type MasterTarifRow struct {
 				MinimalKg          float64 `gorm:"column:minimalkg"`
@@ -835,7 +835,21 @@ func CalculatePreview2(c *gin.Context) {
 			}
 			var mTarif MasterTarifRow
 
-			// A. Match Lengkap (Propinsi + Kabupaten + Kecamatan)
+			// Daftar Customer ID Grup Merck
+			targetCustIDs := []string{
+				req.CustomerID,
+				strings.TrimLeft(req.CustomerID, "0"),
+			}
+			if strings.Contains(req.CustomerID, "0010000219") || strings.Contains(req.CustomerID, "0010000073") || strings.Contains(req.CustomerID, "0010000021") {
+				targetCustIDs = append(targetCustIDs, "0010000219", "0010000073", "0010000021", "10000219", "10000073", "10000021")
+			}
+
+			// Bersihkan imbuhan wilayah
+			regStrip := regexp.MustCompile(`(?i)\b(KAB\.|KABUPATEN|KOTA|ADM\.)\b`)
+			cleanKota := strings.TrimSpace(regStrip.ReplaceAllString(row.Kota, ""))
+			cleanKecamatan := strings.TrimSpace(regStrip.ReplaceAllString(row.Kecamatan, ""))
+
+			// A. Prioritas Match: Kecamatan + Kota (Cocokkan servid baris, fallback ke servid apa saja)
 			errTarif := database.Raw(`
 				SELECT 
 					COALESCE(minimalkg, 0) AS minimalkg, 
@@ -844,16 +858,24 @@ func CalculatePreview2(c *gin.Context) {
 					COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya, 
 					COALESCE(biayatambahan, 0) AS biayatambahan
 				FROM public.mkt_m_eharga_pelanggan
-				WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
-				  AND TRIM(servid::text) = '1'
-				  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT')
-				  AND UPPER(TRIM(tujuan_propinsi)) = UPPER(TRIM(?))
-				  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
-				  AND UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?))
+				WHERE customerid IN (?)
+				  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT' OR jnharga IS NULL)
+				  AND (
+				      UPPER(TRIM(tujuan_kecamatan)) LIKE UPPER(?) 
+				      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kecamatan)), '%')
+				  )
+				  AND (
+				      UPPER(TRIM(tujuan_kabupaten)) LIKE UPPER(?) 
+				      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kabupaten)), '%')
+				  )
+				ORDER BY 
+					CASE WHEN TRIM(servid::text) = TRIM(?) THEN 1 ELSE 2 END,
+					CASE WHEN customerid = ? THEN 1 ELSE 2 END,
+					id DESC
 				LIMIT 1
-			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Propinsi, row.Kota, row.Kecamatan).Scan(&mTarif).Error
+			`, targetCustIDs, "%"+cleanKecamatan+"%", cleanKecamatan, "%"+cleanKota+"%", cleanKota, row.ServID, req.CustomerID).Scan(&mTarif).Error
 
-			// B. Fallback Tingkat Kabupaten / Kota
+			// B. Fallback: Cocokkan Tingkat Kota/Kabupaten Saja
 			if errTarif != nil || mTarif.HargaPokok == 0 {
 				database.Raw(`
 					SELECT 
@@ -863,25 +885,35 @@ func CalculatePreview2(c *gin.Context) {
 						COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya, 
 						COALESCE(biayatambahan, 0) AS biayatambahan
 					FROM public.mkt_m_eharga_pelanggan
-					WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
-					  AND TRIM(servid::text) = '1'
-					  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT')
-					  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
+					WHERE customerid IN (?)
+					  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT' OR jnharga IS NULL)
+					  AND (
+					      UPPER(TRIM(tujuan_kabupaten)) LIKE UPPER(?) 
+					      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kabupaten)), '%')
+					  )
+					ORDER BY 
+						CASE WHEN TRIM(servid::text) = TRIM(?) THEN 1 ELSE 2 END,
+						CASE WHEN customerid = ? THEN 1 ELSE 2 END,
+						id DESC
 					LIMIT 1
-				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Kota).Scan(&mTarif)
+				`, targetCustIDs, "%"+cleanKota+"%", cleanKota, row.ServID, req.CustomerID).Scan(&mTarif)
 			}
 
+			// C. Hitung Rumus Tarif Master
 			if mTarif.HargaPokok > 0 {
 				beratHitung := row.TotalWeight
 				if beratHitung <= 0 {
 					beratHitung = 1
 				}
+
 				biayaKirim := mTarif.HargaPokok
+
 				if mTarif.BypassKg > 0 && beratHitung >= mTarif.BypassKg {
 					biayaKirim = beratHitung * mTarif.HargaKgSelanjutnya
 				} else if beratHitung > mTarif.MinimalKg {
 					biayaKirim = mTarif.HargaPokok + ((beratHitung - mTarif.MinimalKg) * mTarif.HargaKgSelanjutnya)
 				}
+
 				hargaFinal = biayaKirim + mTarif.BiayaTambahan
 				sumberHarga = "TARIF MASTER"
 			}
