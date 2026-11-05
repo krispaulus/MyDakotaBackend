@@ -1011,22 +1011,43 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			(batch_upload_id, customer_id, customer_name, no_do_dn, nama_penerima, alamat_penerima, 
 			 kota_tujuan, koli, berat, volume, status_wilayah, status_proses, delimiter_used, user_upload, created_at)
 		VALUES 
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'AUTO', ?, CURRENT_TIMESTAMP)
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSED', 'AUTO', ?, CURRENT_TIMESTAMP)
+	`
+
+	// Query penyambung ke tabel Laporan LSPB
+	insertLSPBSQL := `
+		INSERT INTO public.opr_t_transportlspb 
+			(dn_od_sj, customerid, tanggal_handover, nomorbtt, pickupdate, createdate)
+		VALUES 
+			(?, ?, CURRENT_DATE, ?, CURRENT_DATE, CURRENT_TIMESTAMP)
+		ON CONFLICT DO NOTHING
 	`
 
 	savedCount := 0
 	for _, r := range req.Rows {
-		// Jangan simpan yang duplikat
 		if r.IsDuplicate {
 			continue
 		}
 
+		// 1. Simpan ke transport planning upload
 		if err := tx.Exec(insertSQL, batchID, req.CustomerID, req.CustomerName, r.DNList, r.Consignee, r.Address,
 			r.Kota, r.TotalColly, r.TotalWeight, r.TotalVolume, r.StatusWilayah, username).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan batch: " + err.Error()})
 			return
 		}
+
+		// 2. Pecah nomor DN (jika digabung koma) dan masukkan ke tabel LSPB
+		if r.DNList != "" {
+			dnParts := strings.Split(r.DNList, ",")
+			for _, d := range dnParts {
+				cleanDN := strings.TrimSpace(d)
+				if cleanDN != "" {
+					_ = tx.Exec(insertLSPBSQL, cleanDN, req.CustomerID, r.ExistingBTT)
+				}
+			}
+		}
+
 		savedCount++
 	}
 

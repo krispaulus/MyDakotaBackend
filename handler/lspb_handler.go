@@ -14,8 +14,18 @@ import (
 
 // GET API: Laporan LSBP / Informasi LSPB
 func GetLSPBReportList(c *gin.Context) {
-	ptID, _ := c.Get("pt_id")
-	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	// 🌟 Fallback Aman Koneksi Database
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = c.Query("pt_id")
+		if ptID == "" {
+			ptID = "C"
+		}
+	}
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		database = db.DB
+	}
 
 	// Catch Filter Query Parameters
 	tglAwal := strings.TrimSpace(c.Query("tgla"))
@@ -46,10 +56,16 @@ func GetLSPBReportList(c *gin.Context) {
 	var conditions []string
 	var args []interface{}
 
-	// Filter Tanggal Handover
+	// Filter Tanggal Handover (Casting Fleksibel M/D/YYYY vs YYYY-MM-DD)
 	if tglAwal != "" && tglAkhir != "" {
-		conditions = append(conditions, `v."Tanggal_HandOver" BETWEEN ? AND ?`)
-		args = append(args, tglAwal+" 00:00:00", tglAkhir+" 23:59:59")
+		conditions = append(conditions, `
+			CASE 
+				WHEN v."Tanggal_HandOver"::text LIKE '%/%/%' 
+					THEN TO_DATE(v."Tanggal_HandOver"::text, 'MM/DD/YYYY')
+				ELSE v."Tanggal_HandOver"::date
+			END BETWEEN ?::date AND ?::date
+		`)
+		args = append(args, tglAwal, tglAkhir)
 	}
 
 	// Filter Customer
@@ -148,8 +164,17 @@ func GetLSPBReportList(c *gin.Context) {
 
 // SAVE / UPDATE LSBP KENDARAAN (OPR_T_TRANSPORTLSPBWITHCARINOUTANDDATETIME)
 func SaveLSPB(c *gin.Context) {
-	ptID, _ := c.Get("pt_id")
-	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = c.Query("pt_id")
+		if ptID == "" {
+			ptID = "C"
+		}
+	}
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		database = db.DB
+	}
 
 	var input models.TransportLSPBWithCarInOut
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -191,8 +216,17 @@ func SaveLSPB(c *gin.Context) {
 
 // DELETE LSBP KENDARAAN
 func DeleteLSPB(c *gin.Context) {
-	ptID, _ := c.Get("pt_id")
-	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = c.Query("pt_id")
+		if ptID == "" {
+			ptID = "C"
+		}
+	}
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		database = db.DB
+	}
 
 	nodo := c.Param("nodo")
 	if nodo == "" {
