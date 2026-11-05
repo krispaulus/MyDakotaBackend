@@ -688,26 +688,124 @@ func CalculatePreview2(c *gin.Context) {
 			}
 		}
 
-		// C. Kalkulasi Harga Final (Skema Carter vs Reguler)
+		// C. Kalkulasi Harga Final (Skema CSV -> Multidrop -> Carter -> Reguler Master)
 		var hargaFinal float64 = 0
 		var sumberHarga = "TIDAK ADA"
 
+		// 1. PRIORITAS 1: Jika harga sudah tertera eksplisit di CSV
 		if row.Harga > 0 {
 			hargaFinal = row.Harga
 			sumberHarga = "HARGA CSV"
-		} else if strings.ToUpper(strings.TrimSpace(row.LayananID)) == "C" || row.KodeKendaraan != "" {
-			var tarifCarter float64
 
-			if row.KodeKendaraan != "" {
+			// 2. PRIORITAS 2: PENGIRIMAN MULTIDROP DALAM KOTA (is_multidrop = 'Y' / 'E')
+		} else if strings.ToUpper(strings.TrimSpace(row.IsMultidrop)) == "Y" || strings.ToUpper(strings.TrimSpace(row.IsMultidrop)) == "E" {
+			type MultidropTarif struct {
+				HargaKg        float64 `gorm:"column:harga_kg"`
+				KgMin          float64 `gorm:"column:kg_min"`
+				KgMax          float64 `gorm:"column:kg_max"`
+				HargaOverKgMax float64 `gorm:"column:hargaoverkgmax"`
+				HargaKgDG      float64 `gorm:"column:harga_kg_dg"`
+				KgMinDG        float64 `gorm:"column:kg_min_dg"`
+				HargaExpressKg float64 `gorm:"column:hargaexpress_kg"`
+				KgExpressMin   float64 `gorm:"column:kgexpress_min"`
+			}
+			var md MultidropTarif
+
+			// A. Cari berdasarkan Kecamatan, fallback ke Kabupaten/Kota
+			errMD := database.Raw(`
+				SELECT 
+					COALESCE(harga_kg, 0) AS harga_kg,
+					COALESCE(kg_min, 0) AS kg_min,
+					COALESCE(kg_max, 0) AS kg_max,
+					COALESCE(hargaoverkgmax, 0) AS hargaoverkgmax,
+					COALESCE(harga_kg_dg, 0) AS harga_kg_dg,
+					COALESCE(kg_min_dg, 0) AS kg_min_dg,
+					COALESCE(hargaexpress_kg, 0) AS hargaexpress_kg,
+					COALESCE(kgexpress_min, 0) AS kgexpress_min
+				FROM public.mkt_m_eharga_pelanggan_multidrop
+				WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
+				  AND (
+				      UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?)) 
+				      OR UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
+				  )
+				ORDER BY 
+					CASE WHEN UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?)) THEN 1 ELSE 2 END ASC,
+					id DESC
+				LIMIT 1
+			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Kecamatan, row.Kota, row.Kecamatan).Scan(&md).Error
+
+			// B. Hitung Harga Multidrop Sesuai Aturan (DG B3 vs Reguler vs Express)
+			if errMD == nil && (md.HargaKg > 0 || md.HargaKgDG > 0 || md.HargaExpressKg > 0) {
+				beratHitung := row.TotalWeight
+				if beratHitung <= 0 {
+					beratHitung = 1
+				}
+
+				tarifPerKg := md.HargaKg
+				minimalKg := md.KgMin
+
+				// Jika Kiriman B3 / Dangerous Goods (is_DG = 'Y')
+				if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" && md.HargaKgDG > 0 {
+					tarifPerKg = md.HargaKgDG
+					if md.KgMinDG > 0 {
+						minimalKg = md.KgMinDG
+					}
+					// Jika Kiriman Multidrop Express (is_multidrop = 'E')
+				} else if strings.ToUpper(strings.TrimSpace(row.IsMultidrop)) == "E" && md.HargaExpressKg > 0 {
+					tarifPerKg = md.HargaExpressKg
+					if md.KgExpressMin > 0 {
+						minimalKg = md.KgExpressMin
+					}
+				}
+
+				// Rumus Multidrop Dakota: Berat Minimal x Tarif Per Kg (jika berat aktual < minimal)
+				if minimalKg > 0 && beratHitung < minimalKg {
+					hargaFinal = minimalKg * tarifPerKg
+				} else {
+					hargaFinal = beratHitung * tarifPerKg
+				}
+
+				sumberHarga = "TARIF MASTER"
+			} else {
+				// C. Fallback: Cari Histori BTT Terakhir Konsinyee Tersebut
+				var historiHarga float64
 				database.Raw(`
-					SELECT COALESCE(bttt_harga, 0) 
-					FROM public.mkt_t_econote 
+					SELECT COALESCE(bttt_harga, 0)
+					FROM public.mkt_t_econote
 					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
-					  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?)) 
-					  AND UPPER(TRIM(bttt_charterjnskend)) = UPPER(TRIM(?))
+					  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?))
 					  AND COALESCE(bttt_harga, 0) > 0
 					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee, row.KodeKendaraan).Scan(&tarifCarter)
+				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee).Scan(&historiHarga)
+
+				if historiHarga > 0 {
+					hargaFinal = historiHarga
+					sumberHarga = "TARIF MASTER"
+				}
+			}
+
+			// 3. PRIORITAS 3: LAYANAN CARTER ARMADA (layananID = 'C' atau memiliki Kode Kendaraan)
+		} else if strings.ToUpper(strings.TrimSpace(row.LayananID)) == "C" || row.KodeKendaraan != "" {
+			type CarterTarif struct {
+				Harga   float64 `gorm:"column:harga"`
+				HargaDG float64 `gorm:"column:harga_dg"`
+			}
+			var ct CarterTarif
+
+			database.Raw(`
+				SELECT 
+					COALESCE(harga, 0) AS harga,
+					COALESCE(harga_dg, 0) AS harga_dg
+				FROM public.mkt_m_eharga_pelanggan_carter
+				WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
+				  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
+				  AND UPPER(TRIM(jns_kend)) = UPPER(TRIM(?))
+				LIMIT 1
+			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Kota, row.KodeKendaraan).Scan(&ct)
+
+			tarifCarter := ct.Harga
+			if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" && ct.HargaDG > 0 {
+				tarifCarter = ct.HargaDG
 			}
 
 			if tarifCarter == 0 {
@@ -716,53 +814,75 @@ func CalculatePreview2(c *gin.Context) {
 					FROM public.mkt_t_econote 
 					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
 					  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?)) 
-					  AND UPPER(TRIM(bttt_service)) = 'C'
 					  AND COALESCE(bttt_harga, 0) > 0
 					ORDER BY bttt_tanggal DESC LIMIT 1
 				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee).Scan(&tarifCarter)
-			}
-
-			if tarifCarter == 0 && row.Kota != "" && row.Kota != "-" {
-				database.Raw(`
-					SELECT COALESCE(bttt_harga, 0) 
-					FROM public.mkt_t_econote 
-					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
-					  AND UPPER(TRIM(bttt_tujuankota)) LIKE UPPER(TRIM(?)) 
-					  AND UPPER(TRIM(bttt_charterjnskend)) = UPPER(TRIM(?))
-					  AND COALESCE(bttt_harga, 0) > 0
-					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), "%"+row.Kota+"%", row.KodeKendaraan).Scan(&tarifCarter)
 			}
 
 			if tarifCarter > 0 {
 				hargaFinal = tarifCarter
 				sumberHarga = "TARIF MASTER"
 			}
+
+			// 4. PRIORITAS 4: LAYANAN REGULER DARAT LUAR KOTA
 		} else {
-			var tarifReguler float64
+			type MasterTarifRow struct {
+				MinimalKg          float64 `gorm:"column:minimalkg"`
+				HargaPokok         float64 `gorm:"column:hargapokok"`
+				BypassKg           float64 `gorm:"column:bypasskg"`
+				HargaKgSelanjutnya float64 `gorm:"column:hargakgselanjutnya"`
+				BiayaTambahan      float64 `gorm:"column:biayatambahan"`
+			}
+			var mTarif MasterTarifRow
 
-			database.Raw(`
-				SELECT COALESCE(bttt_harga, 0) 
-				FROM public.mkt_t_econote 
-				WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
-				  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?))
-				  AND COALESCE(bttt_harga, 0) > 0
-				ORDER BY bttt_tanggal DESC LIMIT 1
-			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee).Scan(&tarifReguler)
+			// A. Match Lengkap (Propinsi + Kabupaten + Kecamatan)
+			errTarif := database.Raw(`
+				SELECT 
+					COALESCE(minimalkg, 0) AS minimalkg, 
+					COALESCE(hargapokok, 0) AS hargapokok, 
+					COALESCE(bypasskg, 0) AS bypasskg, 
+					COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya, 
+					COALESCE(biayatambahan, 0) AS biayatambahan
+				FROM public.mkt_m_eharga_pelanggan
+				WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
+				  AND TRIM(servid::text) = '1'
+				  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT')
+				  AND UPPER(TRIM(tujuan_propinsi)) = UPPER(TRIM(?))
+				  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
+				  AND UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?))
+				LIMIT 1
+			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Propinsi, row.Kota, row.Kecamatan).Scan(&mTarif).Error
 
-			if tarifReguler == 0 && row.Kota != "" && row.Kota != "-" {
+			// B. Fallback Tingkat Kabupaten / Kota
+			if errTarif != nil || mTarif.HargaPokok == 0 {
 				database.Raw(`
-					SELECT COALESCE(bttt_harga, 0) 
-					FROM public.mkt_t_econote 
-					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
-					  AND UPPER(TRIM(bttt_tujuankota)) LIKE UPPER(TRIM(?))
-					  AND COALESCE(bttt_harga, 0) > 0
-					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), "%"+row.Kota+"%").Scan(&tarifReguler)
+					SELECT 
+						COALESCE(minimalkg, 0) AS minimalkg, 
+						COALESCE(hargapokok, 0) AS hargapokok, 
+						COALESCE(bypasskg, 0) AS bypasskg, 
+						COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya, 
+						COALESCE(biayatambahan, 0) AS biayatambahan
+					FROM public.mkt_m_eharga_pelanggan
+					WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
+					  AND TRIM(servid::text) = '1'
+					  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT')
+					  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
+					LIMIT 1
+				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Kota).Scan(&mTarif)
 			}
 
-			if tarifReguler > 0 {
-				hargaFinal = tarifReguler
+			if mTarif.HargaPokok > 0 {
+				beratHitung := row.TotalWeight
+				if beratHitung <= 0 {
+					beratHitung = 1
+				}
+				biayaKirim := mTarif.HargaPokok
+				if mTarif.BypassKg > 0 && beratHitung >= mTarif.BypassKg {
+					biayaKirim = beratHitung * mTarif.HargaKgSelanjutnya
+				} else if beratHitung > mTarif.MinimalKg {
+					biayaKirim = mTarif.HargaPokok + ((beratHitung - mTarif.MinimalKg) * mTarif.HargaKgSelanjutnya)
+				}
+				hargaFinal = biayaKirim + mTarif.BiayaTambahan
 				sumberHarga = "TARIF MASTER"
 			}
 		}

@@ -473,3 +473,168 @@ func LookupTarifBTT(c *gin.Context) {
 		"message": "Tarif khusus tidak ditemukan, gunakan tarif reguler standar.",
 	})
 }
+
+// 📥 1. EXPORT CSV TARIF CUSTOMER SESUAI FORMAT APLIKASI LAWAS (GAMBAR 3)
+// GET /tarif/export-csv?customer_id=0010000219&serv_id=1&tipe=reguler
+func ExportTarifCustomerCSV(c *gin.Context) {
+	database := getTarifCustomerDB(c)
+
+	customerID := strings.TrimSpace(c.Query("customer_id"))
+	servID := strings.TrimSpace(c.DefaultQuery("serv_id", "1"))
+	tipe := strings.ToLower(strings.TrimSpace(c.DefaultQuery("tipe", "reguler")))
+
+	if customerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Customer ID wajib diisi"})
+		return
+	}
+
+	// Ambil nama customer untuk nama file
+	var custName string
+	database.Table("public.mkt_m_customer").
+		Select("cust_name").
+		Where("cust_id = ?", customerID).
+		Scan(&custName)
+
+	cleanCustName := strings.ReplaceAll(strings.TrimSpace(custName), " ", "_")
+	cleanCustName = strings.ReplaceAll(cleanCustName, "(", "")
+	cleanCustName = strings.ReplaceAll(cleanCustName, ")", "")
+
+	// Ambil data tarif
+	type RawTarifRow struct {
+		CustomerID         string  `gorm:"column:customerid"`
+		ServID             string  `gorm:"column:servid"`
+		JnHarga            string  `gorm:"column:jnharga"`
+		TujuanPropinsi     string  `gorm:"column:tujuan_propinsi"`
+		TujuanKabupaten    string  `gorm:"column:tujuan_kabupaten"`
+		TujuanKecamatan    string  `gorm:"column:tujuan_kecamatan"`
+		MinimalKg          float64 `gorm:"column:minimalkg"`
+		BypassKg           float64 `gorm:"column:bypasskg"`
+		HargaPokok         float64 `gorm:"column:hargapokok"`
+		HargaKgSelanjutnya float64 `gorm:"column:hargakgselanjutnya"`
+		BiayaTambahan      float64 `gorm:"column:biayatambahan"`
+		EstimasiHari       string  `gorm:"column:estimasihari"`
+		Keterangan         string  `gorm:"column:keterangan"`
+	}
+
+	var rows []RawTarifRow
+	tableName := "public.mkt_m_eharga_pelanggan"
+	if tipe == "charter" {
+		tableName = "public.mkt_m_eharga_pelanggan_carter"
+	} else if tipe == "multidrop" {
+		tableName = "public.mkt_m_eharga_pelanggan_multidrop"
+	}
+
+	err := database.Table(tableName).
+		Where("customerid = ?", customerID).
+		Order("tujuan_propinsi ASC, tujuan_kabupaten ASC, tujuan_kecamatan ASC").
+		Scan(&rows).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membaca database tarif: " + err.Error()})
+		return
+	}
+
+	// Susun format CSV persis seperti Gambar 3
+	header := "CUSTOMER_ID;SERV_ID;JENIS_HARGA;PROPINSI;KOTA_KABUPATEN;KECAMATAN;MIN;BYPASS;HARGA_MIN;HARGA_SELANJUTNYA;BYPASS1;HARGA1;BYPASS2;HARGA2;BYPASS3;HARGA3;BIAYA_TAMBAHAN;ESTIMASI_HARI;KETERANGAN"
+	var csvLines []string
+	csvLines = append(csvLines, header)
+
+	for _, r := range rows {
+		jnh := r.JnHarga
+		if jnh == "" || jnh == "BERAT" {
+			jnh = "0"
+		} else if jnh == "VOLUME" {
+			jnh = "1"
+		} else if jnh == "KUBIKASI" {
+			jnh = "2"
+		}
+
+		line := fmt.Sprintf("%s;%s;%s;%s;%s;%s;%.0f;%.0f;%.0f;%.0f;0;0;0;0;0;0;%.0f;%s;%s",
+			r.CustomerID,
+			servID,
+			jnh,
+			strings.TrimSpace(r.TujuanPropinsi),
+			strings.TrimSpace(r.TujuanKabupaten),
+			strings.TrimSpace(r.TujuanKecamatan),
+			r.MinimalKg,
+			r.BypassKg,
+			r.HargaPokok,
+			r.HargaKgSelanjutnya,
+			r.BiayaTambahan,
+			strings.TrimSpace(r.EstimasiHari),
+			strings.TrimSpace(r.Keterangan),
+		)
+		csvLines = append(csvLines, line)
+	}
+
+	csvData := strings.Join(csvLines, "\r\n")
+	filename := fmt.Sprintf("%s_Reguler_%s.csv", cleanCustName, customerID)
+
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.String(http.StatusOK, csvData)
+}
+
+// 📋 2. COPY / CLONE SELURUH TARIF CUSTOMER KE CUSTOMER LAIN
+// POST /tarif/copy-to-customer
+func CopyTarifToCustomer(c *gin.Context) {
+	database := getTarifCustomerDB(c)
+
+	type CopyPayload struct {
+		SourceCustomerID string `json:"source_customer_id" binding:"required"`
+		TargetCustomerID string `json:"target_customer_id" binding:"required"`
+		TipeTarif        string `json:"tipe_tarif"` // reguler / charter / multidrop
+	}
+
+	var req CopyPayload
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Source & Target customer wajib diisi!"})
+		return
+	}
+
+	if req.SourceCustomerID == req.TargetCustomerID {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Customer asal dan tujuan tidak boleh sama!"})
+		return
+	}
+
+	tableName := "public.mkt_m_eharga_pelanggan"
+	if req.TipeTarif == "charter" {
+		tableName = "public.mkt_m_eharga_pelanggan_carter"
+	} else if req.TipeTarif == "multidrop" {
+		tableName = "public.mkt_m_eharga_pelanggan_multidrop"
+	}
+
+	tx := database.Begin()
+
+	// 1. Bersihkan tarif lama milik target customer terlebih dahulu
+	tx.Table(tableName).Where("customerid = ?", req.TargetCustomerID).Delete(nil)
+
+	// 2. Clone tarif dari customer asal ke customer tujuan
+	copySQL := fmt.Sprintf(`
+		INSERT INTO %s (
+			agenid_asal, customerid, servid, tujuan_propinsi, tujuan_kabupaten, tujuan_kecamatan,
+			minimalkg, bypasskg, hargapokok, hargakgselanjutnya, biayatambahan, estimasihari, keterangan, jnharga
+		)
+		SELECT 
+			agenid_asal, ?, servid, tujuan_propinsi, tujuan_kabupaten, tujuan_kecamatan,
+			minimalkg, bypasskg, hargapokok, hargakgselanjutnya, biayatambahan, estimasihari, keterangan, jnharga
+		FROM %s
+		WHERE customerid = ?
+	`, tableName, tableName)
+
+	result := tx.Exec(copySQL, req.TargetCustomerID, req.SourceCustomerID)
+	if result.Error != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyalin tarif: " + result.Error.Error()})
+		return
+	}
+
+	tx.Commit()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":         "success",
+		"message":        fmt.Sprintf("Sukses menyalin %d rute tarif khusus ke customer tujuan.", result.RowsAffected),
+		"copied_records": result.RowsAffected,
+	})
+}

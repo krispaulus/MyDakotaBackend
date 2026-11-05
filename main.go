@@ -287,6 +287,10 @@ func main() {
 			authorized.PUT("/master/tarif-carter/inline-update", handler.UpdateInlineCarter)
 			authorized.DELETE("/master/tarif-carter/item/:id", handler.DeleteTarifCarterItem)
 			authorized.POST("/master/tarif-carter/mass-add", handler.AddMassCarter)
+
+			authorized.GET("/master/tarif/export-csv", handler.ExportTarifCustomerCSV)
+			authorized.GET("/master/tarif/copy-to-customer", handler.ExportTarifCustomerCSV)
+
 			authorized.GET("/master/active-agen-list", handler.GetActiveAgenList)
 
 			authorized.GET("/master/econote/list", handler.GetEconoteList)
