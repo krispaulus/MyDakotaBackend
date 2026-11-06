@@ -19,13 +19,17 @@ type InvoiceListRow struct {
 	ArtihCustID     string     `json:"artih_custid"`
 	CustName        string     `json:"cust_name"`
 	ArtihCustName   string     `json:"artih_custname"`
-	CustAlamat      string     `json:"cust_alamat"` // 🌟 Tambahan untuk Alamat Customer
-	NoPO            string     `json:"nopo"`        // 🌟 Tambahan untuk Nomor PO
+	CustAlamat      string     `json:"cust_alamat"`  // Alamat 1
+	CustAlamat2     string     `json:"cust_alamat2"` // 🌟 Tambahan Alamat 2
+	CustNPWP        string     `json:"cust_npwp"`
+	NoPO            string     `json:"nopo"`
 	ArtihKeterangan string     `json:"artih_keterangan"`
 	ArtihDelete     string     `json:"artih_delete"`
 	ArtihNoKW       string     `json:"artih_nokw"`
 	ArtihFktPajak   string     `json:"artih_fktpajak"`
 	ArtihTotal      float64    `json:"artih_total"`
+	ArtihDPP        float64    `json:"artih_dpp"`
+	ArtihPPN        float64    `json:"artih_ppn"`
 	ArtihJenis      string     `json:"artih_jenis"`
 	ArtihPostingYN  string     `json:"artih_postingyn"`
 	ArtihJournalID  string     `json:"artih_journalid"`
@@ -119,11 +123,16 @@ func GetInvoiceListHandler(c *gin.Context) {
 			h.artih_custid,
 			COALESCE(c.cust_name, h.artih_custname) AS cust_name,
 			COALESCE(h.artih_custname, c.cust_name) AS artih_custname,
+			COALESCE(c.cust_alamat1, '') AS cust_alamat,
+			COALESCE(c.cust_alamat2, '') AS cust_alamat2,
+			COALESCE(c.cust_npwp, '') AS cust_npwp,
 			COALESCE(h.artih_keterangan, '') AS artih_keterangan,
 			COALESCE(h.artih_delete, 'N') AS artih_delete,
 			COALESCE(h.artih_nokw, '') AS artih_nokw,
 			COALESCE(h.artih_fktpajak, '') AS artih_fktpajak,
 			COALESCE(h.artih_total, 0) AS artih_total,
+			COALESCE(h.artih_dpp, 0) AS artih_dpp,
+			COALESCE(h.artih_ppn, 0) AS artih_ppn,
 			COALESCE(rp.total_terbayar, 0) AS terbayar,
 			COALESCE(h.artih_jenis, 'K') AS artih_jenis,
 			COALESCE(h.artih_postingyn, 'N') AS artih_postingyn,
@@ -214,6 +223,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			COALESCE(h.artih_custname, c.cust_name, '') AS artih_custname,
 			COALESCE(c.cust_alamat1, '') AS cust_alamat,
 			COALESCE(c.cust_alamat1, '') AS cust_alamat1,
+			COALESCE(c.cust_alamat2, '') AS cust_alamat2,
 			COALESCE(po.nopo, po2.nopo, '') AS nopo,
 			COALESCE(po.nopo, po2.nopo, '') AS no_po,
 			COALESCE(h.artih_keterangan, '') AS artih_keterangan,
