@@ -1016,47 +1016,84 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			(batch_upload_id, customer_id, customer_name, no_do_dn, nama_penerima, alamat_penerima, 
 			 kota_tujuan, koli, berat, volume, status_wilayah, status_proses, delimiter_used, user_upload, created_at)
 		VALUES 
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSED', 'AUTO', ?, CURRENT_TIMESTAMP)
-	`
-
-	// Query penyambung ke tabel Laporan LSPB
-	insertLSPBSQL := `
-		INSERT INTO public.opr_t_transportlspb 
-			(dn_od_sj, customerid, tanggal_handover, nomorbtt, pickupdate, createdate)
-		VALUES 
-			(?, ?, CURRENT_DATE, ?, CURRENT_DATE, CURRENT_TIMESTAMP)
-		ON CONFLICT DO NOTHING
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'AUTO', ?, CURRENT_TIMESTAMP)
 	`
 
 	savedCount := 0
 	for _, r := range req.Rows {
+		// Jangan simpan yang duplikat
 		if r.IsDuplicate {
 			continue
 		}
 
-		// 1. Simpan ke transport planning upload
 		if err := tx.Exec(insertSQL, batchID, req.CustomerID, req.CustomerName, r.DNList, r.Consignee, r.Address,
 			r.Kota, r.TotalColly, r.TotalWeight, r.TotalVolume, r.StatusWilayah, username).Error; err != nil {
 			tx.Rollback()
+			fmt.Printf("❌ [SaveTransportPlanningBatch] Error Insert Upload: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan batch: " + err.Error()})
 			return
 		}
-
-		// 2. Pecah nomor DN (jika digabung koma) dan masukkan ke tabel LSPB
-		if r.DNList != "" {
-			dnParts := strings.Split(r.DNList, ",")
-			for _, d := range dnParts {
-				cleanDN := strings.TrimSpace(d)
-				if cleanDN != "" {
-					_ = tx.Exec(insertLSPBSQL, cleanDN, req.CustomerID, r.ExistingBTT)
-				}
-			}
-		}
-
 		savedCount++
 	}
 
-	tx.Commit()
+	// Commit data batch upload terlebih dahulu
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal commit batch upload: " + err.Error()})
+		return
+	}
+
+	// 🌟 Sinkronisasi ke tabel LSPB dilakukan di luar transaksi utama agar tidak menggugurkan batch
+	go func(rows []TransportPlanningGroupedRow, custID string) {
+		now := time.Now()
+		tglTrans := now.Format("2006-01-02")
+
+		for _, r := range rows {
+			if r.IsDuplicate || r.DNList == "" {
+				continue
+			}
+			dnParts := strings.Split(r.DNList, ",")
+			for _, d := range dnParts {
+				cleanDN := strings.TrimSpace(d)
+				if cleanDN == "" {
+					continue
+				}
+
+				// 1. Simpan ke opr_t_transportlspb (Tabel Relasi Standar)
+				var count int64
+				database.Table("public.opr_t_transportlspb").
+					Where("dn_od_sj = ? AND (customerid = ? OR customerid = ?)", cleanDN, custID, strings.TrimLeft(custID, "0")).
+					Count(&count)
+
+				if count == 0 {
+					lspbData := map[string]interface{}{
+						"dn_od_sj":         cleanDN,
+						"customerid":       custID,
+						"tanggal_handover": tglTrans,
+						"nomorbtt":         r.ExistingBTT,
+					}
+					_ = database.Table("public.opr_t_transportlspb").Create(&lspbData)
+				}
+
+				// 🌟 2. Simpan ke opr_t_transportlspbwithcarinoutanddatetime (TABEL SUMBER VIEW vw_transport_lspb)
+				// Menggunakan HANYA kolom-kolom yang valid di tabel
+				carData := map[string]interface{}{
+					"nodo":       cleanDN,
+					"noskb":      r.ExistingBTT,
+					"kategori":   r.StatusWilayah,
+					"created_at": now,
+					"updated_at": now,
+				}
+
+				database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").
+					Where("nodo = ?", cleanDN).
+					Delete(&map[string]interface{}{})
+
+				if errCar := database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Create(&carData).Error; errCar != nil {
+					fmt.Printf("⚠️ [SaveTransportPlanningBatch] Warning Car Insert DN %s: %v\n", cleanDN, errCar)
+				}
+			}
+		}
+	}(req.Rows, req.CustomerID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "success",

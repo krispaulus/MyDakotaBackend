@@ -14,7 +14,6 @@ import (
 
 // GET API: Laporan LSBP / Informasi LSPB
 func GetLSPBReportList(c *gin.Context) {
-	// 🌟 Fallback Aman Koneksi Database
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
 		ptID = c.Query("pt_id")
@@ -27,7 +26,7 @@ func GetLSPBReportList(c *gin.Context) {
 		database = db.DB
 	}
 
-	// Catch Filter Query Parameters
+	// Tangkap semua parameter filter
 	tglAwal := strings.TrimSpace(c.Query("tgla"))
 	tglAkhir := strings.TrimSpace(c.Query("tgle"))
 	customer := strings.TrimSpace(c.Query("customer"))
@@ -40,13 +39,12 @@ func GetLSPBReportList(c *gin.Context) {
 	kirim := strings.TrimSpace(c.Query("kirim"))   // Y / N
 	bayar := strings.TrimSpace(c.Query("bayar"))   // Y / N
 
-	// Build Raw SQL dengan Left Join ke Logistik Mobil In/Out
 	queryStr := `
 		SELECT 
 			v.*,
-			c.nomobil AS no_mobil,
-			c.jammobilmasuk AS jam_mobil_masuk,
-			c.jammobilkeluar AS jam_mobil_keluar
+			COALESCE(c.nomobil, '') AS no_mobil,
+			COALESCE(c.jammobilmasuk, '') AS jam_mobil_masuk,
+			COALESCE(c.jammobilkeluar, '') AS jam_mobil_keluar
 		FROM vw_transport_lspb v
 		LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
 			ON v."DN_OD_SJ" = c.nodo
@@ -56,76 +54,77 @@ func GetLSPBReportList(c *gin.Context) {
 	var conditions []string
 	var args []interface{}
 
-	// Filter Tanggal Handover (Casting Fleksibel M/D/YYYY vs YYYY-MM-DD)
+	// 1. Filter Tanggal Handover
 	if tglAwal != "" && tglAkhir != "" {
 		conditions = append(conditions, `
-			CASE 
-				WHEN v."Tanggal_HandOver"::text LIKE '%/%/%' 
-					THEN TO_DATE(v."Tanggal_HandOver"::text, 'MM/DD/YYYY')
-				ELSE v."Tanggal_HandOver"::date
-			END BETWEEN ?::date AND ?::date
+			(
+				CASE 
+					WHEN v."Tanggal_HandOver"::text LIKE '%/%/%' 
+						THEN TO_DATE(v."Tanggal_HandOver"::text, 'MM/DD/YYYY')
+					ELSE v."Tanggal_HandOver"::date
+				END BETWEEN ?::date AND ?::date
+			)
 		`)
 		args = append(args, tglAwal, tglAkhir)
 	}
 
-	// Filter Customer
+	// 2. Filter Customer
 	if customer != "" {
 		conditions = append(conditions, `UPPER(v."Cust_Name") LIKE UPPER(?)`)
 		args = append(args, "%"+customer+"%")
 	}
 
-	// Filter No. BTT
+	// 3. Filter No. BTT
 	if nobtt != "" {
 		conditions = append(conditions, `v."nomorbtt" LIKE ?`)
 		args = append(args, "%"+nobtt+"%")
 	}
 
-	// Filter SPB
+	// 4. Filter SPB
 	if spb != "" {
 		conditions = append(conditions, `v."spb_id" LIKE ?`)
 		args = append(args, "%"+spb+"%")
 	}
 
-	// Filter No. DN / OD / SJ
+	// 5. Filter No. DN / OD / SJ
 	if nosj != "" {
 		conditions = append(conditions, `v."DN_OD_SJ" = ?`)
 		args = append(args, nosj)
 	}
 
-	// Filter Tujuan Kota
+	// 6. Filter Tujuan Kota
 	if tujuan != "" {
 		conditions = append(conditions, `UPPER(v."BTTT_TujuanKota") LIKE UPPER(?)`)
 		args = append(args, "%"+tujuan+"%")
 	}
 
-	// Filter Service (1 = Darat, 2 = Laut, 3 = Udara)
+	// 7. Filter Service (1 = Darat, 2 = Laut, 3 = Udara)
 	if service != "" {
 		conditions = append(conditions, `v."bttt_servid" = ?`)
 		args = append(args, service)
 	}
 
-	// Filter Status Kiriman
+	// 8. Filter Status Kiriman
 	if status == "DELIVERED" {
 		conditions = append(conditions, `v."Nama_Penerima" IS NOT NULL AND v."Nama_Penerima" <> ''`)
 	} else if status == "SHIPPED" {
 		conditions = append(conditions, `(v."Nama_Penerima" IS NULL OR v."Nama_Penerima" = '')`)
 	}
 
-	// Filter BTT Sudah Kembali (kirim Y/N)
+	// 9. Filter BTT Sudah Kembali (kirim Y/N)
 	if kirim == "Y" {
 		conditions = append(conditions, `v."TB_TglKembali" IS NOT NULL AND v."TB_TglKembali" <> ''`)
 	} else if kirim == "N" {
 		conditions = append(conditions, `(v."TB_TglKembali" IS NULL OR v."TB_TglKembali" = '')`)
 	}
 
-	// Filter Sudah SPB (bayar Y/N)
+	// 10. Filter Sudah SPB (bayar Y/N)
 	if bayar == "Y" {
 		conditions = append(conditions, `v."spb_id" IS NOT NULL AND v."spb_id" <> ''`)
 	} else if bayar == "N" {
 		conditions = append(conditions, `(v."spb_id" IS NULL OR v."spb_id" = '')`)
 	}
 
-	// Gabungkan kondisi WHERE
 	if len(conditions) > 0 {
 		queryStr += " AND " + strings.Join(conditions, " AND ")
 	}
@@ -133,8 +132,7 @@ func GetLSPBReportList(c *gin.Context) {
 	queryStr += ` ORDER BY v."Tanggal_HandOver" DESC LIMIT 500`
 
 	var results []models.LSPBReportDTO
-	err := database.Raw(queryStr, args...).Scan(&results).Error
-	if err != nil {
+	if err := database.Raw(queryStr, args...).Scan(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  "error",
 			"message": "Gagal memuat laporan LSBP: " + err.Error(),
@@ -142,15 +140,12 @@ func GetLSPBReportList(c *gin.Context) {
 		return
 	}
 
-	// Kalkulasi Status Ontime / Dalam Pengiriman
 	for i := range results {
 		if results[i].TanggalDiterima != "" {
 			results[i].OnTime = 1
-			results[i].MissLeadTime = 0
 			results[i].DalamPengiriman = 0
 		} else {
 			results[i].OnTime = 0
-			results[i].MissLeadTime = 0
 			results[i].DalamPengiriman = 1
 		}
 	}

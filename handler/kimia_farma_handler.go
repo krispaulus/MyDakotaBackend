@@ -182,6 +182,7 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			"bttt_updateid":        "CSV_KIMIA_FARMA",
 		}
 
+		// 1. Simpan BTT Resmi ke mkt_t_econote (Wajib pakai tx)
 		tx.Table("public.mkt_t_econote").Where("bttt_nosuratjalan = ? OR bttt_id = ?", noDN, bttNoResmi).Delete(&map[string]interface{}{})
 
 		if errSave := tx.Table("public.mkt_t_econote").Create(&econoteRow).Error; errSave != nil {
@@ -192,6 +193,31 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 				"message": fmt.Sprintf("Gagal menyimpan baris DN %s: %v", noDN, errSave),
 			})
 			return
+		}
+
+		// 🌟 2. Sinkronisasi ke opr_t_transportlspb (Tabel Relasi Standar)
+		lspbRow := map[string]interface{}{
+			"dn_od_sj":         noDN,
+			"customerid":       custID,
+			"tanggal_handover": tglTrans.Format("2006-01-02"),
+			"nomorbtt":         bttNoResmi,
+		}
+		database.Table("public.opr_t_transportlspb").Where("dn_od_sj = ?", noDN).Delete(&map[string]interface{}{})
+		if errLSPB := database.Table("public.opr_t_transportlspb").Create(&lspbRow).Error; errLSPB != nil {
+			log.Printf("⚠️ [Warning LSPB Insert]: %v", errLSPB)
+		}
+
+		// 🌟 3. Sinkronisasi ke opr_t_transportlspbwithcarinoutanddatetime (TABEL SUMBER VIEW vw_transport_lspb)
+		lspbWithCarRow := map[string]interface{}{
+			"nodo":       noDN,
+			"noskb":      bttNoResmi,
+			"kategori":   tipe,
+			"created_at": tglTrans,
+			"updated_at": now,
+		}
+		database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Where("nodo = ?", noDN).Delete(&map[string]interface{}{})
+		if errCar := database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Create(&lspbWithCarRow).Error; errCar != nil {
+			log.Printf("⚠️ [Warning LSPB Car Insert]: %v", errCar)
 		}
 
 		createdBttList = append(createdBttList, bttNoResmi)
