@@ -250,6 +250,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 		}
 		return 0
 	}
+	_ = parseFloat
 
 	parseInt := func(val string) int {
 		if res, e := strconv.Atoi(strings.TrimSpace(val)); e == nil {
@@ -287,12 +288,24 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 
 		dn := strings.TrimSpace(record[3])
 		colly := parseInt(record[5])
-		address := strings.TrimSpace(record[9])
-		weight := parseFloat(record[11])
-		volume := parseFloat(record[12])
+		originalAddress := strings.TrimSpace(record[9])
+		address := originalAddress
+		rawWeight := parseIndonesianFloat(record[11])
+		rawVolume := parseIndonesianFloat(record[12])
 		dalamKota := strings.ToUpper(strings.TrimSpace(record[13]))
 		if dalamKota == "" {
 			dalamKota = "DALAM KOTA"
+		}
+
+		// 🌟 Chargeable Weight per Baris (Sesuai ASP Lawas: Ambil Max lalu bulatkan ke atas per resi jika colly terpisah)
+		lineWeight := rawWeight
+		if rawVolume > lineWeight {
+			lineWeight = rawVolume
+		}
+		// Pembulatan per baris resi
+		roundedLineWeight := math.Ceil(lineWeight)
+		if roundedLineWeight <= 0 {
+			roundedLineWeight = 1
 		}
 
 		up := ""
@@ -311,9 +324,10 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 		if len(record) > 17 && strings.TrimSpace(record[17]) != "" {
 			layananID = strings.TrimSpace(record[17])
 		}
+
 		packing := 0.0
 		if len(record) > 18 {
-			packing = parseFloat(record[18])
+			packing = parseIndonesianFloat(record[18])
 		}
 		keterangan := ""
 		if len(record) > 19 {
@@ -325,7 +339,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 		}
 		harga := 0.0
 		if len(record) > 21 {
-			harga = parseFloat(record[21])
+			harga = parseIndonesianFloat(record[21])
 		}
 		isDG := "N"
 		if len(record) > 22 && strings.ToUpper(strings.TrimSpace(record[22])) == "Y" {
@@ -347,26 +361,17 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 			kodeGroupCarter = strings.TrimSpace(record[25])
 		}
 
-		// ---------------------------------------------------------------------
-		// 🌟 SYNTAX 2 DITARUH DI SINI:
-		// Validasi Bertingkat (Exact Match ➔ Normalized Match ➔ Prefix Match)
-		// ---------------------------------------------------------------------
+		// Validasi consignee...
 		upperConsignee := strings.ToUpper(consignee)
 		normConsignee := normalizeConsigneeName(consignee)
 
 		isValid := false
-
-		// 1. Cek Exact Match
 		if mapValidConsignees[upperConsignee] {
 			isValid = true
 		}
-
-		// 2. Cek Normalized Match (Abaikan titik, spasi, dan teks dalam kurung)
 		if !isValid && mapNormalizedValid[normConsignee] {
 			isValid = true
 		}
-
-		// 3. Cek Prefix Match (Jika nama di master terpotong, misal 'MUSTIKA SCIENT' vs 'MUSTIKA SCIENTIFIC')
 		if !isValid && len(normConsignee) >= 15 {
 			for validNorm := range mapNormalizedValid {
 				if strings.HasPrefix(normConsignee, validNorm) || strings.HasPrefix(validNorm, normConsignee) {
@@ -376,7 +381,6 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 			}
 		}
 
-		// Jika tetap tidak ditemukan di master manapun, masukkan ke Data Tertolak
 		if !isValid {
 			rejectedRows = append(rejectedRows, TransportPlanningRejectedRow{
 				No:           len(rejectedRows) + 1,
@@ -384,8 +388,8 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 				Address:      address,
 				NoDN:         dn,
 				Colly:        colly,
-				Weight:       weight,
-				Volume:       volume,
+				Weight:       rawWeight,
+				Volume:       rawVolume,
 				DalamKota:    dalamKota,
 				Keterangan:   keterangan,
 				AlasanTolak:  "Consignee tidak ditemukan di Master Customer maupun Histori BTT",
@@ -393,7 +397,6 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 			})
 			continue
 		}
-		// ---------------------------------------------------------------------
 
 		// 🔄 AUTO-ENRICHMENT: Jika Alamat / Telp kosong di CSV, lengkapi dari data mkt_m_customer
 		if masterData, inMaster := mapMasterCustomer[upperConsignee]; inMaster {
@@ -405,19 +408,25 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 			}
 		}
 
-		// Grouping Key
+		// 🌟 Grouping Key persis ASP Lawas: Pakai teks asli CSV
+		cleanCons := strings.ToUpper(strings.TrimSpace(consignee))
+		cleanAddr := strings.ToUpper(strings.TrimSpace(originalAddress))
+
 		var groupKey string
 		if strings.ToUpper(layananID) == "C" && kodeGroupCarter != "" {
-			groupKey = fmt.Sprintf("%s|%s|C|%s", consignee, address, kodeGroupCarter)
+			groupKey = fmt.Sprintf("%s|%s|C|%s", cleanCons, cleanAddr, strings.ToUpper(strings.TrimSpace(kodeGroupCarter)))
+		} else if strings.TrimSpace(servID) == "3" {
+			groupKey = fmt.Sprintf("%s|%s|%s|%s|%s", cleanCons, cleanAddr, servID, layananID, strings.ToUpper(isDG))
 		} else {
-			groupKey = fmt.Sprintf("%s|%s", consignee, address)
+			groupKey = fmt.Sprintf("%s|%s", cleanCons, cleanAddr)
 		}
 
 		if existing, exists := groupMap[groupKey]; exists {
 			existing.TotalColly += colly
-			existing.TotalWeight += weight
-			existing.TotalVolume += volume
+			existing.TotalWeight += roundedLineWeight
+			existing.TotalVolume += rawVolume
 			existing.TotalPacking += packing
+			existing.Harga += harga
 			if dn != "" {
 				if existing.DNList == "" {
 					existing.DNList = dn
@@ -527,8 +536,8 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 				ServID:          servID,
 				LayananID:       layananID,
 				TotalColly:      colly,
-				TotalWeight:     weight,
-				TotalVolume:     volume,
+				TotalWeight:     roundedLineWeight, // 🌟 Gunakan roundedLineWeight agar baris 1 koli langsung terbulatkan benar
+				TotalVolume:     rawVolume,
 				TotalPacking:    packing,
 				KodeKendaraan:   kodeKendaraan,
 				Harga:           harga,
@@ -551,6 +560,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 	var validList []TransportPlanningGroupedRow
 	for _, k := range orderedKeys {
 		row := groupMap[k]
+		// Pembulatan ke atas (Ceil) persis ASP lawas
 		row.TotalWeight = math.Ceil(row.TotalWeight)
 		row.TotalVolume = math.Ceil(row.TotalVolume)
 		validList = append(validList, *row)
@@ -581,7 +591,6 @@ func CalculatePreview2(c *gin.Context) {
 		database = db.DB
 	}
 
-	// 1. Definisi Struct Request (Hanya SATU KALI deklarasi)
 	type CalcReq struct {
 		CustomerID string                        `json:"customer_id" binding:"required"`
 		Rows       []TransportPlanningGroupedRow `json:"rows" binding:"required"`
@@ -589,33 +598,24 @@ func CalculatePreview2(c *gin.Context) {
 
 	var req CalcReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fmt.Printf("❌ [CalculatePreview2] Bind JSON Error: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Format data tidak valid: " + err.Error()})
 		return
 	}
 
-	fmt.Printf("\n=======================================================\n")
-	fmt.Printf("⚡ [CalculatePreview2] Request Diterima!\n")
-	fmt.Printf("   Customer ID : %s\n", req.CustomerID)
-	fmt.Printf("   Total Baris : %d BTT\n", len(req.Rows))
-	fmt.Printf("=======================================================\n")
-
-	// 2. Kumpulkan seluruh DN dari baris yang diunggah
+	// 1. Cek Duplikasi DN dari Database
+	// 1. Cek Duplikasi DN dari Database (Optimasi Cepat: Hanya cari DN yang diunggah)
+	mapExistingDN := make(map[string]string)
 	var allDNs []string
 	for _, r := range req.Rows {
 		if r.DNList != "" {
-			parts := strings.Split(r.DNList, ",")
-			for _, p := range parts {
-				cleanP := strings.TrimSpace(p)
-				if cleanP != "" {
-					allDNs = append(allDNs, cleanP)
+			for _, d := range strings.Split(r.DNList, ",") {
+				if cleanD := strings.TrimSpace(d); cleanD != "" {
+					allDNs = append(allDNs, cleanD)
 				}
 			}
 		}
 	}
 
-	// 3. Query ke OPR_T_TransportLSPB untuk cek duplikasi nomor DN
-	mapExistingDN := make(map[string]string)
 	if len(allDNs) > 0 {
 		type DNBTTItem struct {
 			DN  string `gorm:"column:dn_od_sj"`
@@ -623,24 +623,42 @@ func CalculatePreview2(c *gin.Context) {
 		}
 		var existingDNs []DNBTTItem
 
+		cleanCustID := strings.TrimSpace(req.CustomerID)
 		database.Raw(`
 			SELECT COALESCE(dn_od_sj, '') AS dn_od_sj, COALESCE(nomorbtt, '') AS nomorbtt 
 			FROM public.opr_t_transportlspb 
-			WHERE TRIM(customerid) = TRIM(?) 
-			   OR TRIM(customerid) = TRIM(?)
-		`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0")).Scan(&existingDNs)
+			WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
+			  AND dn_od_sj IN (?)
+		`, cleanCustID, strings.TrimLeft(cleanCustID, "0"), allDNs).Scan(&existingDNs)
 
 		for _, item := range existingDNs {
-			dns := strings.Split(item.DN, ",")
-			for _, d := range dns {
-				cleanD := strings.TrimSpace(d)
-				if cleanD != "" {
+			for _, d := range strings.Split(item.DN, ",") {
+				if cleanD := strings.TrimSpace(d); cleanD != "" {
 					mapExistingDN[cleanD] = strings.TrimSpace(item.BTT)
 				}
 			}
 		}
+	}
 
-		fmt.Printf("🔍 [CalculatePreview2] Total Nomor DN Terdaftar di Database: %d\n", len(mapExistingDN))
+	type DNBTTItem struct {
+		DN  string `gorm:"column:dn_od_sj"`
+		BTT string `gorm:"column:nomorbtt"`
+	}
+	var existingDNs []DNBTTItem
+
+	cleanCustID := strings.TrimSpace(req.CustomerID)
+	database.Raw(`
+		SELECT COALESCE(dn_od_sj, '') AS dn_od_sj, COALESCE(nomorbtt, '') AS nomorbtt 
+		FROM public.opr_t_transportlspb 
+		WHERE TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?)
+	`, cleanCustID, strings.TrimLeft(cleanCustID, "0")).Scan(&existingDNs)
+
+	for _, item := range existingDNs {
+		for _, d := range strings.Split(item.DN, ",") {
+			if cleanD := strings.TrimSpace(d); cleanD != "" {
+				mapExistingDN[cleanD] = strings.TrimSpace(item.BTT)
+			}
+		}
 	}
 
 	var processedRows []TransportPlanningGroupedRow
@@ -656,10 +674,8 @@ func CalculatePreview2(c *gin.Context) {
 		isDup := false
 		existingBtt := ""
 		if row.DNList != "" {
-			dnParts := strings.Split(row.DNList, ",")
-			for _, d := range dnParts {
-				clean := strings.TrimSpace(d)
-				if btt, exists := mapExistingDN[clean]; exists {
+			for _, d := range strings.Split(row.DNList, ",") {
+				if btt, exists := mapExistingDN[strings.TrimSpace(d)]; exists {
 					isDup = true
 					existingBtt = btt
 					break
@@ -693,16 +709,16 @@ func CalculatePreview2(c *gin.Context) {
 			}
 		}
 
-		// C. Kalkulasi Harga Final (Skema CSV -> Multidrop -> Carter -> Reguler Master)
+		// C. Kalkulasi Harga Final
 		var hargaFinal float64 = 0
 		var sumberHarga = "TIDAK ADA"
 
-		// 1. PRIORITAS 1: Jika harga sudah tertera eksplisit di CSV
+		// 1. PRIORITAS 1: Harga tertera di CSV
 		if row.Harga > 0 {
 			hargaFinal = row.Harga
 			sumberHarga = "HARGA CSV"
 
-			// 2. PRIORITAS 2: PENGIRIMAN MULTIDROP DALAM KOTA (is_multidrop = 'Y' / 'E')
+			// 2. PRIORITAS 2: Pengiriman Multidrop Dalam Kota
 		} else if strings.ToUpper(strings.TrimSpace(row.IsMultidrop)) == "Y" || strings.ToUpper(strings.TrimSpace(row.IsMultidrop)) == "E" {
 			type MultidropTarif struct {
 				HargaKg        float64 `gorm:"column:harga_kg"`
@@ -718,12 +734,10 @@ func CalculatePreview2(c *gin.Context) {
 			}
 			var md MultidropTarif
 
-			// Bersihkan imbuhan wilayah
 			regStrip := regexp.MustCompile(`(?i)\b(KAB\.|KABUPATEN|KOTA|ADM\.)\b`)
 			cleanKota := strings.TrimSpace(regStrip.ReplaceAllString(row.Kota, ""))
 			cleanKecamatan := strings.TrimSpace(regStrip.ReplaceAllString(row.Kecamatan, ""))
 
-			// A. Ambil tarif master multidrop lengkap
 			errMD := database.Raw(`
 				SELECT 
 					COALESCE(harga_kg, 0) AS harga_kg,
@@ -747,7 +761,7 @@ func CalculatePreview2(c *gin.Context) {
 					CASE WHEN UPPER(TRIM(tujuan_kecamatan)) = UPPER(TRIM(?)) THEN 1 ELSE 2 END ASC,
 					id DESC
 				LIMIT 1
-			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), "%"+cleanKecamatan+"%", "%"+cleanKota+"%", cleanKota, cleanKecamatan).Scan(&md).Error
+			`, cleanCustID, strings.TrimLeft(cleanCustID, "0"), "%"+cleanKecamatan+"%", "%"+cleanKota+"%", cleanKota, cleanKecamatan).Scan(&md).Error
 
 			if errMD == nil && (md.HargaKg > 0 || md.HargaKgDG > 0 || md.HargaExpressKg > 0) {
 				berat := row.TotalWeight
@@ -755,13 +769,11 @@ func CalculatePreview2(c *gin.Context) {
 					berat = 1
 				}
 
-				// Tentukan parameter sesuai jenis kiriman (DG B3 vs Express vs Reguler)
 				hk := md.HargaKg
 				kmin := md.KgMin
 				kmax := md.KgMax
 				over := md.HargaOverKgMax
 
-				// Jika Kiriman B3 / Dangerous Goods
 				if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" && md.HargaKgDG > 0 {
 					hk = md.HargaKgDG
 					if md.KgMinDG > 0 {
@@ -773,7 +785,6 @@ func CalculatePreview2(c *gin.Context) {
 					if md.HargaOverKgDG > 0 {
 						over = md.HargaOverKgDG
 					}
-					// Jika Kiriman Multidrop Express
 				} else if strings.ToUpper(strings.TrimSpace(row.IsMultidrop)) == "E" && md.HargaExpressKg > 0 {
 					hk = md.HargaExpressKg
 					if md.KgExpressMin > 0 {
@@ -781,12 +792,10 @@ func CalculatePreview2(c *gin.Context) {
 					}
 				}
 
-				// Fallback safety jika batas over kg belum diisi di database
 				if over <= 0 {
 					over = hk
 				}
 
-				// B. FORMULA RESMI DARI hargaMultidrop.asp
 				if berat <= kmin {
 					hargaFinal = hk * kmin
 				} else if kmax > 0 && berat > kmax {
@@ -794,27 +803,10 @@ func CalculatePreview2(c *gin.Context) {
 				} else {
 					hargaFinal = hk * berat
 				}
-
 				sumberHarga = "TARIF MASTER"
-			} else {
-				// C. Fallback riwayat BTT jika master multidrop belum diset
-				var historiHarga float64
-				database.Raw(`
-					SELECT COALESCE(bttt_harga, 0)
-					FROM public.mkt_t_econote
-					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
-					  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?))
-					  AND COALESCE(bttt_harga, 0) > 0
-					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee).Scan(&historiHarga)
-
-				if historiHarga > 0 {
-					hargaFinal = historiHarga
-					sumberHarga = "TARIF MASTER"
-				}
 			}
 
-			// 3. PRIORITAS 3: LAYANAN CARTER ARMADA (layananID = 'C' atau memiliki Kode Kendaraan)
+			// 3. PRIORITAS 3: Layanan Carter Armada
 		} else if strings.ToUpper(strings.TrimSpace(row.LayananID)) == "C" || row.KodeKendaraan != "" {
 			type CarterTarif struct {
 				Harga   float64 `gorm:"column:harga"`
@@ -831,22 +823,11 @@ func CalculatePreview2(c *gin.Context) {
 				  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
 				  AND UPPER(TRIM(jns_kend)) = UPPER(TRIM(?))
 				LIMIT 1
-			`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Kota, row.KodeKendaraan).Scan(&ct)
+			`, cleanCustID, strings.TrimLeft(cleanCustID, "0"), row.Kota, row.KodeKendaraan).Scan(&ct)
 
 			tarifCarter := ct.Harga
 			if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" && ct.HargaDG > 0 {
 				tarifCarter = ct.HargaDG
-			}
-
-			if tarifCarter == 0 {
-				database.Raw(`
-					SELECT COALESCE(bttt_harga, 0) 
-					FROM public.mkt_t_econote 
-					WHERE (TRIM(bttt_asalcustid) = TRIM(?) OR TRIM(bttt_asalcustid) = TRIM(?))
-					  AND UPPER(TRIM(bttt_tujuannama)) = UPPER(TRIM(?)) 
-					  AND COALESCE(bttt_harga, 0) > 0
-					ORDER BY bttt_tanggal DESC LIMIT 1
-				`, req.CustomerID, strings.TrimLeft(req.CustomerID, "0"), row.Consignee).Scan(&tarifCarter)
 			}
 
 			if tarifCarter > 0 {
@@ -854,99 +835,167 @@ func CalculatePreview2(c *gin.Context) {
 				sumberHarga = "TARIF MASTER"
 			}
 
-			// 4. PRIORITAS 4: LAYANAN REGULER / LUAR KOTA
+			// 4. PRIORITAS 4: LAYANAN REGULER / LUAR KOTA (IDENTIK 100% ASP: hargaPelangganTarifCsv.asp)
 		} else {
 			type MasterTarifRow struct {
 				MinimalKg          float64 `gorm:"column:minimalkg"`
 				HargaPokok         float64 `gorm:"column:hargapokok"`
 				BypassKg           float64 `gorm:"column:bypasskg"`
 				HargaKgSelanjutnya float64 `gorm:"column:hargakgselanjutnya"`
-				BiayaTambahan      float64 `gorm:"column:biayatambahan"`
 			}
 			var mTarif MasterTarifRow
 
-			// Daftar Customer ID Grup Merck
+			// Ambil berat tertinggi antara fisik vs volume (IDENTIK arrW di ASP Lawas)
+			weight := row.TotalWeight
+			if row.TotalVolume > weight {
+				weight = row.TotalVolume
+			}
+			if weight <= 0 {
+				weight = 1
+			}
+
+			cleanCustID := strings.TrimSpace(req.CustomerID)
 			targetCustIDs := []string{
-				req.CustomerID,
-				strings.TrimLeft(req.CustomerID, "0"),
-			}
-			if strings.Contains(req.CustomerID, "0010000219") || strings.Contains(req.CustomerID, "0010000073") || strings.Contains(req.CustomerID, "0010000021") {
-				targetCustIDs = append(targetCustIDs, "0010000219", "0010000073", "0010000021", "10000219", "10000073", "10000021")
+				cleanCustID,
+				strings.TrimLeft(cleanCustID, "0"),
+				"0010000073", "10000073", "0010000021", "10000021", "0010000219", "10000219",
 			}
 
-			// Bersihkan imbuhan wilayah
-			regStrip := regexp.MustCompile(`(?i)\b(KAB\.|KABUPATEN|KOTA|ADM\.)\b`)
-			cleanKota := strings.TrimSpace(regStrip.ReplaceAllString(row.Kota, ""))
-			cleanKecamatan := strings.TrimSpace(regStrip.ReplaceAllString(row.Kecamatan, ""))
+			// Pembersih wilayah
+			cleanKota := strings.ToUpper(row.Kota)
+			for _, w := range []string{"KABUPATEN", "KAB.", "KAB", "KOTA", "ADM.", "ADM"} {
+				cleanKota = strings.ReplaceAll(cleanKota, w, "")
+			}
+			cleanKota = strings.TrimSpace(cleanKota)
 
-			// A. Prioritas Match: Kecamatan + Kota (Cocokkan servid baris, fallback ke servid apa saja)
-			errTarif := database.Raw(`
-				SELECT 
-					COALESCE(minimalkg, 0) AS minimalkg, 
-					COALESCE(hargapokok, 0) AS hargapokok, 
-					COALESCE(bypasskg, 0) AS bypasskg, 
-					COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya, 
-					COALESCE(biayatambahan, 0) AS biayatambahan
-				FROM public.mkt_m_eharga_pelanggan
-				WHERE customerid IN (?)
-				  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT' OR jnharga IS NULL)
-				  AND (
-				      UPPER(TRIM(tujuan_kecamatan)) LIKE UPPER(?) 
-				      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kecamatan)), '%')
-				  )
-				  AND (
-				      UPPER(TRIM(tujuan_kabupaten)) LIKE UPPER(?) 
-				      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kabupaten)), '%')
-				  )
-				ORDER BY 
-					CASE WHEN TRIM(servid::text) = TRIM(?) THEN 1 ELSE 2 END,
-					CASE WHEN customerid = ? THEN 1 ELSE 2 END,
-					id DESC
-				LIMIT 1
-			`, targetCustIDs, "%"+cleanKecamatan+"%", cleanKecamatan, "%"+cleanKota+"%", cleanKota, row.ServID, req.CustomerID).Scan(&mTarif).Error
+			cleanKecamatan := strings.ToUpper(row.Kecamatan)
+			for _, w := range []string{"KECAMATAN", "KEC.", "KEC"} {
+				cleanKecamatan = strings.ReplaceAll(cleanKecamatan, w, "")
+			}
+			cleanKecamatan = strings.TrimSpace(cleanKecamatan)
 
-			// B. Fallback: Cocokkan Tingkat Kota/Kabupaten Saja
-			if errTarif != nil || mTarif.HargaPokok == 0 {
+			// Tentukan jenis harga (jn): jika is_DG = 'Y', utamakan jnharga = '3'
+			jn := "0"
+			if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" {
+				jn = "3"
+			}
+
+			servID := strings.TrimSpace(row.ServID)
+			if servID != "1" && servID != "2" && servID != "3" {
+				servID = "1"
+			}
+
+			// 🌟 LANGKAH 1: Cari spesifik Kecamatan + Kabupaten di MKT_M_eHarga_Pelanggan (Eksak & Anti-Bocor)
+			if cleanKecamatan != "" && cleanKecamatan != "-" {
 				database.Raw(`
 					SELECT 
 						COALESCE(minimalkg, 0) AS minimalkg, 
 						COALESCE(hargapokok, 0) AS hargapokok, 
 						COALESCE(bypasskg, 0) AS bypasskg, 
-						COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya, 
-						COALESCE(biayatambahan, 0) AS biayatambahan
+						COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya
 					FROM public.mkt_m_eharga_pelanggan
 					WHERE customerid IN (?)
-					  AND (TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT' OR jnharga IS NULL)
+					  AND servid = ?
+					  AND (jnharga = ? OR jnharga = '0' OR jnharga IS NULL)
+					  AND tujuan_kecamatan IS NOT NULL AND TRIM(tujuan_kecamatan) <> '' AND TRIM(tujuan_kecamatan) <> '-'
 					  AND (
-					      UPPER(TRIM(tujuan_kabupaten)) LIKE UPPER(?) 
-					      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kabupaten)), '%')
+					      UPPER(TRIM(tujuan_kecamatan)) = ?
+					      OR UPPER(TRIM(tujuan_kecamatan)) LIKE ?
+					  )
+					  AND (
+					      UPPER(TRIM(tujuan_kabupaten)) = ?
+					      OR UPPER(TRIM(tujuan_kabupaten)) = ?
+					      OR UPPER(TRIM(tujuan_kabupaten)) LIKE ?
 					  )
 					ORDER BY 
-						CASE WHEN TRIM(servid::text) = TRIM(?) THEN 1 ELSE 2 END,
-						CASE WHEN customerid = ? THEN 1 ELSE 2 END,
+						CASE WHEN jnharga = ? THEN 1 ELSE 2 END,
+						CASE WHEN UPPER(TRIM(tujuan_kecamatan)) = ? THEN 1 ELSE 2 END,
 						id DESC
 					LIMIT 1
-				`, targetCustIDs, "%"+cleanKota+"%", cleanKota, row.ServID, req.CustomerID).Scan(&mTarif)
+				`, targetCustIDs, servID, jn, cleanKecamatan, "%"+cleanKecamatan+"%", cleanKota, "KOTA "+cleanKota, "%"+cleanKota+"%", jn, cleanKecamatan).Scan(&mTarif)
 			}
 
-			// C. Hitung Rumus Tarif Master
+			// 🌟 LANGKAH 2: Fallback ke Tingkat Kota / Kabupaten di MKT_M_eHarga_Pelanggan
+			if mTarif.HargaPokok == 0 && cleanKota != "" && cleanKota != "-" {
+				database.Raw(`
+					SELECT 
+						COALESCE(minimalkg, 0) AS minimalkg, 
+						COALESCE(hargapokok, 0) AS hargapokok, 
+						COALESCE(bypasskg, 0) AS bypasskg, 
+						COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya
+					FROM public.mkt_m_eharga_pelanggan
+					WHERE customerid IN (?)
+					  AND servid = ?
+					  AND (jnharga = ? OR jnharga = '0' OR jnharga IS NULL)
+					  AND tujuan_kabupaten IS NOT NULL AND TRIM(tujuan_kabupaten) <> '' AND TRIM(tujuan_kabupaten) <> '-'
+					  AND (
+					      UPPER(TRIM(tujuan_kabupaten)) = ?
+					      OR UPPER(TRIM(tujuan_kabupaten)) = ?
+					      OR UPPER(TRIM(tujuan_kabupaten)) LIKE ?
+					  )
+					ORDER BY 
+						CASE WHEN jnharga = ? THEN 1 ELSE 2 END,
+						id DESC
+					LIMIT 1
+				`, targetCustIDs, servID, jn, cleanKota, "KOTA "+cleanKota, "%"+cleanKota+"%", jn).Scan(&mTarif)
+			}
+
+			// 🌟 LANGKAH 3: Fallback ke Tarif Umum MKT_M_eHarga (Persis Baris 368 ASP Lawas)
+			if mTarif.HargaPokok == 0 {
+				database.Raw(`
+					SELECT 
+						COALESCE(minimalkg, 0) AS minimalkg, 
+						COALESCE(hargapokok, 0) AS hargapokok, 
+						COALESCE(bypasskg, 0) AS bypasskg, 
+						COALESCE(hargakgselanjutnya, 0) AS hargakgselanjutnya
+					FROM public.mkt_m_eharga
+					WHERE servid = ?
+					  AND tujuan_kabupaten IS NOT NULL AND TRIM(tujuan_kabupaten) <> ''
+					  AND (
+					      UPPER(TRIM(tujuan_kabupaten)) = ?
+					      OR UPPER(TRIM(tujuan_kabupaten)) = ?
+					      OR UPPER(TRIM(tujuan_kabupaten)) LIKE ?
+					  )
+					ORDER BY 
+						CASE WHEN UPPER(TRIM(tujuan_kecamatan)) = ? THEN 1 ELSE 2 END,
+						id DESC
+					LIMIT 1
+				`, servID, cleanKota, "KOTA "+cleanKota, "%"+cleanKota+"%", cleanKecamatan).Scan(&mTarif)
+			}
+
+			// 🌟 LANGKAH 4: HITUNG HARGA (IDENTIK 100% PERSIS BARIS 386-390 ASP LAWAS):
+			// if weight < minkg then total = hrgpk else total = kglanjut * weight end if
 			if mTarif.HargaPokok > 0 {
-				beratHitung := row.TotalWeight
-				if beratHitung <= 0 {
-					beratHitung = 1
+				if weight < mTarif.MinimalKg {
+					hargaFinal = mTarif.HargaPokok
+				} else {
+					hargaFinal = mTarif.HargaKgSelanjutnya * weight
 				}
-
-				biayaKirim := mTarif.HargaPokok
-
-				if mTarif.BypassKg > 0 && beratHitung >= mTarif.BypassKg {
-					biayaKirim = beratHitung * mTarif.HargaKgSelanjutnya
-				} else if beratHitung > mTarif.MinimalKg {
-					biayaKirim = mTarif.HargaPokok + ((beratHitung - mTarif.MinimalKg) * mTarif.HargaKgSelanjutnya)
-				}
-
-				hargaFinal = biayaKirim + mTarif.BiayaTambahan
 				sumberHarga = "TARIF MASTER"
+
+				// 🌟 LANGKAH 5: FALLBACK RIWAYAT BTT DENGAN FILTER KOTA TUJUAN (Mencegah Salah Kota!)
+			} else {
+				cleanName := strings.ToUpper(strings.TrimSpace(row.Consignee))
+				shortName := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(cleanName, "PT. "), "PT "))
+				var historiHarga float64
+				database.Raw(`
+					SELECT COALESCE(bttt_harga, 0) 
+					FROM public.mkt_t_econote 
+					WHERE (UPPER(TRIM(bttt_tujuannama)) = ? OR UPPER(TRIM(bttt_tujuannama)) LIKE ?)
+					  AND (
+					      UPPER(TRIM(bttt_tujuankota)) LIKE ? 
+					      OR UPPER(TRIM(bttt_tujuankecamatan)) LIKE ?
+					  )
+					  AND COALESCE(bttt_harga, 0) > 0 
+					ORDER BY bttt_tanggal DESC LIMIT 1
+				`, cleanName, "%"+shortName+"%", "%"+cleanKota+"%", "%"+cleanKecamatan+"%").Scan(&historiHarga)
+
+				if historiHarga > 0 {
+					hargaFinal = historiHarga
+					sumberHarga = "TARIF MASTER"
+				}
 			}
+			// ⚠️ CATATAN: row.TotalWeight TIDAK DIUBAH (Tetap mempertahankan berat fisik asli)!
 		}
 
 		row.HargaFinal = hargaFinal
@@ -962,9 +1011,6 @@ func CalculatePreview2(c *gin.Context) {
 
 		processedRows = append(processedRows, row)
 	}
-
-	fmt.Printf("✅ [CalculatePreview2] Selesai: %d Akan Diproses, %d Dilewati (Duplikat). Total: Rp %.0f\n\n",
-		totalAkanProses, totalDilewati, grandTotalHarga)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":              "success",
@@ -1204,4 +1250,30 @@ func SaveCustomerWilayahHistory(c *gin.Context) {
 		"action":  "inserted",
 		"message": "Data wilayah baru berhasil ditambahkan ke master riwayat!",
 	})
+}
+
+func parseIndonesianFloat(val string) float64 {
+	clean := strings.TrimSpace(val)
+	if clean == "" || clean == "-" {
+		return 0
+	}
+
+	// 1. Jika format: 1.089.270 atau 523.150 (titik sebagai pemisah ribuan)
+	if strings.Count(clean, ".") > 1 || (strings.Count(clean, ".") == 1 && !strings.Contains(clean, ",")) {
+		parts := strings.Split(clean, ".")
+		// Jika bagian belakang titik panjangnya tepat 3 digit (contoh: 523.150 atau 1.089.270)
+		if len(parts[len(parts)-1]) == 3 {
+			clean = strings.ReplaceAll(clean, ".", "")
+			clean = strings.ReplaceAll(clean, ",", ".")
+		}
+	} else {
+		// Jika format standar desimal koma (contoh: 12,50)
+		clean = strings.ReplaceAll(clean, ".", "")
+		clean = strings.ReplaceAll(clean, ",", ".")
+	}
+
+	if f, err := strconv.ParseFloat(clean, 64); err == nil {
+		return f
+	}
+	return 0
 }
