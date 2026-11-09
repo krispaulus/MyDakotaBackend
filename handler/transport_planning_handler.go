@@ -1098,7 +1098,7 @@ func CalculatePreview2(c *gin.Context) {
 	})
 }
 
-// 4. SIMPAN BATCH KE DATABASE (FINAL INSERT BTT & LSPB)
+// 4. SIMPAN BATCH KE DATABASE (AUTO GENERATE NOMOR BTT & INSERT KE MKT_T_ECONOTE)
 func SaveTransportPlanningBatch(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
@@ -1130,96 +1130,129 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 		username = fmt.Sprintf("%v", authUser)
 	}
 
-	batchID := fmt.Sprintf("BATCH-%d", time.Now().UnixNano())
-	tx := database.Begin()
+	agenID := "1" // Default DLI Pusat (001)
+	if aID, exists := c.Get("agen_id"); exists && aID != nil && fmt.Sprintf("%v", aID) != "" {
+		agenID = fmt.Sprintf("%v", aID)
+	}
 
-	insertSQL := `
-		INSERT INTO public.opr_t_transport_planning_upload 
-			(batch_upload_id, customer_id, customer_name, no_do_dn, nama_penerima, alamat_penerima, 
-			 kota_tujuan, koli, berat, volume, status_wilayah, status_proses, delimiter_used, user_upload, created_at)
-		VALUES 
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'AUTO', ?, CURRENT_TIMESTAMP)
-	`
+	now := time.Now()
+	tglTrans := now.Format("2006-01-02")
+	batchID := fmt.Sprintf("BATCH-%d", now.UnixNano())
+
+	tx := database.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
 
 	savedCount := 0
+
+	// Ambil nomor urut BTT terakhir untuk cabang terkait
+	prefixBTT := fmt.Sprintf("%03s%s", agenID, now.Format("0601")) // misal: 0012611
+	var lastBTTNo string
+	database.Table("public.mkt_t_econote").
+		Select("bttt_no").
+		Where("bttt_no LIKE ?", prefixBTT+"%").
+		Order("bttt_no DESC").
+		Limit(1).
+		Scan(&lastBTTNo)
+
+	nextBTTSeq := 1
+	if lastBTTNo != "" && len(lastBTTNo) >= len(prefixBTT)+5 {
+		if num, err := strconv.Atoi(lastBTTNo[len(prefixBTT):]); err == nil {
+			nextBTTSeq = num + 1
+		}
+	}
+
 	for _, r := range req.Rows {
-		// Jangan simpan yang duplikat
+		// Abaikan baris duplikat
 		if r.IsDuplicate {
 			continue
 		}
 
-		if err := tx.Exec(insertSQL, batchID, req.CustomerID, req.CustomerName, r.DNList, r.Consignee, r.Address,
+		// 1. Generate Nomor BTT Resmi Baru (12 Digit Format Standar Dakota)
+		newBTTNo := fmt.Sprintf("%s%05d", prefixBTT, nextBTTSeq)
+		nextBTTSeq++
+
+		// 2. Simpan ke Antrean Staging Upload
+		insertUploadSQL := `
+			INSERT INTO public.opr_t_transport_planning_upload 
+				(batch_upload_id, customer_id, customer_name, no_do_dn, nama_penerima, alamat_penerima, 
+				 kota_tujuan, koli, berat, volume, status_wilayah, status_proses, delimiter_used, user_upload, created_at)
+			VALUES 
+				(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SELESAI', 'AUTO', ?, CURRENT_TIMESTAMP)
+		`
+		if err := tx.Exec(insertUploadSQL, batchID, req.CustomerID, req.CustomerName, r.DNList, r.Consignee, r.Address,
 			r.Kota, r.TotalColly, r.TotalWeight, r.TotalVolume, r.StatusWilayah, username).Error; err != nil {
 			tx.Rollback()
-			fmt.Printf("❌ [SaveTransportPlanningBatch] Error Insert Upload: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan batch: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal simpan log upload: " + err.Error()})
 			return
 		}
-		savedCount++
-	}
 
-	// Commit data batch upload terlebih dahulu
-	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal commit batch upload: " + err.Error()})
-		return
-	}
+		// 3. Simpan Transaksi BTT ke Tabel Master BTT (public.mkt_t_econote)
+		bttRecord := map[string]interface{}{
+			"bttt_no":              newBTTNo,
+			"bttt_tanggal":         now,
+			"bttt_agenid":          agenID,
+			"bttt_asalcustid":      req.CustomerID,
+			"bttt_asalname":        req.CustomerName,
+			"bttt_tujuannama":      r.Consignee,
+			"bttt_tujuanalamat":    r.Address,
+			"bttt_tujuanpropinsi":  r.Propinsi,
+			"bttt_tujuankota":      r.Kota,
+			"bttt_tujuankecamatan": r.Kecamatan,
+			"bttt_tujuankelurahan": r.Kelurahan,
+			"bttt_tujuankodepos":   r.Kodepos,
+			"bttt_tujuantelp":      r.Telp,
+			"bttt_jmlkoli":         r.TotalColly,
+			"bttt_berat":           r.TotalWeight,
+			"bttt_beratvol":        r.TotalVolume,
+			"bttt_harga":           r.HargaFinal,
+			"bttt_biayapacking":    r.BiayaPacking,
+			"bttt_nosuratjalan":    r.DNList,
+			"bttt_ket":             r.Keterangan,
+			"bttt_isikiriman":      "PRODUK FARMASI / KESEHATAN",
+			"bttt_paketyn":         "Y",
+			"bttt_jenisharga":      "2", // Kredit Pelanggan
+			"bttt_create_by":       username,
+			"bttt_created_at":      now,
+		}
 
-	// 🌟 Sinkronisasi ke tabel LSPB dilakukan di luar transaksi utama agar tidak menggugurkan batch
-	go func(rows []TransportPlanningGroupedRow, custID string) {
-		now := time.Now()
-		tglTrans := now.Format("2006-01-02")
+		if err := tx.Table("public.mkt_t_econote").Create(&bttRecord).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal insert ke mkt_t_econote: " + err.Error()})
+			return
+		}
 
-		for _, r := range rows {
-			if r.IsDuplicate || r.DNList == "" {
-				continue
-			}
-			dnParts := strings.Split(r.DNList, ",")
-			for _, d := range dnParts {
+		// 4. Hubungkan DN dengan Nomor BTT di tabel relasi LSPB
+		if r.DNList != "" {
+			for _, d := range strings.Split(r.DNList, ",") {
 				cleanDN := strings.TrimSpace(d)
 				if cleanDN == "" {
 					continue
 				}
-
-				// 1. Simpan ke opr_t_transportlspb (Tabel Relasi Standar)
-				var count int64
-				database.Table("public.opr_t_transportlspb").
-					Where("dn_od_sj = ? AND (customerid = ? OR customerid = ?)", cleanDN, custID, strings.TrimLeft(custID, "0")).
-					Count(&count)
-
-				if count == 0 {
-					lspbData := map[string]interface{}{
-						"dn_od_sj":         cleanDN,
-						"customerid":       custID,
-						"tanggal_handover": tglTrans,
-						"nomorbtt":         r.ExistingBTT,
-					}
-					_ = database.Table("public.opr_t_transportlspb").Create(&lspbData)
+				lspbData := map[string]interface{}{
+					"dn_od_sj":         cleanDN,
+					"customerid":       req.CustomerID,
+					"tanggal_handover": tglTrans,
+					"nomorbtt":         newBTTNo,
 				}
-
-				// 🌟 2. Simpan ke opr_t_transportlspbwithcarinoutanddatetime (TABEL SUMBER VIEW vw_transport_lspb)
-				// Menggunakan HANYA kolom-kolom yang valid di tabel
-				carData := map[string]interface{}{
-					"nodo":       cleanDN,
-					"noskb":      r.ExistingBTT,
-					"kategori":   r.StatusWilayah,
-					"created_at": now,
-					"updated_at": now,
-				}
-
-				database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").
-					Where("nodo = ?", cleanDN).
-					Delete(&map[string]interface{}{})
-
-				if errCar := database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Create(&carData).Error; errCar != nil {
-					fmt.Printf("⚠️ [SaveTransportPlanningBatch] Warning Car Insert DN %s: %v\n", cleanDN, errCar)
-				}
+				_ = tx.Table("public.opr_t_transportlspb").Create(&lspbData)
 			}
 		}
-	}(req.Rows, req.CustomerID)
+
+		savedCount++
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal commit BTT: " + err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "success",
-		"message":  fmt.Sprintf("Berhasil memproses %d BTT ke database!", savedCount),
+		"message":  fmt.Sprintf("Berhasil menerbitkan %d BTT ke database!", savedCount),
 		"batch_id": batchID,
 	})
 }
