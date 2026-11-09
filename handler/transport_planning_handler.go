@@ -675,7 +675,8 @@ func CalculatePreview2(c *gin.Context) {
 		existingBtt := ""
 		if row.DNList != "" {
 			for _, d := range strings.Split(row.DNList, ",") {
-				if btt, exists := mapExistingDN[strings.TrimSpace(d)]; exists {
+				cleanDN := strings.TrimSpace(d)
+				if btt, exists := mapExistingDN[cleanDN]; exists && btt != "" && btt != "-" {
 					isDup = true
 					existingBtt = btt
 					break
