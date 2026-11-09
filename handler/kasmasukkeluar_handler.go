@@ -13,6 +13,53 @@ import (
 	"gorm.io/gorm"
 )
 
+type BPLKHeaderResponse struct {
+	SJHID           string               `json:"sjh_id"`
+	SJHKendID       string               `json:"sjh_kendid"`
+	SJHKeterangan   string               `json:"sjh_keterangan"`
+	AssNama         string               `json:"ass_nama"`
+	NmSopir1        string               `json:"nm_sopir1"`
+	NmSopir2        string               `json:"nm_sopir2"`
+	RuteUtama       string               `json:"rute_utama"`
+	RuteCadangan    string               `json:"rute_cadangan"`
+	TotalUangMuka   float64              `json:"total_uang_muka"`
+	ItemDebet       []BPLKDebetItem      `json:"item_debet"`
+	AkunKredit      []BPLKAkunKreditItem `json:"akun_kredit"`
+	DaftarKasKeluar []BPLKKasKeluarItem  `json:"daftar_kas_keluar"`
+}
+
+type BPLKDebetItem struct {
+	ItemName string  `json:"item_name"`
+	ItemID   string  `json:"item_id"`
+	Nominal  float64 `json:"nominal"`
+}
+
+type BPLKAkunKreditItem struct {
+	AccCode string `json:"acc_code"`
+	AccName string `json:"acc_name"`
+}
+
+type BPLKKasKeluarItem struct {
+	CBTanggal  string  `json:"cb_tanggal"`
+	AgenNama   string  `json:"agen_nama"`
+	CBID       string  `json:"cb_id"`
+	CBNoJurnal string  `json:"cb_nojurnal"`
+	Nominal    float64 `json:"nominal"`
+}
+
+type ProsesUangMukaBPLKReq struct {
+	SJHID      string            `json:"sjh_id" binding:"required"`
+	Tanggal    string            `json:"tanggal"`
+	DebetList  []BPLKDebetItem   `json:"debet_list" binding:"required"`
+	KreditList []InputKreditItem `json:"kredit_list" binding:"required"`
+}
+
+type InputKreditItem struct {
+	AccCode string  `json:"acc_code"`
+	AccName string  `json:"acc_name"`
+	Nominal float64 `json:"nominal"`
+}
+
 type CashBankListModel struct {
 	CBID        string  `json:"cb_id" gorm:"column:cb_id"`
 	CBTanggal   string  `json:"cb_tanggal" gorm:"column:cb_tanggal"`
@@ -651,3 +698,385 @@ func GetLaporanCashFlowHandler(c *gin.Context) {
 		"sisa_kas":           grandTotalDebet - grandTotalKredit,
 	})
 }
+
+func GetBPLKDetailHandler(c *gin.Context) {
+	database := getCashBankDB(c)
+	stNumber := strings.TrimSpace(c.Query("st"))
+	if stNumber == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nomor Surat Tugas wajib diisi"})
+		return
+	}
+
+	// 1. Query Data Header Surat Jalan
+	type RawHeader struct {
+		SJHID         string `gorm:"column:sjh_id"`
+		SJHKendID     string `gorm:"column:sjh_kendid"`
+		SJHKeterangan string `gorm:"column:sjh_keterangan"`
+		TrayekID      string `gorm:"column:sjh_trayekid"`
+		AssNama       string `gorm:"column:ass_nama"`
+		NmSopir1      string `gorm:"column:nmsopir1"`
+		NmSopir2      string `gorm:"column:nmsopir2"`
+	}
+	var rh RawHeader
+
+	queryHeader := `
+		SELECT 
+			sj.sjh_id,
+			sj.sjh_kendid,
+			COALESCE(sj.sjh_keterangan, '-') AS sjh_keterangan,
+			sj.sjh_trayekid,
+			COALESCE(ass.ass_nama, 'Luar Kota') AS ass_nama,
+			COALESCE(s1.kry_nama, '-') AS nmsopir1,
+			COALESCE(s2.kry_nama, '') AS nmsopir2
+		FROM public.opr_t_esuratjalan sj
+		LEFT JOIN public.opr_m_assignment ass ON ass.ass_id = COALESCE(sj.sjh_assid, 'AS009')
+		LEFT JOIN public.hrd_m_karyawan s1 ON s1.kry_nip = sj.sjh_sopir1_nip
+		LEFT JOIN public.hrd_m_karyawan s2 ON s2.kry_nip = sj.sjh_sopir2_nip
+		WHERE UPPER(TRIM(sj.sjh_id)) = UPPER(TRIM(?))
+		LIMIT 1
+	`
+	if err := database.Raw(queryHeader, stNumber).Scan(&rh).Error; err != nil || rh.SJHID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": fmt.Sprintf("Surat Tugas %s tidak ditemukan!", stNumber)})
+		return
+	}
+
+	// 2. Query Rute Utama & Rute Cadangan Trayek
+	var ruteUtamaList []string
+	database.Raw(`
+		SELECT ag.agen_nama 
+		FROM public.opr_m_trayekd td
+		JOIN public.glb_m_agen ag ON ag.agen_id = td.trd_agenid
+		WHERE td.trd_hid = ? AND td.trd_jenis = 'U'
+		ORDER BY td.trd_status, td.trd_urut
+	`, rh.TrayekID).Scan(&ruteUtamaList)
+
+	var ruteCadanganList []string
+	database.Raw(`
+		SELECT ag.agen_nama 
+		FROM public.opr_m_trayekd td
+		JOIN public.glb_m_agen ag ON ag.agen_id = td.trd_agenid
+		WHERE td.trd_hid = ? AND td.trd_jenis = 'C'
+		ORDER BY td.trd_status, td.trd_urut
+	`, rh.TrayekID).Scan(&ruteCadanganList)
+
+	// 3. Query Rincian Uang Muka Debet Standar dari OPR_M_TrayekBPLK
+	var debetItems []BPLKDebetItem
+	database.Raw(`
+		SELECT 
+			COALESCE(it.item_name, 'Biaya Operasional') AS item_name,
+			tb.tri_bplksubid AS item_id,
+			COALESCE(tb.tri_nominal, 0) AS nominal
+		FROM public.opr_m_trayekbplk tb
+		JOIN public.gl_m_item it ON it.item_id = tb.tri_bplksubid
+		WHERE tb.tri_hid = ? AND COALESCE(tb.tri_bplkid, '') = ''
+		ORDER BY it.item_name ASC
+	`, rh.TrayekID).Scan(&debetItems)
+
+	// Fallback jika belum ada di OPR_M_TrayekBPLK, buat template default
+	if len(debetItems) == 0 {
+		debetItems = []BPLKDebetItem{
+			{ItemName: "BBM LK", ItemID: "0840000000137", Nominal: 1695000},
+			{ItemName: "Biaya Operasional BPLK", ItemID: "0840000000138", Nominal: 960000},
+			{ItemName: "Biaya parkir LK", ItemID: "0840000000144", Nominal: 5000},
+			{ItemName: "Biaya Tol LK", ItemID: "0840000000140", Nominal: 840000},
+		}
+	}
+
+	var totalDebet float64
+	for _, d := range debetItems {
+		totalDebet += d.Nominal
+	}
+
+	// 4. Akun Kredit Standar Pencairan Uang Muka
+	akunKredit := []BPLKAkunKreditItem{
+		{AccCode: "A101010003", AccName: "KAS OPERASIONAL LK"},
+		{AccCode: "A101020008", AccName: "BCA DROPPING-9246"},
+		{AccCode: "A101020001", AccName: "GIRO BCA"},
+	}
+
+	// 5. Query Riwayat Daftar Kas Keluar yang sudah pernah dibuat untuk Surat Tugas ini
+	var kasKeluarList []BPLKKasKeluarItem
+	database.Raw(`
+		SELECT 
+			TO_CHAR(cb.cb_tanggal, 'MM/DD/YYYY') AS cb_tanggal,
+			COALESCE(ag.agen_nama, 'DLI PUSAT') AS agen_nama,
+			cb.cb_id,
+			COALESCE(cb.cb_nojurnal, '-') AS cb_nojurnal,
+			COALESCE(cb.cb_total, 0) AS nominal
+		FROM public.opr_t_esuratjalancashbank sjc
+		JOIN public.gl_t_cashbank cb ON cb.cb_id = sjc.sjc_cbid
+		LEFT JOIN public.glb_m_agen ag ON ag.agen_id = cb.cb_agenid
+		WHERE sjc.sjc_sjhid = ?
+		ORDER BY cb.cb_tanggal ASC
+	`, rh.SJHID).Scan(&kasKeluarList)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data": BPLKHeaderResponse{
+			SJHID:           rh.SJHID,
+			SJHKendID:       rh.SJHKendID,
+			SJHKeterangan:   rh.SJHKeterangan,
+			AssNama:         rh.AssNama,
+			NmSopir1:        rh.NmSopir1,
+			NmSopir2:        rh.NmSopir2,
+			RuteUtama:       strings.Join(ruteUtamaList, " -- "),
+			RuteCadangan:    strings.Join(ruteCadanganList, "; "),
+			TotalUangMuka:   totalDebet,
+			ItemDebet:       debetItems,
+			AkunKredit:      akunKredit,
+			DaftarKasKeluar: kasKeluarList,
+		},
+	})
+}
+
+func ProsesUangMukaBPLKHandler(c *gin.Context) {
+	database := getCashBankDB(c)
+	username, _ := c.Get("username")
+	userStr := fmt.Sprintf("%v", username)
+	if userStr == "" || userStr == "<nil>" {
+		userStr = "RAHMAT_1"
+	}
+
+	var req ProsesUangMukaBPLKReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	// Hitung Total Kredit Input
+	var totalKredit float64
+	for _, k := range req.KreditList {
+		totalKredit += k.Nominal
+	}
+
+	if totalKredit <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nominal kredit pencairan belum diisi!"})
+		return
+	}
+
+	// Ambil Data Surat Jalan untuk nomor kendaraan & tanggal
+	var sj struct {
+		KendID   string `gorm:"column:sjh_kendid"`
+		TrayekID string `gorm:"column:sjh_trayekid"`
+	}
+	database.Table("public.opr_t_esuratjalan").
+		Select("sjh_kendid, sjh_trayekid").
+		Where("sjh_id = ?", req.SJHID).
+		Scan(&sj)
+
+	tglTrans := time.Now()
+	if req.Tanggal != "" {
+		if t, err := time.Parse("2006-01-02", req.Tanggal); err == nil {
+			tglTrans = t
+		}
+	}
+
+	tx := database.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Generate No Kas Keluar: [001][URUT_6DIGIT]/[MM]/[YYYY]/BK
+	agen3Digit := "001"
+	bulanTahun := tglTrans.Format("01/2006")
+	patternSearch := fmt.Sprintf("%s%%/%s/BK", agen3Digit, bulanTahun)
+
+	var nextUrut int = 1
+	var lastCBID string
+	tx.Table("public.gl_t_cashbank").
+		Select("cb_id").
+		Where("cb_id LIKE ?", patternSearch).
+		Order("cb_id DESC").
+		Limit(1).
+		Scan(&lastCBID)
+
+	if lastCBID != "" && len(lastCBID) >= 9 {
+		if num, err := strconv.Atoi(lastCBID[3:9]); err == nil {
+			nextUrut = num + 1
+		}
+	}
+	newCBID := fmt.Sprintf("%s%06d/%s/BK", agen3Digit, nextUrut, bulanTahun)
+
+	// 2. Generate No Jurnal: YYMM + 001 + K + [URUT_5DIGIT] (contoh: 2611001K00239)
+	prefixJurnal := fmt.Sprintf("%s%sK", tglTrans.Format("0601"), agen3Digit)
+	var nextUrutJurnal int = 1
+	var lastJurnal string
+	tx.Table("public.gl_t_jurnalh").
+		Select("tjurh_no").
+		Where("tjurh_no LIKE ?", prefixJurnal+"%").
+		Order("tjurh_no DESC").
+		Limit(1).
+		Scan(&lastJurnal)
+
+	if lastJurnal != "" && len(lastJurnal) >= len(prefixJurnal)+5 {
+		if num, err := strconv.Atoi(lastJurnal[len(prefixJurnal):]); err == nil {
+			nextUrutJurnal = num + 1
+		}
+	}
+	newNoJurnal := fmt.Sprintf("%s%05d", prefixJurnal, nextUrutJurnal)
+
+	keteranganJurnal := fmt.Sprintf("BPLK UANG MUKA %s %s", req.SJHID, sj.KendID)
+
+	// 3. Simpan Header Kas/Bank (gl_t_cashbank)
+	cbHeader := map[string]interface{}{
+		"cb_id":          newCBID,
+		"cb_nourut":      nextUrut,
+		"cb_tanggal":     tglTrans,
+		"cb_tipe":        "K",
+		"cb_agenid":      "1",
+		"cb_transagenid": "1",
+		"cb_ket":         keteranganJurnal,
+		"cb_total":       totalKredit,
+		"cb_nojurnal":    newNoJurnal,
+		"cb_postyn":      "Y",
+		"cb_aktifyn":     "Y",
+		"cb_pembuat":     userStr,
+		"cb_updateid":    userStr,
+		"cb_updatetime":  time.Now(),
+	}
+	if err := tx.Table("public.gl_t_cashbank").Create(&cbHeader).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal simpan kas: " + err.Error()})
+		return
+	}
+
+	// 4. Simpan Rincian Biaya Kas (gl_t_cashbankdetil)
+	for _, d := range req.DebetList {
+		cbDetail := map[string]interface{}{
+			"cbd_cbid":        newCBID,
+			"cbd_itemid":      d.ItemID,
+			"cbd_ket":         d.ItemName,
+			"cbd_quantity":    1,
+			"cbd_hargasatuan": d.Nominal,
+			"cbd_agenid":      "1",
+			"cbd_susutyn":     "N",
+		}
+		if err := tx.Table("public.gl_t_cashbankdetil").Create(&cbDetail).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal simpan rincian biaya: " + err.Error()})
+			return
+		}
+	}
+
+	// 5. Simpan Relasi Surat Jalan ke Kas (opr_t_esuratjalancashbank)
+	sjcRow := map[string]interface{}{
+		"sjc_sjhid":   req.SJHID,
+		"sjc_cbid":    newCBID,
+		"sjc_jenis":   "1", // 1 = Uang Muka
+		"sjc_primary": "Y",
+	}
+	tx.Table("public.opr_t_esuratjalancashbank").Create(&sjcRow)
+
+	// 6. Simpan Header Jurnal Memorial (gl_t_jurnalh)
+	jhRow := map[string]interface{}{
+		"tjurh_no":         newNoJurnal,
+		"tjurh_tanggal":    tglTrans,
+		"tjurh_type":       "K",
+		"tjurh_keterangan": keteranganJurnal,
+		"tjurh_postyn":     "Y",
+		"tjurh_deleteyn":   "N",
+		"tjurh_updateid":   userStr,
+		"tjurh_updatetime": time.Now(),
+	}
+	tx.Table("public.gl_t_jurnalh").Create(&jhRow)
+
+	// 7. Simpan Detail Jurnal (gl_t_jurnald) Sesuai Gambar 8:
+	// A. Akun Debet: A104010200 Uang Muka Perjalanan Dinas
+	jdDebet := map[string]interface{}{
+		"tjurd_tjurhno":    newNoJurnal,
+		"tjurd_acccode":    "A104010200",
+		"tjurd_agenid":     "1",
+		"tjurd_keterangan": keteranganJurnal,
+		"tjurd_debet":      totalKredit,
+		"tjurd_kredit":     0,
+	}
+	tx.Table("public.gl_t_jurnald").Create(&jdDebet)
+
+	// B. Akun Kredit: Sesuai rekening yang dipilih user (contoh: A101020001 Giro BCA)
+	for _, k := range req.KreditList {
+		if k.Nominal > 0 {
+			jdKredit := map[string]interface{}{
+				"tjurd_tjurhno":    newNoJurnal,
+				"tjurd_acccode":    k.AccCode,
+				"tjurd_agenid":     "1",
+				"tjurd_keterangan": keteranganJurnal,
+				"tjurd_debet":      0,
+				"tjurd_kredit":     k.Nominal,
+			}
+			tx.Table("public.gl_t_jurnald").Create(&jdKredit)
+		}
+	}
+
+	tx.Commit()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "success",
+		"message":   fmt.Sprintf("Pencairan Uang Muka BPLK berhasil diproses! No Kas: %s, No Jurnal: %s", newCBID, newNoJurnal),
+		"cb_id":     newCBID,
+		"no_jurnal": newNoJurnal,
+		"total":     totalKredit,
+	})
+}
+
+//===========Kueri Menampilkan Daftar Nomor Surat Tugas Terbaru yang Siap Dipakai
+//Kueri ini mengambil data Surat Tugas lengkap dengan nomor kendaraan, nama driver, trayek rute, serta status apakah sudah pernah dicairkan uang mukanya atau belum:
+
+// SELECT
+//     sj.sjh_id AS nomor_surat_tugas,
+//     TO_CHAR(sj.sjh_tanggal, 'DD/MM/YYYY') AS tanggal_st,
+//     sj.sjh_kendid AS no_kendaraan,
+//     COALESCE(ass.ass_nama, 'Luar Kota') AS jenis_tugas,
+//     COALESCE(s1.kry_nama, '-') AS sopir_1,
+//     COALESCE(s2.kry_nama, '-') AS sopir_2,
+//     COALESCE(th.trh_name, sj.sjh_trayekid) AS trayek_rute,
+//     sj.sjh_keterangan,
+//     -- Hitung berapa kali sudah dibuatkan kas keluar / uang muka
+//     COUNT(sjc.sjc_cbid) AS jumlah_kas_keluar
+// FROM public.opr_t_esuratjalan sj
+// LEFT JOIN public.opr_m_assignment ass ON ass.ass_id = COALESCE(sj.sjh_assid, 'AS009')
+// LEFT JOIN public.hrd_m_karyawan s1 ON s1.kry_nip = sj.sjh_sopir1_nip
+// LEFT JOIN public.hrd_m_karyawan s2 ON s2.kry_nip = sj.sjh_sopir2_nip
+// LEFT JOIN public.opr_m_trayekh th ON th.trh_id = sj.sjh_trayekid
+// LEFT JOIN public.opr_t_esuratjalancashbank sjc ON sjc.sjc_sjhid = sj.sjh_id
+// GROUP BY
+//     sj.sjh_id, sj.sjh_tanggal, sj.sjh_kendid, ass.ass_nama,
+//     s1.kry_nama, s2.kry_nama, th.trh_name, sj.sjh_trayekid, sj.sjh_keterangan
+// ORDER BY sj.sjh_tanggal DESC, sj.sjh_id DESC
+// LIMIT 20;
+
+// end
+
+// 2. Kueri Khusus: Surat Tugas yang Belum Pernah Dicairkan Uang Mukanya
+// Untuk mencari nomor surat tugas yang belum memiliki pencatatan kas keluar sama sekali:
+// SELECT
+//     sj.sjh_id AS nomor_surat_tugas,
+//     TO_CHAR(sj.sjh_tanggal, 'DD/MM/YYYY') AS tanggal_st,
+//     sj.sjh_kendid AS no_kendaraan,
+//     COALESCE(s1.kry_nama, '-') AS driver,
+//     COALESCE(th.trh_name, sj.sjh_trayekid) AS rute
+// FROM public.opr_t_esuratjalan sj
+// LEFT JOIN public.hrd_m_karyawan s1 ON s1.kry_nip = sj.sjh_sopir1_nip
+// LEFT JOIN public.opr_m_trayekh th ON th.trh_id = sj.sjh_trayekid
+// WHERE NOT EXISTS (
+//     SELECT 1
+//     FROM public.opr_t_esuratjalancashbank sjc
+//     WHERE sjc.sjc_sjhid = sj.sjh_id
+// )
+// ORDER BY sj.sjh_tanggal DESC
+// LIMIT 10;
+
+// 3. Kueri Pencarian Berdasarkan Nomor / Kendaraan Tertentu
+// SELECT
+//     sj.sjh_id AS nomor_surat_tugas,
+//     sj.sjh_kendid AS no_kendaraan,
+//     sj.sjh_tanggal,
+//     s1.kry_nama AS driver,
+//     sj.sjh_trayekid
+// FROM public.opr_t_esuratjalan sj
+// LEFT JOIN public.hrd_m_karyawan s1 ON s1.kry_nip = sj.sjh_sopir1_nip
+// WHERE UPPER(sj.sjh_id) LIKE '%2026%'
+//    OR UPPER(sj.sjh_kendid) LIKE '%B9340%'
+// ORDER BY sj.sjh_id DESC
+// LIMIT 5;

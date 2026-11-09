@@ -484,6 +484,9 @@ func main() {
 			authorized.GET("/gl/cashbank/items", handler.GetMasterItemBiayaHandler)
 			authorized.GET("/gl/cashbank/laporan-cashflow", handler.GetLaporanCashFlowHandler)
 
+			authorized.GET("/gl/cashbank/bplk/detail", handler.GetBPLKDetailHandler)
+			authorized.POST("/gl/cashbank/bplk/proses-uang-muka", handler.ProsesUangMukaBPLKHandler)
+
 			authorized.GET("/gl/pembayaran-vendor", handler.GetPembayaranVendorListHandler)
 			authorized.POST("/gl/pembayaran-vendor/create", handler.CreatePembayaranVendorHandler)
 			authorized.DELETE("/gl/pembayaran-vendor/:id", handler.DeletePembayaranVendorHandler)
