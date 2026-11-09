@@ -19,6 +19,7 @@ import (
 // Item hasil verifikasi valid & grouping 24 kolom lengkap
 type TransportPlanningGroupedRow struct {
 	Key             string  `json:"key"`
+	Tanggal         string  `json:"tanggal"`
 	Consignee       string  `json:"consignee"`
 	Address         string  `json:"address"`
 	Propinsi        string  `json:"propinsi"`
@@ -524,8 +525,15 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 				}
 			}
 
+			// Ambil tanggal dari CSV (Kolom B / index 1)
+			tglCSV := ""
+			if len(record) > 1 {
+				tglCSV = strings.TrimSpace(record[1])
+			}
+
 			newItem := &TransportPlanningGroupedRow{
 				Key:             groupKey,
+				Tanggal:         tglCSV,
 				Consignee:       consignee,
 				Address:         address,
 				Propinsi:        strings.TrimSpace(loc.Pulau),
@@ -1136,6 +1144,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 		agenID = fmt.Sprintf("%v", aID)
 	}
 
+	// 🌟 Inisialisasi waktu dan batch ID aktif
 	now := time.Now()
 	tglTrans := now.Format("2006-01-02")
 	batchID := fmt.Sprintf("BATCH-%d", now.UnixNano())
@@ -1153,7 +1162,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 	prefixBTT := fmt.Sprintf("%03s%s", agenID, now.Format("0601")) // contoh: 0012611
 	var lastBTTNo string
 	database.Table("public.mkt_t_econote").
-		Select("bttt_id"). // 🌟 Ganti bttt_no menjadi bttt_id
+		Select("bttt_id").
 		Where("bttt_id LIKE ?", prefixBTT+"%").
 		Order("bttt_id DESC").
 		Limit(1).
@@ -1176,7 +1185,31 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 		newBTTNo := fmt.Sprintf("%s%05d", prefixBTT, nextBTTSeq)
 		nextBTTSeq++
 
-		// 2. Simpan ke Antrean Staging Upload
+		// 🌟 2. PARSING TANGGAL MASING-MASING BARIS DARI CSV (contoh: "6/11/2026")
+		tglBTT := now // default jika CSV tidak ada tanggal
+		if r.Tanggal != "" {
+			cleanTgl := strings.TrimSpace(r.Tanggal)
+			formats := []string{
+				"2/1/2006",
+				"02/01/2006",
+				"2006-01-02",
+				"2006/01/02",
+				"2-1-2006",
+				"02-01-2006",
+			}
+			for _, fmtStr := range formats {
+				if parsedTgl, err := time.Parse(fmtStr, cleanTgl); err == nil {
+					tglBTT = time.Date(
+						parsedTgl.Year(), parsedTgl.Month(), parsedTgl.Day(),
+						now.Hour(), now.Minute(), now.Second(), now.Nanosecond(),
+						now.Location(),
+					)
+					break
+				}
+			}
+		}
+
+		// 3. Simpan ke Antrean Staging Upload
 		insertUploadSQL := `
 			INSERT INTO public.opr_t_transport_planning_upload 
 				(batch_upload_id, customer_id, customer_name, no_do_dn, nama_penerima, alamat_penerima, 
@@ -1191,45 +1224,45 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			return
 		}
 
-		// 🌟 Potong string nomor DN jika melebihi batas 195 karakter agar aman dari batasan VARCHAR(200)
+		// 🌟 4. Potong string nomor DN jika melebihi batas agar aman dari batasan VARCHAR(200)
 		cleanDNList := r.DNList
 		if len(cleanDNList) > 195 {
 			cleanDNList = cleanDNList[:192] + "..."
 		}
 
-		// 3. Simpan Transaksi BTT ke Tabel Master BTT (public.mkt_t_econote)
+		// 🌟 5. Simpan Transaksi BTT ke Tabel Master BTT (public.mkt_t_econote)
 		bttRecord := map[string]interface{}{
 			"bttt_id":              newBTTNo,                     // Nomor BTT resmi (0012611.....)
-			"bttt_tanggal":         now,                          // Tanggal transaksi
+			"bttt_tanggal":         tglBTT,                       // 🌟 Tanggal dari CSV (6/11/2026)
 			"bttt_servid":          r.ServID,                     // Layanan (Reguler / Express)
 			"bttt_asalagenid":      agenID,                       // Cabang asal (001 DLI Pusat)
 			"bttt_asalcustid":      req.CustomerID,               // ID Customer Principal
 			"bttt_asalname":        req.CustomerName,             // Nama Customer Principal
 			"bttt_tujuannama":      r.Consignee,                  // Nama Penerima
 			"bttt_tujuanalamat":    r.Address,                    // Alamat Tujuan
-			"bttt_tujuanpulau":     r.Propinsi,                   // 🌟 Provinsi tujuan (bttt_tujuanpulau)
+			"bttt_tujuanpulau":     r.Propinsi,                   // Provinsi tujuan (bttt_tujuanpulau)
 			"bttt_tujuankota":      r.Kota,                       // Kota/Kabupaten
 			"bttt_tujuankecamatan": r.Kecamatan,                  // Kecamatan
 			"bttt_tujuankelurahan": r.Kelurahan,                  // Kelurahan
 			"bttt_tujuankodepos":   r.Kodepos,                    // Kodepos
 			"bttt_tujuantelp":      r.Telp,                       // No Telepon
 			"bttt_up":              r.Up,                         // Penerima / Contact Person
-			"bttt_jmlunit":         r.TotalColly,                 // 🌟 Jumlah Colly (bttt_jmlunit)
+			"bttt_jmlunit":         r.TotalColly,                 // Jumlah Colly
 			"bttt_berat":           r.TotalWeight,                // Berat Kg
 			"bttt_beratvol":        r.TotalVolume,                // Volume Kg
 			"bttt_harga":           r.HargaFinal,                 // Harga Pokok Ongkir
-			"bttt_packingid":       r.KodePacking,                // 🌟 Kode Jenis Packing (bttt_packingid)
-			"bttt_jmlpck":          int(r.TotalPacking),          // 🌟 Jumlah Packing (bttt_jmlpck)
-			"bttt_biayapenerus":    r.BiayaPacking,               // 🌟 Biaya Packing/Tambahan (bttt_biayapenerus)
-			"bttt_nosuratjalan":    cleanDNList,                  // Nomor DN / DO
+			"bttt_packingid":       r.KodePacking,                // Kode Jenis Packing
+			"bttt_jmlpck":          int(r.TotalPacking),          // Jumlah Packing
+			"bttt_biayapenerus":    r.BiayaPacking,               // Biaya Packing
+			"bttt_nosuratjalan":    cleanDNList,                  // Nomor DN / DO aman < 200 karakter
 			"bttt_ket":             r.Keterangan,                 // Keterangan Surat Jalan
-			"bttt_namabarang":      "PRODUK FARMASI / KESEHATAN", // 🌟 Nama Barang (bttt_namabarang)
+			"bttt_namabarang":      "PRODUK FARMASI / KESEHATAN", // Nama Barang
 			"bttt_paketyn":         "Y",
 			"bttt_jenisharga":      "2",             // 2 = Kredit Pelanggan
 			"bttt_pembayaran":      "KREDIT",        // Metode Pembayaran
-			"bttt_charterjnskend":  r.KodeKendaraan, // Jenis Kendaraan Carter (jika ada)
-			"bttt_updateid":        username,        // 🌟 USER PEMBUAT (bttt_updateid)
-			"bttt_updatetime":      now,             // 🌟 WAKTU INPUT (bttt_updatetime)
+			"bttt_charterjnskend":  r.KodeKendaraan, // Jenis Kendaraan Carter
+			"bttt_updateid":        username,        // User Pembuat
+			"bttt_updatetime":      now,             // Waktu Input
 			"bttt_aktifyn":         "Y",             // Status BTT Aktif
 		}
 
@@ -1239,7 +1272,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			return
 		}
 
-		// 4. Hubungkan DN dengan Nomor BTT di tabel relasi LSPB
+		// 🌟 6. Hubungkan seluruh nomor DN asli ke tabel relasi LSPB
 		if r.DNList != "" {
 			for _, d := range strings.Split(r.DNList, ",") {
 				cleanDN := strings.TrimSpace(d)
