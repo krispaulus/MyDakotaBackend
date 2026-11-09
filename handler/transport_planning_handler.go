@@ -1150,12 +1150,12 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 	savedCount := 0
 
 	// Ambil nomor urut BTT terakhir untuk cabang terkait
-	prefixBTT := fmt.Sprintf("%03s%s", agenID, now.Format("0601")) // misal: 0012611
+	prefixBTT := fmt.Sprintf("%03s%s", agenID, now.Format("0601")) // contoh: 0012611
 	var lastBTTNo string
 	database.Table("public.mkt_t_econote").
-		Select("bttt_no").
-		Where("bttt_no LIKE ?", prefixBTT+"%").
-		Order("bttt_no DESC").
+		Select("bttt_id"). // 🌟 Ganti bttt_no menjadi bttt_id
+		Where("bttt_id LIKE ?", prefixBTT+"%").
+		Order("bttt_id DESC").
 		Limit(1).
 		Scan(&lastBTTNo)
 
@@ -1191,33 +1191,46 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			return
 		}
 
+		// 🌟 Potong string nomor DN jika melebihi batas 195 karakter agar aman dari batasan VARCHAR(200)
+		cleanDNList := r.DNList
+		if len(cleanDNList) > 195 {
+			cleanDNList = cleanDNList[:192] + "..."
+		}
+
 		// 3. Simpan Transaksi BTT ke Tabel Master BTT (public.mkt_t_econote)
 		bttRecord := map[string]interface{}{
-			"bttt_no":              newBTTNo,
-			"bttt_tanggal":         now,
-			"bttt_agenid":          agenID,
-			"bttt_asalcustid":      req.CustomerID,
-			"bttt_asalname":        req.CustomerName,
-			"bttt_tujuannama":      r.Consignee,
-			"bttt_tujuanalamat":    r.Address,
-			"bttt_tujuanpropinsi":  r.Propinsi,
-			"bttt_tujuankota":      r.Kota,
-			"bttt_tujuankecamatan": r.Kecamatan,
-			"bttt_tujuankelurahan": r.Kelurahan,
-			"bttt_tujuankodepos":   r.Kodepos,
-			"bttt_tujuantelp":      r.Telp,
-			"bttt_jmlkoli":         r.TotalColly,
-			"bttt_berat":           r.TotalWeight,
-			"bttt_beratvol":        r.TotalVolume,
-			"bttt_harga":           r.HargaFinal,
-			"bttt_biayapacking":    r.BiayaPacking,
-			"bttt_nosuratjalan":    r.DNList,
-			"bttt_ket":             r.Keterangan,
-			"bttt_isikiriman":      "PRODUK FARMASI / KESEHATAN",
+			"bttt_id":              newBTTNo,                     // Nomor BTT resmi (0012611.....)
+			"bttt_tanggal":         now,                          // Tanggal transaksi
+			"bttt_servid":          r.ServID,                     // Layanan (Reguler / Express)
+			"bttt_asalagenid":      agenID,                       // Cabang asal (001 DLI Pusat)
+			"bttt_asalcustid":      req.CustomerID,               // ID Customer Principal
+			"bttt_asalname":        req.CustomerName,             // Nama Customer Principal
+			"bttt_tujuannama":      r.Consignee,                  // Nama Penerima
+			"bttt_tujuanalamat":    r.Address,                    // Alamat Tujuan
+			"bttt_tujuanpulau":     r.Propinsi,                   // 🌟 Provinsi tujuan (bttt_tujuanpulau)
+			"bttt_tujuankota":      r.Kota,                       // Kota/Kabupaten
+			"bttt_tujuankecamatan": r.Kecamatan,                  // Kecamatan
+			"bttt_tujuankelurahan": r.Kelurahan,                  // Kelurahan
+			"bttt_tujuankodepos":   r.Kodepos,                    // Kodepos
+			"bttt_tujuantelp":      r.Telp,                       // No Telepon
+			"bttt_up":              r.Up,                         // Penerima / Contact Person
+			"bttt_jmlunit":         r.TotalColly,                 // 🌟 Jumlah Colly (bttt_jmlunit)
+			"bttt_berat":           r.TotalWeight,                // Berat Kg
+			"bttt_beratvol":        r.TotalVolume,                // Volume Kg
+			"bttt_harga":           r.HargaFinal,                 // Harga Pokok Ongkir
+			"bttt_packingid":       r.KodePacking,                // 🌟 Kode Jenis Packing (bttt_packingid)
+			"bttt_jmlpck":          int(r.TotalPacking),          // 🌟 Jumlah Packing (bttt_jmlpck)
+			"bttt_biayapenerus":    r.BiayaPacking,               // 🌟 Biaya Packing/Tambahan (bttt_biayapenerus)
+			"bttt_nosuratjalan":    cleanDNList,                  // Nomor DN / DO
+			"bttt_ket":             r.Keterangan,                 // Keterangan Surat Jalan
+			"bttt_namabarang":      "PRODUK FARMASI / KESEHATAN", // 🌟 Nama Barang (bttt_namabarang)
 			"bttt_paketyn":         "Y",
-			"bttt_jenisharga":      "2", // Kredit Pelanggan
-			"bttt_create_by":       username,
-			"bttt_created_at":      now,
+			"bttt_jenisharga":      "2",             // 2 = Kredit Pelanggan
+			"bttt_pembayaran":      "KREDIT",        // Metode Pembayaran
+			"bttt_charterjnskend":  r.KodeKendaraan, // Jenis Kendaraan Carter (jika ada)
+			"bttt_updateid":        username,        // 🌟 USER PEMBUAT (bttt_updateid)
+			"bttt_updatetime":      now,             // 🌟 WAKTU INPUT (bttt_updatetime)
+			"bttt_aktifyn":         "Y",             // Status BTT Aktif
 		}
 
 		if err := tx.Table("public.mkt_t_econote").Create(&bttRecord).Error; err != nil {
