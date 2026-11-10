@@ -188,44 +188,50 @@ func GetBTT(c *gin.Context) {
 		BtttUP           string `json:"bttt_up" gorm:"column:up"`
 
 		// Rincian Muatan & Biaya
-		NamaBarang       string  `json:"nama_barang" gorm:"column:nama_barang"`
-		BtttNamaBarang   string  `json:"bttt_namabarang" gorm:"column:nama_barang"`
-		Harga            float64 `json:"harga" gorm:"column:harga"`
-		BtttHarga        float64 `json:"bttt_harga" gorm:"column:harga"`
-		CreateBy         string  `json:"create_by" gorm:"column:create_by"`
-		NoSuratJalan     string  `json:"no_surat_jalan" gorm:"column:no_surat_jalan"`
-		BtttNoSuratJalan string  `json:"bttt_nosuratjalan" gorm:"column:no_surat_jalan"`
-		Keterangan       string  `json:"keterangan" gorm:"column:keterangan"`
-		BtttKet          string  `json:"bttt_ket" gorm:"column:keterangan"`
-		JumlahKoli       int     `json:"jumlah_koli" gorm:"column:jumlah_koli"`
-		BtttJmlKoli      int     `json:"bttt_jmlkoli" gorm:"column:jumlah_koli"`
-		Berat            float64 `json:"berat" gorm:"column:berat"`
-		BtttBerat        float64 `json:"bttt_berat" gorm:"column:berat"`
-		BeratVolume      float64 `json:"berat_volume" gorm:"column:berat_volume"`
-		BtttBeratVol     float64 `json:"bttt_beratvol" gorm:"column:berat_volume"`
-		Kubikasi         float64 `json:"kubikasi" gorm:"column:kubikasi"`
-		BiayaPenerus     float64 `json:"biaya_penerus" gorm:"column:biaya_penerus"`
-		BiayaPacking     float64 `json:"biaya_packing" gorm:"column:biaya_packing"`
-		MetodePembayaran string  `json:"metode_pembayaran" gorm:"column:metode_pembayaran"`
-		JenisLayanan     string  `json:"jenis_layanan" gorm:"column:jenis_layanan"`
-		AgenNama         string  `json:"agen_nama" gorm:"column:agen_nama"`
-		AsalAgenID       string  `json:"asal_agen_id" gorm:"column:asal_agen_id"`
-		BtttAsalAgenID   string  `json:"bttt_asalagenid" gorm:"column:asal_agen_id"`
-		TujuanAgenID     string  `json:"tujuan_agen_id" gorm:"column:tujuan_agen_id"`
-		BtttTujuanAgenID string  `json:"bttt_tujuanagenid" gorm:"column:tujuan_agen_id"`
+		NamaBarang         string  `json:"nama_barang" gorm:"column:nama_barang"`
+		BtttNamaBarang     string  `json:"bttt_namabarang" gorm:"column:nama_barang"`
+		Harga              float64 `json:"harga" gorm:"column:harga"`
+		BtttHarga          float64 `json:"bttt_harga" gorm:"column:harga"`
+		CreateBy           string  `json:"create_by" gorm:"column:create_by"`
+		NoSuratJalan       string  `json:"no_surat_jalan" gorm:"column:no_surat_jalan"`
+		BtttNoSuratJalan   string  `json:"bttt_nosuratjalan" gorm:"column:no_surat_jalan"`
+		Keterangan         string  `json:"keterangan" gorm:"column:keterangan"`
+		BtttKet            string  `json:"bttt_ket" gorm:"column:keterangan"`
+		JumlahKoli         int     `json:"jumlah_koli" gorm:"column:jumlah_koli"`
+		BtttJmlKoli        int     `json:"bttt_jmlkoli" gorm:"column:jumlah_koli"`
+		Berat              float64 `json:"berat" gorm:"column:berat"`
+		BtttBerat          float64 `json:"bttt_berat" gorm:"column:berat"`
+		BeratVolume        float64 `json:"berat_volume" gorm:"column:berat_volume"`
+		BtttBeratVol       float64 `json:"bttt_beratvol" gorm:"column:berat_volume"`
+		Kubikasi           float64 `json:"kubikasi" gorm:"column:kubikasi"`
+		BiayaPenerus       float64 `json:"biaya_penerus" gorm:"column:biaya_penerus"`
+		BiayaPacking       float64 `json:"biaya_packing" gorm:"column:biaya_packing"`
+		MetodePembayaran   string  `json:"metode_pembayaran" gorm:"column:metode_pembayaran"`
+		JenisLayanan       string  `json:"jenis_layanan" gorm:"column:jenis_layanan"`
+		AgenNama           string  `json:"agen_nama" gorm:"column:agen_nama"`
+		AsalAgenID         string  `json:"asal_agen_id" gorm:"column:asal_agen_id"`
+		BtttAsalAgenID     string  `json:"bttt_asalagenid" gorm:"column:asal_agen_id"`
+		TujuanAgenID       string  `json:"tujuan_agen_id" gorm:"column:tujuan_agen_id"`
+		BtttTujuanAgenID   string  `json:"bttt_tujuanagenid" gorm:"column:tujuan_agen_id"`
+		BtttPaketYN        string  `json:"bttt_paketyn" gorm:"column:bttt_paketyn"`
+		BtttCharterJnsKend string  `json:"bttt_charterjnskend" gorm:"column:bttt_charterjnskend"`
 	}
 
-	// 🌟 QUERY LENGKAP DETAIL BTT AGAR FORM EDIT & CETAK RESI TERISI PENUH
+	// 🌟 QUERY DETAIL BTT DENGAN AUTO-JOIN MASTER CUSTOMER PENGIRIM
 	query := database.Table("public.mkt_t_econote e").
 		Select(`
 			TRIM(BOTH FROM e.bttt_id::varchar) AS id,
 			e.bttt_tanggal AS tanggal,
 			TO_CHAR(e.bttt_tanggal, 'YYYY-MM-DD') AS bttt_tanggal_str,
-			COALESCE(e.bttt_asalcustid, '') AS asal_custid,
-			COALESCE(e.bttt_asalname, '') AS asal_name,
-			COALESCE(e.bttt_asalalamat, '') AS asal_alamat,
-			COALESCE(e.bttt_asalkota, '') AS asal_kota,
-			COALESCE(e.bttt_asaltelp, '') AS asal_telp,
+			
+			-- 🌟 IDENTITAS PENGIRIM (Fallback otomatis ambil dari master mkt_m_customer)
+			COALESCE(NULLIF(e.bttt_asalcustid, ''), c.cust_id, '') AS asal_custid,
+			COALESCE(NULLIF(e.bttt_asalname, ''), c.cust_name, 'UMUM') AS asal_name,
+			COALESCE(NULLIF(e.bttt_asalalamat, ''), c.cust_alamat1, '') AS asal_alamat,
+			COALESCE(NULLIF(e.bttt_asalkota, ''), c.cust_kotaid, 'BEKASI KAB.') AS asal_kota,
+			COALESCE(NULLIF(e.bttt_asaltelp, ''), c.cust_telp1, '') AS asal_telp,
+
+			-- IDENTITAS PENERIMA
 			COALESCE(e.bttt_tujuancustid, '') AS tujuan_custid,
 			COALESCE(e.bttt_tujuannama, '') AS tujuan_nama,
 			COALESCE(e.bttt_tujuanalamat, '') AS tujuan_alamat,
@@ -235,7 +241,11 @@ func GetBTT(c *gin.Context) {
 			COALESCE(e.bttt_tujuankodepos, '') AS tujuan_kodepos,
 			COALESCE(e.bttt_tujuanpulau, '') AS tujuan_propinsi,
 			COALESCE(e.bttt_tujuantelp, '') AS tujuan_telp,
-			COALESCE(e.bttt_up, '') AS up,
+			COALESCE(NULLIF(e.bttt_up, ''), c.cust_name, e.bttt_asalname, '') AS up,
+			COALESCE(e.bttt_paketyn, 'Y') AS bttt_paketyn,
+			COALESCE(e.bttt_charterjnskend, '') AS bttt_charterjnskend,
+
+			-- BARANG & TARIF
 			COALESCE(e.bttt_namabarang, '') AS nama_barang,
 			COALESCE(e.bttt_harga, 0) AS harga,
 			CASE 
@@ -264,6 +274,7 @@ func GetBTT(c *gin.Context) {
 			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
 			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id
 		`).
+		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)"). // 👈 JOIN OTOMATIS DATA PROFIL PENGIRIM
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
 		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")

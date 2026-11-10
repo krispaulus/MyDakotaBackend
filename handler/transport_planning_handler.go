@@ -1134,6 +1134,19 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 		return
 	}
 
+	// 🌟 Ambil Profil Lengkap Pengirim dari Master Customer
+	type SenderProfile struct {
+		Alamat1 string `gorm:"column:cust_alamat1"`
+		Kota    string `gorm:"column:cust_kotaid"`
+		Telp    string `gorm:"column:cust_telp1"`
+	}
+	var sender SenderProfile
+	database.Table("public.mkt_m_customer").
+		Select("cust_alamat1, cust_kotaid, cust_telp1").
+		Where("TRIM(cust_id) = TRIM(?) OR TRIM(cust_id) = TRIM(?)", req.CustomerID, strings.TrimLeft(req.CustomerID, "0")).
+		Limit(1).
+		Scan(&sender)
+
 	username := "superdli"
 	if authUser, exists := c.Get("username"); exists && authUser != nil {
 		username = fmt.Sprintf("%v", authUser)
@@ -1209,6 +1222,12 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			}
 		}
 
+		// 🌟 Fallback untuk UP Pengirim jika di CSV tidak terisi
+		namaUP := r.Up
+		if strings.TrimSpace(namaUP) == "" || namaUP == "-" {
+			namaUP = req.CustomerName // atau "LOGISTIK"
+		}
+
 		// 3. Simpan ke Antrean Staging Upload
 		insertUploadSQL := `
 			INSERT INTO public.opr_t_transport_planning_upload 
@@ -1230,40 +1249,49 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			cleanDNList = cleanDNList[:192] + "..."
 		}
 
+		// 🌟 Tentukan apakah Paket (R) atau Carter (C) berdasarkan kolom layananID CSV
+		paketYN := "Y"
+		if strings.ToUpper(strings.TrimSpace(r.LayananID)) == "C" || r.KodeKendaraan != "" {
+			paketYN = "N" // N = Carter
+		}
+
 		// 🌟 5. Simpan Transaksi BTT ke Tabel Master BTT (public.mkt_t_econote)
 		bttRecord := map[string]interface{}{
-			"bttt_id":              newBTTNo,                     // Nomor BTT resmi (0012611.....)
-			"bttt_tanggal":         tglBTT,                       // 🌟 Tanggal dari CSV (6/11/2026)
-			"bttt_servid":          r.ServID,                     // Layanan (Reguler / Express)
-			"bttt_asalagenid":      agenID,                       // Cabang asal (001 DLI Pusat)
-			"bttt_asalcustid":      req.CustomerID,               // ID Customer Principal
-			"bttt_asalname":        req.CustomerName,             // Nama Customer Principal
-			"bttt_tujuannama":      r.Consignee,                  // Nama Penerima
-			"bttt_tujuanalamat":    r.Address,                    // Alamat Tujuan
-			"bttt_tujuanpulau":     r.Propinsi,                   // Provinsi tujuan (bttt_tujuanpulau)
-			"bttt_tujuankota":      r.Kota,                       // Kota/Kabupaten
-			"bttt_tujuankecamatan": r.Kecamatan,                  // Kecamatan
-			"bttt_tujuankelurahan": r.Kelurahan,                  // Kelurahan
-			"bttt_tujuankodepos":   r.Kodepos,                    // Kodepos
-			"bttt_tujuantelp":      r.Telp,                       // No Telepon
-			"bttt_up":              r.Up,                         // Penerima / Contact Person
-			"bttt_jmlunit":         r.TotalColly,                 // Jumlah Colly
-			"bttt_berat":           r.TotalWeight,                // Berat Kg
-			"bttt_beratvol":        r.TotalVolume,                // Volume Kg
-			"bttt_harga":           r.HargaFinal,                 // Harga Pokok Ongkir
-			"bttt_packingid":       r.KodePacking,                // Kode Jenis Packing
-			"bttt_jmlpck":          int(r.TotalPacking),          // Jumlah Packing
-			"bttt_biayapenerus":    r.BiayaPacking,               // Biaya Packing
-			"bttt_nosuratjalan":    cleanDNList,                  // Nomor DN / DO aman < 200 karakter
-			"bttt_ket":             r.Keterangan,                 // Keterangan Surat Jalan
-			"bttt_namabarang":      "PRODUK FARMASI / KESEHATAN", // Nama Barang
-			"bttt_paketyn":         "Y",
-			"bttt_jenisharga":      "2",             // 2 = Kredit Pelanggan
-			"bttt_pembayaran":      "KREDIT",        // Metode Pembayaran
-			"bttt_charterjnskend":  r.KodeKendaraan, // Jenis Kendaraan Carter
-			"bttt_updateid":        username,        // User Pembuat
-			"bttt_updatetime":      now,             // Waktu Input
-			"bttt_aktifyn":         "Y",             // Status BTT Aktif
+			"bttt_id":              newBTTNo,
+			"bttt_tanggal":         tglBTT,
+			"bttt_servid":          r.ServID,
+			"bttt_asalagenid":      agenID,
+			"bttt_asalcustid":      req.CustomerID,
+			"bttt_asalname":        req.CustomerName,
+			"bttt_asalalamat":      sender.Alamat1,
+			"bttt_asalkota":        sender.Kota,
+			"bttt_asaltelp":        sender.Telp,
+			"bttt_tujuannama":      r.Consignee,
+			"bttt_tujuanalamat":    r.Address,
+			"bttt_tujuanpulau":     r.Propinsi,
+			"bttt_tujuankota":      r.Kota,
+			"bttt_tujuankecamatan": r.Kecamatan,
+			"bttt_tujuankelurahan": r.Kelurahan,
+			"bttt_tujuankodepos":   r.Kodepos,
+			"bttt_tujuantelp":      r.Telp,
+			"bttt_up":              namaUP,
+			"bttt_jmlunit":         r.TotalColly,
+			"bttt_berat":           r.TotalWeight,
+			"bttt_beratvol":        r.TotalVolume,
+			"bttt_harga":           r.HargaFinal,
+			"bttt_packingid":       r.KodePacking,
+			"bttt_jmlpck":          int(r.TotalPacking),
+			"bttt_biayapenerus":    r.BiayaPacking,
+			"bttt_nosuratjalan":    cleanDNList,
+			"bttt_ket":             r.Keterangan,
+			"bttt_namabarang":      "PRODUK FARMASI / KESEHATAN",
+			"bttt_paketyn":         paketYN, // 👈 Otomatis Y jika Paket (R) dan N jika Carter (C)
+			"bttt_jenisharga":      "2",
+			"bttt_pembayaran":      "KREDIT",
+			"bttt_charterjnskend":  r.KodeKendaraan,
+			"bttt_updateid":        username,
+			"bttt_updatetime":      now,
+			"bttt_aktifyn":         "Y",
 		}
 
 		if err := tx.Table("public.mkt_t_econote").Create(&bttRecord).Error; err != nil {
