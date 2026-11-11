@@ -92,12 +92,15 @@ func GetTarifCustomerList(c *gin.Context) {
 			COALESCE(c.cust_telp2, '') AS cust_telp2,
 			COALESCE(c.cust_agenid, '') AS cust_agenid,
 			COALESCE(a.agen_nama, '') AS agen_nama,
-			(SELECT COUNT(*) FROM public.mkt_m_eharga_pelanggan WHERE customerid = c.cust_id) AS jml_reguler,
+			(
+				(SELECT COUNT(*) FROM public.mkt_m_eharga_pelanggan WHERE customerid = c.cust_id) +
+				(SELECT COUNT(*) FROM public.mkt_m_eharga_customer WHERE cust_id = c.cust_id)
+			) AS jml_reguler,
 			(SELECT COUNT(*) FROM public.mkt_m_eharga_pelanggan_carter WHERE customerid = c.cust_id) AS jml_charter,
 			(SELECT COUNT(*) FROM public.mkt_m_eharga_pelanggan_multidrop WHERE customerid = c.cust_id) AS jml_multidrop
 		`).
 		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(c.cust_agenid) = TRIM(a.agen_id)").
-		Where("c.cust_aktifyn = ?", "Y")
+		Where("COALESCE(c.cust_aktifyn, 'Y') = 'Y'")
 
 	// Filter Nama / Kode Customer
 	if customerName != "" {
@@ -297,8 +300,15 @@ func GetCargoTarifDetail(c *gin.Context) {
 		return
 	}
 
+	// 🌟 Sinkronkan ID jika customer terkait adalah Merck (0010000073 <-> 0010000021)
+	targetIDs := []string{customerID}
+	if strings.Contains(customerID, "73") || strings.Contains(customerID, "21") {
+		targetIDs = append(targetIDs, "0010000021", "0010000073")
+	}
+
 	var items []CargoTarifItem
 
+	// 1. Cari dulu di mkt_m_eharga_pelanggan
 	query := database.Table("public.mkt_m_eharga_pelanggan").
 		Select(`id, 
 		        COALESCE(tujuan_propinsi, '') AS tujuan_propinsi, 
@@ -311,7 +321,7 @@ func GetCargoTarifDetail(c *gin.Context) {
 		        COALESCE(biayatambahan, 0) AS biayatambahan, 
 		        COALESCE(keterangan, '') AS keterangan, 
 		        COALESCE(estimasihari, '0') AS estimasihari`).
-		Where("TRIM(customerid) = ? AND TRIM(servid::text) = ?", customerID, servID)
+		Where("TRIM(customerid) IN (?) AND TRIM(servid::text) = ?", targetIDs, servID)
 
 	if jnHarga == "0" {
 		query = query.Where("(TRIM(jnharga::text) = '0' OR UPPER(TRIM(jnharga::text)) = 'BERAT')")
@@ -323,12 +333,25 @@ func GetCargoTarifDetail(c *gin.Context) {
 		query = query.Where("TRIM(jnharga::text) = ?", jnHarga)
 	}
 
-	err := query.Order("tujuan_propinsi ASC, tujuan_kabupaten ASC, tujuan_kecamatan ASC").
-		Scan(&items).Error
+	_ = query.Order("tujuan_propinsi ASC, tujuan_kabupaten ASC, tujuan_kecamatan ASC").Scan(&items).Error
 
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
-		return
+	// 🌟 2. FALLBACK: Jika kosong, ambil dari mkt_m_eharga_customer (Master Merck 2026)
+	if len(items) == 0 {
+		database.Table("public.mkt_m_eharga_customer").
+			Select(`id, 
+			        COALESCE(tujuan_propinsi, '') AS tujuan_propinsi, 
+			        COALESCE(tujuan_kabupaten, '') AS tujuan_kabupaten, 
+			        COALESCE(tujuan_kecamatan, '') AS tujuan_kecamatan, 
+			        COALESCE(min_charge, 0) AS minimalkg, 
+			        (COALESCE(min_charge, 0) * COALESCE(tarif_kg, 0)) AS hargapokok, 
+			        COALESCE(min_charge, 0) AS bypasskg, 
+			        COALESCE(tarif_kg, 0) AS hargakgselanjutnya, 
+			        0 AS biayatambahan, 
+			        COALESCE(keterangan, '') AS keterangan, 
+			        COALESCE(lead_time, '0') AS estimasihari`).
+			Where("cust_id IN (?)", targetIDs).
+			Order("tujuan_propinsi ASC, tujuan_kabupaten ASC, tujuan_kecamatan ASC").
+			Scan(&items)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

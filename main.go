@@ -282,15 +282,6 @@ func main() {
 			authorized.GET("/master/trayek/detail/voucher/:id", handler.GetTrayekDetailVoucher)
 			authorized.POST("/master/trayek/save-full", handler.SaveTrayekFull)
 
-			authorized.GET("/master/tarif-carter", handler.GetTarifCarterIndex)
-			authorized.GET("/master/tarif-carter/detail", handler.GetTarifCarterDetail)
-			authorized.PUT("/master/tarif-carter/inline-update", handler.UpdateInlineCarter)
-			authorized.DELETE("/master/tarif-carter/item/:id", handler.DeleteTarifCarterItem)
-			authorized.POST("/master/tarif-carter/mass-add", handler.AddMassCarter)
-
-			authorized.GET("/master/tarif/export-csv", handler.ExportTarifCustomerCSV)
-			authorized.GET("/master/tarif/copy-to-customer", handler.ExportTarifCustomerCSV)
-
 			authorized.GET("/master/active-agen-list", handler.GetActiveAgenList)
 
 			authorized.GET("/master/econote/list", handler.GetEconoteList)
@@ -298,13 +289,10 @@ func main() {
 			authorized.PUT("/master/econote/update", handler.UpdateEconote)
 			authorized.DELETE("/master/econote/delete/:id", handler.DeleteEconote)
 
-			configGroup := authorized.Group("/config")
-			{
-				configGroup.GET("/params", handler.GetParams)
-				configGroup.POST("/params", handler.CreateParam)
-				configGroup.PUT("/params", handler.UpdateParam)
-				configGroup.DELETE("/params/:id", handler.DeleteParam)
-			}
+			authorized.GET("/config/params", handler.GetParams)
+			authorized.POST("/config/params", handler.CreateParam)
+			authorized.PUT("/config/params", handler.UpdateParam)
+			authorized.DELETE("/config/params/:id", handler.DeleteParam)
 
 			// 🚀 MASTER TARIF TRANSIT (HARGA PERWILAYAH)
 			authorized.GET("/master/tarif-transit/list", handler.GetTarifTransitList)
@@ -325,29 +313,56 @@ func main() {
 			authorized.PUT("/master/perawatan-kendaraan/update/:id", handler.UpdateKendaraanBaru)
 			authorized.DELETE("/master/perawatan-kendaraan/delete/:id", handler.DeleteKendaraanBaru)
 
-			// leadTimeGroup := authorized.Group("/master/leadtime-customer")
-			// {
-			// 	leadTimeGroup.GET("/list", handler.GetListLeadTime)
-			// 	leadTimeGroup.POST("/add", handler.CreateLeadTime)
-			// 	leadTimeGroup.PUT("/update", handler.UpdateLeadTime)
-			// 	leadTimeGroup.DELETE("/delete", handler.DeleteLeadTime)
-			// }
+			//-------
+			// 1. DAFTAR CUSTOMER DENGAN JUMLAH TARIF & OPSI CABANG
+			authorized.GET("/customer/with-tarif", handler.GetTarifCustomerList)
+			authorized.GET("/master/tarif-customer/list", handler.GetTarifCustomerList)
+			authorized.GET("/customer/cabang-options", handler.GetCabangTarifList)
+			authorized.GET("/master/customer/active-list", handler.GetActiveCustomerList)
 
+			// 2. EXPORT CSV, TEMPLATE, & COPY TARIF ANTAR CUSTOMER
+			authorized.GET("/master/tarif/export-csv", handler.ExportTarifCustomerCSV)
+			authorized.POST("/master/tarif/copy-to-customer", handler.CopyTarifToCustomer)
+			authorized.GET("/master/tarif/download-template", handler.DownloadTarifTemplateCSV)
+
+			// 3. EDIT CARGO / REGULER & B3 DG (EditMasterHargaCargo.jsx)
+			authorized.GET("/tarif-customer/cargo/detail", handler.GetCargoTarifDetail)
+			authorized.GET("/tarif/cargo-detail", handler.GetCargoTarifDetail)
+
+			authorized.POST("/tarif-customer/cargo/update-field", handler.UpdateCargoTarifField)
+			authorized.POST("/tarif/cargo-update-field", handler.UpdateCargoTarifField)
+
+			authorized.POST("/tarif-customer/cargo/delete-bulk", handler.DeleteBulkCargoTarif)
+			authorized.POST("/tarif/cargo-delete-bulk", handler.DeleteBulkCargoTarif)
+
+			authorized.POST("/tarif-customer/simpan-rute", handler.SaveTarifCustomer)
+			authorized.POST("/tarif-customer/save", handler.SaveTarifCustomer)
+			authorized.POST("/tarif-customer/delete", handler.DeleteTarifCustomer)
+			authorized.GET("/master/tarif-customer/detail/:customer_id", handler.GetDetailTarifByCustomer)
+
+			// 4. CHARTER ARMADA (EditMasterHargaCharter.jsx & Standalone Carter)
+			authorized.GET("/tarif-customer/charter/detail", handler.GetTarifCarterDetail)
+			authorized.POST("/tarif-customer/charter/update-field", handler.UpdateInlineCarter)
+			authorized.POST("/tarif-customer/charter/delete", handler.DeleteTarifCarterItem)
+			authorized.POST("/tarif-customer/charter/save", handler.SaveTarifCustomer)
+
+			authorized.GET("/master/tarif-carter", handler.GetTarifCarterIndex)
+			authorized.GET("/master/tarif-carter/detail", handler.GetTarifCarterDetail)
+			authorized.PUT("/master/tarif-carter/inline-update", handler.UpdateInlineCarter)
+			authorized.DELETE("/master/tarif-carter/item/:id", handler.DeleteTarifCarterItem)
+			authorized.POST("/master/tarif-carter/mass-add", handler.AddMassCarter)
+
+			// 5. LEAD TIME CUSTOMER
 			authorized.GET("/master/leadtime-customer/list", handler.GetListLeadTime)
 			authorized.POST("/master/leadtime-customer/add", handler.CreateLeadTime)
 			authorized.PUT("/master/leadtime-customer/update", handler.UpdateLeadTime)
 			authorized.DELETE("/master/leadtime-customer/delete", handler.DeleteLeadTime)
 
-			// 🟢 Tambahkan ini agar dropdown customer tidak 404 lagi:
-			authorized.GET("/master/customer/active-list", handler.GetActiveCustomerList)
-
-			tarifCustGroup := authorized.Group("/master/tarif-customer")
-			{
-				tarifCustGroup.GET("/list", handler.GetTarifCustomerList)
-				tarifCustGroup.GET("/detail/:customer_id", handler.GetDetailTarifByCustomer)
-				tarifCustGroup.POST("/save", handler.SaveTarifCustomer)
-				tarifCustGroup.POST("/delete", handler.DeleteTarifCustomer)
-			}
+			// 5. MULTIDROP (EditMasterHargaMultidrop.jsx)
+			authorized.GET("/tarif-customer/multidrop/detail", handler.GetTarifMultidropDetail)
+			authorized.POST("/tarif-customer/multidrop/update-field", handler.UpdateInlineMultidrop)
+			authorized.POST("/tarif-customer/multidrop/delete", handler.DeleteTarifMultidropItem)
+			authorized.POST("/tarif-customer/multidrop/save", handler.SaveTarifMultidrop)
 
 			tarifHandlingGroup := authorized.Group("/master/tarif-handling-propinsi")
 			{
@@ -759,19 +774,13 @@ func main() {
 			authorized.DELETE("/settings/login-banner/:slotIndex", handler.DeleteLoginBannerHandler)
 			authorized.POST("/settings/save-banner-text", handler.SaveBannerTextHandler)
 
-			authorized.GET("/customer/with-tarif", handler.GetTarifCustomerList)
 			authorized.POST("/tarif/upload-csv", handler.UploadTarifCSVHandler)
 			authorized.POST("/tarif/adjust", handler.AdjustTarifCustomerHandler)
-			authorized.GET("/customer/cabang-options", handler.GetCabangTarifList)
-
-			authorized.GET("/tarif-customer/cargo/detail", handler.GetCargoTarifDetail)
-			authorized.POST("/tarif-customer/cargo/update-field", handler.UpdateCargoTarifField)
-			authorized.POST("/tarif-customer/cargo/delete-bulk", handler.DeleteBulkCargoTarif)
 
 			authorized.GET("/wilayah/propinsi", handler.GetWilayahPropinsi)
 			authorized.GET("/wilayah/kota", handler.GetWilayahKota)
 			authorized.GET("/wilayah/kecamatan", handler.GetWilayahKecamatan)
-			authorized.POST("/tarif-customer/simpan-rute", handler.SimpanTarifRute)
+			// authorized.POST("/tarif-customer/simpan-rute", handler.SimpanTarifRute)
 			authorized.POST("/tarif-customer/salin-tarif", handler.SalinTarifCustomerLain)
 			authorized.POST("/tarif-customer/penyesuaian-wilayah", handler.PenyesuaianTarifWilayah)
 
