@@ -45,6 +45,9 @@ type TransportPlanningGroupedRow struct {
 	KodeGroupCarter string  `json:"kode_group_carter"`
 	DNList          string  `json:"dn_list"`
 
+	StorageCode  string `json:"storage_code"`
+	KetDOKembali string `json:"ket_do_kembali"`
+
 	// Field Tambahan Khusus PREVIEW 2
 	SumberHarga  string  `json:"sumber_harga"` // "TARIF MASTER", "HARGA CSV", "TIDAK ADA"
 	HargaFinal   float64 `json:"harga_final"`
@@ -308,7 +311,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 		if roundedLineWeight <= 0 {
 			roundedLineWeight = 1
 		}
-
+		// 🌟 Pembacaan Kolom Tambahan dari CSV
 		up := ""
 		if len(record) > 14 {
 			up = strings.TrimSpace(record[14])
@@ -326,14 +329,28 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 			layananID = strings.TrimSpace(record[17])
 		}
 
+		// 🌟 1. Ambil StorageCode (Kolom K / index 10) & Mapping ke Keterangan Atas
+		storageCode := ""
+		if len(record) > 10 {
+			storageCode = strings.TrimSpace(record[10])
+		}
+		ketDOKembaliAtas := MapStorageCodeToDOKembali(storageCode)
+
+		// 🌟 2. Ambil Biaya Packing dari Kolom S (index 18)
 		packing := 0.0
 		if len(record) > 18 {
 			packing = parseIndonesianFloat(record[18])
 		}
+
+		// 🌟 3. Ambil Keterangan Bawah langsung dari Kolom T (index 19)
 		keterangan := ""
 		if len(record) > 19 {
 			keterangan = strings.TrimSpace(record[19])
 		}
+		if keterangan == "" {
+			keterangan = "SURAT JALAN KEMBALI"
+		}
+
 		kodeKendaraan := ""
 		if len(record) > 20 {
 			kodeKendaraan = strings.TrimSpace(record[20])
@@ -556,6 +573,8 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 				Telp:            telp,
 				StatusWilayah:   dalamKota,
 				Keterangan:      keterangan,
+				StorageCode:     storageCode,
+				KetDOKembali:    ketDOKembaliAtas,
 				KodeGroupCarter: kodeGroupCarter,
 				DNList:          dn,
 			}
@@ -672,9 +691,10 @@ func CalculatePreview2(c *gin.Context) {
 		row.IsDuplicate = isDup
 		row.ExistingBTT = existingBtt
 
-		// B. Kalkulasi Biaya Packing
-		row.BiayaPacking = 0
-		if row.TotalPacking > 0 && row.KodePacking != "" {
+		// B. Kalkulasi Biaya Packing (Utamakan dari kolom CSV Packing jika ada isinya)
+		if row.TotalPacking > 0 {
+			row.BiayaPacking = row.TotalPacking
+		} else if row.KodePacking != "" {
 			type PackingTarif struct {
 				HargaM3  float64 `gorm:"column:harga_m3"`
 				BiayaMin float64 `gorm:"column:biaya_min"`
@@ -1236,11 +1256,13 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			"bttt_harga":           r.HargaFinal,
 			"bttt_packingid":       r.KodePacking,
 			"bttt_jmlpck":          int(r.TotalPacking),
-			"bttt_biayapenerus":    r.BiayaPacking,
+			"bttt_biayapacking":    r.BiayaPacking, // 👈 Biaya Packing dari CSV
+			"bttt_biayapenerus":    0,
 			"bttt_nosuratjalan":    cleanDNList,
-			"bttt_ket":             r.Keterangan,
+			"bttt_ket":             r.KetDOKembali, // 👈 Keterangan Atas (Hasil Mapping DO Kembali)
+			"bttt_isikiriman":      r.Keterangan,   // 👈 Keterangan Bawah (Teks Asli CSV)
 			"bttt_namabarang":      "PRODUK FARMASI / KESEHATAN",
-			"bttt_paketyn":         paketYN, // 👈 Otomatis Y jika Paket (R) dan N jika Carter (C)
+			"bttt_paketyn":         paketYN,
 			"bttt_jenisharga":      "2",
 			"bttt_pembayaran":      "KREDIT",
 			"bttt_charterjnskend":  r.KodeKendaraan,
@@ -1426,4 +1448,25 @@ func parseIndonesianFloat(val string) float64 {
 		return f
 	}
 	return 0
+}
+
+// Helper mapping storagecode ke status DO Kembali (Sesuai DO KEMBALI MERCK.xlsx)
+func MapStorageCodeToDOKembali(storageCode string) string {
+	cleanCode := strings.ToUpper(strings.TrimSpace(storageCode))
+	switch cleanCode {
+	case "N", "NO", "N ONS", "NO ONS", "NO COA/PO", "NO COA ASN", "N COA", "NO COA",
+		"COA/NO", "ASN/COA/NO", "N PO", "NO /CARD /COA", "NO COA SDS", "COA NO",
+		"YTFC", "NO PO", "NO COA PO", "COA PO NO", "PO NO", "N COA PO":
+		return "DO Asli Kembali Jatiasih"
+	case "Y", "YES", "Y ONS", "YES ONS", "E-INVOICE", "Y /PO", "Y COA", "COA / Y", "0":
+		return "DO Copy Kembali Jatiasih"
+	default:
+		if strings.HasPrefix(cleanCode, "N") {
+			return "DO Asli Kembali Jatiasih"
+		}
+		if strings.HasPrefix(cleanCode, "Y") {
+			return "DO Copy Kembali Jatiasih"
+		}
+		return "DO Asli Kembali Jatiasih"
+	}
 }
