@@ -1324,7 +1324,7 @@ func CheckStatusClosingKemarin(c *gin.Context) {
 }
 
 // 🎯 1. PENCARIAN KECAMATAN (MURNI glb_m_ekodepos)
-// GET /api/btt/search-geo?q=SAWANGAN
+// GET /api/btt/search-geo?q=TEGALSARI
 func SearchMasterGeoBtt(c *gin.Context) {
 	keyword := strings.TrimSpace(c.Query("q"))
 	if len(keyword) < 1 {
@@ -1344,29 +1344,47 @@ func SearchMasterGeoBtt(c *gin.Context) {
 	var results []map[string]interface{}
 	likeKeyword := "%" + keyword + "%"
 
+	// 🌟 PERBAIKAN:
+	// 1. DISTINCT ON kecamatan + kota agar Tegalsari Surabaya & Banyuwangi muncul keduanya
+	// 2. Prioritaskan jika KECAMATAN yang cocok sama persis atau LIKE di depan (ORDER BY score)
 	queryRaw := `
-		SELECT DISTINCT ON (kecamatandistrik)
+		SELECT 
 			kodepos as id,
 			COALESCE(propinsi, '') as propinsi,
 			COALESCE(kotakabupaten, '') as kabupaten,
 			COALESCE(kecamatandistrik, '') as kecamatan,
 			COALESCE(desakelurahan, '') as kelurahan,
 			COALESCE(kodepos, '') as kodepos
-		FROM public.glb_m_ekodepos
-		WHERE 
-			TRIM(COALESCE(kecamatandistrik, '')) != '' AND 
-			TRIM(COALESCE(kecamatandistrik, '')) != '-' AND
-			(
-				kecamatandistrik ILIKE ? OR
-				kotakabupaten ILIKE ? OR
-				propinsi ILIKE ? OR
-				desakelurahan ILIKE ? OR
-				kodepos LIKE ?
-			)
-		ORDER BY kecamatandistrik ASC
-		LIMIT 20`
+		FROM (
+			SELECT DISTINCT ON (kecamatandistrik, kotakabupaten)
+				kodepos,
+				propinsi,
+				kotakabupaten,
+				kecamatandistrik,
+				desakelurahan,
+				CASE 
+					WHEN UPPER(TRIM(kecamatandistrik)) = UPPER(TRIM(?)) THEN 1
+					WHEN UPPER(TRIM(kecamatandistrik)) LIKE UPPER(?) THEN 2
+					WHEN UPPER(TRIM(kotakabupaten)) LIKE UPPER(?) THEN 3
+					WHEN UPPER(TRIM(desakelurahan)) = UPPER(TRIM(?)) THEN 4
+					ELSE 5
+				END AS priority_score
+			FROM public.glb_m_ekodepos
+			WHERE 
+				TRIM(COALESCE(kecamatandistrik, '')) != '' AND 
+				TRIM(COALESCE(kecamatandistrik, '')) != '-' AND
+				(
+					kecamatandistrik ILIKE ? OR
+					kotakabupaten ILIKE ? OR
+					desakelurahan ILIKE ? OR
+					kodepos LIKE ?
+				)
+			ORDER BY kecamatandistrik, kotakabupaten, kodepos ASC
+		) sub
+		ORDER BY priority_score ASC, kecamatan ASC, kabupaten ASC
+		LIMIT 25`
 
-	if err := database.Raw(queryRaw, likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword).Scan(&results).Error; err != nil {
+	if err := database.Raw(queryRaw, keyword, keyword+"%", keyword+"%", keyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword).Scan(&results).Error; err != nil {
 		log.Printf("❌ [search-geo] Gagal Scan glb_m_ekodepos: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mencari data wilayah"})
 		return
