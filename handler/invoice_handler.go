@@ -61,6 +61,7 @@ type InvoiceBTTDetailRow struct {
 
 type CreateInvoiceReq struct {
 	ARTIHTanggal    string   `json:"artih_tanggal" binding:"required"`
+	ARTIHTglTempo   string   `json:"artih_tgltempo"`
 	ARTIHCustID     string   `json:"artih_custid" binding:"required"`
 	ARTIHCustName   string   `json:"artih_custname"`
 	ARTIHAgenID     string   `json:"artih_agenid"`
@@ -195,6 +196,8 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
+	database.Exec(`ALTER TABLE public.art_t_invoiceh ADD COLUMN IF NOT EXISTS artih_tgltempo DATE`)
+
 	invoiceID := strings.TrimSpace(c.Query("id"))
 	if invoiceID == "" {
 		invoiceID = strings.TrimSpace(c.Param("id"))
@@ -218,12 +221,17 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		Select(`
 			h.artih_id,
 			h.artih_tanggal,
+			h.artih_tgltempo,
 			h.artih_custid,
 			COALESCE(c.cust_name, h.artih_custname, '') AS cust_name,
 			COALESCE(h.artih_custname, c.cust_name, '') AS artih_custname,
 			COALESCE(c.cust_alamat1, '') AS cust_alamat,
 			COALESCE(c.cust_alamat1, '') AS cust_alamat1,
 			COALESCE(c.cust_alamat2, '') AS cust_alamat2,
+			COALESCE(
+				NULLIF(TRIM(COALESCE(to_jsonb(c)->>'cust_top', to_jsonb(c)->>'cust_jangkawaktu', to_jsonb(c)->>'cust_hari', to_jsonb(c)->>'cust_kredit', '0')), '')::int,
+				0
+			) AS cust_top,
 			COALESCE(po.nopo, po2.nopo, '') AS nopo,
 			COALESCE(po.nopo, po2.nopo, '') AS no_po,
 			COALESCE(h.artih_keterangan, '') AS artih_keterangan,
@@ -270,15 +278,20 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			END AS bttt_via,
 			COALESCE(e.bttt_nosuratjalan::varchar, '') AS bttt_nosuratjalan,
 			COALESCE(e.bttt_namabarang::varchar, '') AS bttt_namabarang,
-			COALESCE(e.bttt_jmlunit::numeric, 0) AS bttt_jmlunit,
-			COALESCE(e.bttt_berat::numeric, 0) AS bttt_berat,
-			COALESCE(e.bttt_ukuran::numeric, 0) AS bttt_ukuran,
-			COALESCE(e.bttt_harga::numeric, 0) AS bttt_harga,
-			COALESCE(e.bttt_biayapenerus::numeric, 0) AS bttt_biayapenerus,
-			COALESCE(p.pck_biaya::numeric, 0) AS biaya_packing,
-			COALESCE(asr.totalbiaya::numeric, 0) AS biaya_asuransi,
+			COALESCE(NULLIF(TRIM(e.bttt_jmlunit::varchar), '')::numeric, 0) AS bttt_jmlunit,
+			COALESCE(NULLIF(TRIM(e.bttt_berat::varchar), '')::numeric, 0) AS bttt_berat,
+			COALESCE(NULLIF(regexp_replace(COALESCE(e.bttt_ukuran::varchar, ''), '[^0-9.]', '', 'g'), '')::numeric, 0) AS bttt_ukuran,
+			COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) AS bttt_harga,
+			COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) AS bttt_biayapenerus,
+			COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) AS biaya_packing,
+			COALESCE(NULLIF(TRIM(asr.totalbiaya::varchar), '')::numeric, 0) AS biaya_asuransi,
 			COALESCE(e.bttt_nosuratjalan::varchar, '') AS no_skb,
-			(COALESCE(e.bttt_harga::numeric, 0) + COALESCE(e.bttt_biayapenerus::numeric, 0) + COALESCE(p.pck_biaya::numeric, 0) + COALESCE(asr.totalbiaya::numeric, 0)) AS subtotal
+			(
+				COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) 
+				+ COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) 
+				+ COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) 
+				+ COALESCE(NULLIF(TRIM(asr.totalbiaya::varchar), '')::numeric, 0)
+			) AS subtotal
 		`).
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(LOWER(e.bttt_id::varchar)) = TRIM(LOWER(d.artid_bttid::varchar))").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
@@ -335,18 +348,21 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 			COALESCE(e.bttt_tujuankota::varchar, '') AS bttt_tujuankota,
 			COALESCE(e.bttt_nosuratjalan::varchar, '') AS bttt_nosuratjalan,
 			COALESCE(e.bttt_namabarang::varchar, '') AS bttt_namabarang,
-			COALESCE(e.bttt_jmlunit::numeric, 0) AS bttt_jmlunit,
-			COALESCE(e.bttt_berat::numeric, 0) AS bttt_berat,
-			COALESCE(e.bttt_ukuran::numeric, 0) AS bttt_ukuran,
-			COALESCE(e.bttt_harga::numeric, 0) AS bttt_harga,
-			COALESCE(e.bttt_biayapenerus::numeric, 0) AS bttt_biayapenerus,
-			COALESCE(p.pck_biaya::numeric, 0) AS biaya_packing,
+			COALESCE(NULLIF(TRIM(e.bttt_jmlunit::varchar), '')::numeric, 0) AS bttt_jmlunit,
+			COALESCE(NULLIF(TRIM(e.bttt_berat::varchar), '')::numeric, 0) AS bttt_berat,
+			COALESCE(NULLIF(regexp_replace(COALESCE(e.bttt_ukuran::varchar, ''), '[^0-9.]', '', 'g'), '')::numeric, 0) AS bttt_ukuran,
+			COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) AS bttt_harga,
+			COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) AS bttt_biayapenerus,
+			COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) AS biaya_packing,
 			0::numeric AS biaya_asuransi,
 			''::varchar AS no_skb,
 			(
-				(COALESCE(e.bttt_harga::numeric, 0) - (COALESCE(e.bttt_harga::numeric, 0) * (COALESCE(e.bttt_disc::numeric, 0) / 100.0))) 
-				+ COALESCE(e.bttt_biayapenerus::numeric, 0) 
-				+ COALESCE(p.pck_biaya::numeric, 0)
+				(
+					COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) - 
+					(COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) * (COALESCE(NULLIF(TRIM(e.bttt_disc::varchar), '')::numeric, 0) / 100.0))
+				) 
+				+ COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) 
+				+ COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0)
 			) AS subtotal
 		`).
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
@@ -435,6 +451,8 @@ func SaveInvoiceHandler(c *gin.Context) {
 		return
 	}
 	userID, _ := c.Get("username")
+
+	database.Exec(`ALTER TABLE public.art_t_invoiceh ADD COLUMN IF NOT EXISTS artih_tgltempo DATE`)
 
 	var req CreateInvoiceReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -594,12 +612,29 @@ func SaveInvoiceHandler(c *gin.Context) {
 	ppnNilai := dppNilai * 0.011 // Murni 1.1%
 
 	grandTotalInvoice := subtotalKenaPajak + ppnNilai + basrTotal
+	// Hitung tanggal jatuh tempo: gunakan input manual user jika ada, atau hitung dari TOP master customer
+	tglTempo := tgl
+	if strings.TrimSpace(req.ARTIHTglTempo) != "" {
+		if parsedTempo, errT := time.Parse("2006-01-02", strings.TrimSpace(req.ARTIHTglTempo)); errT == nil {
+			tglTempo = parsedTempo
+		}
+	} else {
+		var topHari int
+		database.Table("public.mkt_m_customer c").
+			Select(`COALESCE(NULLIF(TRIM(COALESCE(to_jsonb(c)->>'cust_top', to_jsonb(c)->>'cust_jangkawaktu', to_jsonb(c)->>'cust_hari', to_jsonb(c)->>'cust_kredit', '0')), '')::int, 0)`).
+			Where("TRIM(c.cust_id) = TRIM(?)", req.ARTIHCustID).
+			Scan(&topHari)
+		if topHari > 0 {
+			tglTempo = tgl.AddDate(0, 0, topHari)
+		}
+	}
 
 	// 3. Insert Header Invoice
 	headerMap := map[string]interface{}{
 		"artih_id":         newInvoiceID,
 		"artih_nokw":       noKW,
 		"artih_tanggal":    tgl,
+		"artih_tgltempo":   tglTempo,
 		"artih_custid":     strings.TrimSpace(req.ARTIHCustID),
 		"artih_custname":   strings.TrimSpace(req.ARTIHCustName),
 		"artih_keterangan": strings.TrimSpace(req.ARTIHKeterangan),
@@ -733,9 +768,12 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 	}
 	userID, _ := c.Get("username")
 
+	database.Exec(`ALTER TABLE public.art_t_invoiceh ADD COLUMN IF NOT EXISTS artih_tgltempo DATE`)
+
 	var req struct {
 		ARTIHID         string   `json:"artih_id" binding:"required"`
 		ARTIHTanggal    string   `json:"artih_tanggal"`
+		ARTIHTglTempo   string   `json:"artih_tgltempo"`
 		ARTIHFktPajak   string   `json:"artih_fktpajak"`
 		ARTIHKeterangan string   `json:"artih_keterangan"`
 		RemoveBTTList   []string `json:"remove_btt_list"`
@@ -778,7 +816,6 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 		}
 	}
 
-	// 2. Tambah BTT baru ke dalam invoice (cegah duplikasi)
 	// 2. Tambah BTT baru ke dalam invoice (cegah duplikasi & pembayaran ganda)
 	if len(req.AddBTTList) > 0 {
 		// 🔒 Validasi: Pastikan BTT yang baru ditambahkan belum ada di invoice lain yang aktif
@@ -892,6 +929,11 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 	if req.ARTIHTanggal != "" {
 		if tgl, err := time.Parse("2006-01-02", req.ARTIHTanggal); err == nil {
 			updateHeader["artih_tanggal"] = tgl
+		}
+	}
+	if req.ARTIHTglTempo != "" {
+		if tglTempo, err := time.Parse("2006-01-02", req.ARTIHTglTempo); err == nil {
+			updateHeader["artih_tgltempo"] = tglTempo
 		}
 	}
 
