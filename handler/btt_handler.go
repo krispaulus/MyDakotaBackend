@@ -669,7 +669,7 @@ func CreateBTT(c *gin.Context) {
 	var asalAgenIDFinal string = ""
 	if rawPayload["bttt_asalagenid"] != nil {
 		valStr := strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalagenid"]))
-		if valStr != "" && valStr != "<nil>" && valStr != "null" {
+		if valStr != "" && valStr != "<nil>" && valStr != "null" && valStr != "0" {
 			asalAgenIDFinal = valStr
 		}
 	}
@@ -678,8 +678,11 @@ func CreateBTT(c *gin.Context) {
 			asalAgenIDFinal = strings.TrimSpace(fmt.Sprintf("%v", userAgenID))
 		}
 	}
-	if asalAgenIDFinal == "" {
-		asalAgenIDFinal = "0"
+	upperAsalFinal := strings.ToUpper(asalAgenIDFinal)
+	if asalAgenIDFinal == "" || asalAgenIDFinal == "0" || strings.Contains(upperAsalFinal, "PUSAT") || strings.Contains(upperAsalFinal, "HOLDING") {
+		asalAgenIDFinal = "001"
+	} else if len(asalAgenIDFinal) < 3 {
+		asalAgenIDFinal = fmt.Sprintf("%03s", asalAgenIDFinal)
 	}
 
 	// =========================================================================
@@ -1169,82 +1172,37 @@ func cleanStringVal(val interface{}) string {
 }
 
 func getUniqueBttID(database *gorm.DB, rawPayload map[string]interface{}, ptContext interface{}, agenContext interface{}, now time.Time) (string, error) {
-	// =========================================================================
-	// 🏢 1. RESOLVE KODE CORPORATE / PT SECARA DINAMIS
-	// =========================================================================
 	corpCode := ""
 	if pt, ok := rawPayload["pt_id"]; ok && fmt.Sprintf("%v", pt) != "" && fmt.Sprintf("%v", pt) != "<nil>" {
 		corpCode = strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", pt)))
 	} else if ptContext != nil && fmt.Sprintf("%v", ptContext) != "" {
 		corpCode = strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", ptContext)))
 	}
-
 	if corpCode == "" {
-		return "", fmt.Errorf("identitas Corporate/PT tidak terdeteksi dari sesi aktif")
+		corpCode = "C"
 	}
 
-	// =========================================================================
-	// 📍 2. RESOLVE KODE AGEN ASAL SECARA DINAMIS
-	// =========================================================================
 	agenID := ""
 	if asal, ok := rawPayload["bttt_asalagenid"]; ok {
 		clean := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", asal)))
-		if clean != "" && clean != "<nil>" && clean != "0" {
+		if clean != "" && clean != "<nil>" && clean != "NULL" && clean != "0" {
 			agenID = clean
 		}
 	}
-
-	// Fallback ke agen_id user yang sedang login jika payload belum menyertakan
 	if agenID == "" && agenContext != nil {
 		clean := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", agenContext)))
-		if clean != "" && clean != "<nil>" && clean != "0" {
+		if clean != "" && clean != "<nil>" && clean != "NULL" && clean != "0" {
 			agenID = clean
 		}
 	}
 
-	if agenID == "" {
-		return "", fmt.Errorf("kode agen asal penerbit BTT tidak valid atau kosong")
+	if agenID == "" || strings.Contains(agenID, "PUSAT") || strings.Contains(agenID, "HOLDING") {
+		agenID = "001"
+	} else if len(agenID) < 3 {
+		agenID = fmt.Sprintf("%03s", agenID)
 	}
 
-	// =========================================================================
-	// 🔢 3. GENERATE NOMOR URUT BERDASARKAN PREFIX DINAMIS
-	// =========================================================================
-	bulanTahun := now.Format("0106") // Format: MMYY (contoh: 0826)
-
-	// Format Standar: [KODE_PT][KODE_AGEN][BULAN_TAHUN] (Contoh: CBDO0040826 / ASUB0010826 / SBKS0020826)
-	prefix := fmt.Sprintf("%s%s%s", corpCode, agenID, bulanTahun)
-
-	// Ambil nomor urut transaksi terakhir untuk prefix ini
-	var lastBttID string
-	database.Table("public.mkt_t_econote").
-		Select("bttt_id").
-		Where("bttt_id LIKE ?", prefix+"%").
-		Order("bttt_id DESC").
-		Limit(1).
-		Scan(&lastBttID)
-
-	nextUrutan := 1
-	if lastBttID != "" && len(lastBttID) >= len(prefix)+5 {
-		suffix := lastBttID[len(prefix):]
-		if num, err := strconv.Atoi(suffix); err == nil {
-			nextUrutan = num + 1
-		}
-	}
-
-	bttIDStr := fmt.Sprintf("%s%05d", prefix, nextUrutan)
-
-	// Guard loop anti-duplikasi race condition
-	for {
-		var count int64
-		err := database.Table("public.mkt_t_econote").Where("bttt_id = ?", bttIDStr).Count(&count).Error
-		if err != nil || count == 0 {
-			break
-		}
-		nextUrutan++
-		bttIDStr = fmt.Sprintf("%s%05d", prefix, nextUrutan)
-	}
-
-	return bttIDStr, nil
+	return GenerateNomorResiBTTStandard(database, corpCode, agenID, now), nil
 }
 
 func CheckStatusClosingKemarin(c *gin.Context) {
