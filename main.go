@@ -810,6 +810,13 @@ func main() {
 			authorized.POST("/surat-tugas/scan-btt-koli", handler.ScanBTTKoliToSuratTugasHandler)
 			authorized.DELETE("/surat-tugas/remove-btt", handler.RemoveBTTFromSuratTugasHandler)
 
+			authorized.DELETE("/marketing/btt/:id", handler.DeleteBTT)
+			authorized.GET("/marketing/btt/:id/barcode-koli", handler.GetBTTBarcodeKoli)
+
+			authorized.POST("/operasional/surat-tugas/start-loading", handler.StartLoadingSuratTugasHandler)
+			authorized.POST("/operasional/surat-tugas/scan-btt-koli", handler.ScanBTTKoliToSuratTugasHandler)
+			authorized.DELETE("/operasional/surat-tugas/remove-btt", handler.RemoveBTTFromSuratTugasHandler)
+
 		}
 	}
 
