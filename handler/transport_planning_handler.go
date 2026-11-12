@@ -649,13 +649,14 @@ func CalculatePreview2(c *gin.Context) {
 		}
 		var existingDNs []DNBTTItem
 
-		cleanCustID := strings.TrimSpace(req.CustomerID)
 		database.Raw(`
 			SELECT COALESCE(dn_od_sj, '') AS dn_od_sj, COALESCE(nomorbtt, '') AS nomorbtt 
 			FROM public.opr_t_transportlspb 
-			WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
-			  AND dn_od_sj IN (?)
-		`, cleanCustID, strings.TrimLeft(cleanCustID, "0"), allDNs).Scan(&existingDNs)
+			WHERE TRIM(dn_od_sj) IN (?)
+			  AND nomorbtt IS NOT NULL 
+			  AND TRIM(nomorbtt) <> '' 
+			  AND TRIM(nomorbtt) <> '-'
+		`, allDNs).Scan(&existingDNs)
 
 		for _, item := range existingDNs {
 			for _, d := range strings.Split(item.DN, ",") {
@@ -1082,6 +1083,69 @@ func CalculatePreview2(c *gin.Context) {
 	})
 }
 
+// Helper parsing tanggal + jam dari CSV Excel yang tahan berbagai format
+func parseFlexibleCSVDate(raw string, fallback time.Time) time.Time {
+	clean := strings.TrimSpace(raw)
+	if clean == "" {
+		return fallback
+	}
+
+	// Pisahkan bagian tanggal dan jam (jika ada spasi)
+	parts := strings.Fields(clean)
+	datePart := parts[0]
+	timePart := ""
+	if len(parts) > 1 {
+		timePart = parts[1]
+	}
+
+	// Parse tanggal (DD/MM/YYYY atau YYYY-MM-DD)
+	var parsedDate time.Time
+	var ok bool
+	dateFormats := []string{
+		"2/1/2006",
+		"02/01/2006",
+		"2-1-2006",
+		"02-01-2006",
+		"2006-01-02",
+		"2006/01/02",
+	}
+	for _, f := range dateFormats {
+		if t, err := time.Parse(f, datePart); err == nil {
+			parsedDate = t
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fallback
+	}
+
+	// Parse jam jika ada (misal "7:59" atau "16:07:30"), jika tidak ada pakai jam sekarang
+	hour, minute, second := fallback.Hour(), fallback.Minute(), fallback.Second()
+	if timePart != "" {
+		tParts := strings.Split(timePart, ":")
+		if len(tParts) >= 2 {
+			if h, err := strconv.Atoi(tParts[0]); err == nil {
+				hour = h
+			}
+			if m, err := strconv.Atoi(tParts[1]); err == nil {
+				minute = m
+			}
+			if len(tParts) >= 3 {
+				if s, err := strconv.Atoi(tParts[2]); err == nil {
+					second = s
+				}
+			}
+		}
+	}
+
+	return time.Date(
+		parsedDate.Year(), parsedDate.Month(), parsedDate.Day(),
+		hour, minute, second, 0,
+		fallback.Location(),
+	)
+}
+
 // 4. SIMPAN BATCH KE DATABASE (AUTO GENERATE NOMOR BTT & INSERT KE MKT_T_ECONOTE)
 func SaveTransportPlanningBatch(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
@@ -1100,6 +1164,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 	type SaveReq struct {
 		CustomerID   string                        `json:"customer_id" binding:"required"`
 		CustomerName string                        `json:"customer_name"`
+		AgenID       string                        `json:"agen_id"`
 		Rows         []TransportPlanningGroupedRow `json:"rows" binding:"required"`
 	}
 
@@ -1127,15 +1192,30 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 		username = fmt.Sprintf("%v", authUser)
 	}
 
-	agenID := "1" // Default DLI Pusat (001)
-	if aID, exists := c.Get("agen_id"); exists && aID != nil && fmt.Sprintf("%v", aID) != "" {
-		agenID = fmt.Sprintf("%v", aID)
+	// 🌟 RESOLVE AGEN ID DINAMIS (Mendukung seluruh cabang, format 3 digit misal "001", "004", dst.)
+	rawAgen := strings.TrimSpace(req.AgenID)
+	if rawAgen == "" {
+		if aID, exists := c.Get("agen_id"); exists && aID != nil {
+			rawAgen = strings.TrimSpace(fmt.Sprintf("%v", aID))
+		}
+	}
+	if rawAgen == "" || rawAgen == "<nil>" || strings.EqualFold(rawAgen, "PUSAT DAKOTA") || strings.EqualFold(rawAgen, "HOLDING") {
+		rawAgen = "001"
+	}
+	// Normalisasi ke 3 digit jika berupa angka pendek (misal "1" -> "001")
+	agenID := rawAgen
+	if len(agenID) < 3 {
+		agenID = fmt.Sprintf("%03s", agenID)
 	}
 
 	// 🌟 Inisialisasi waktu dan batch ID aktif
 	now := time.Now()
 	tglTrans := now.Format("2006-01-02")
 	batchID := fmt.Sprintf("BATCH-%d", now.UnixNano())
+
+	// 🌟 Pastikan kolom pendukung tersedia di database aktif (22.7 / 22.8 / multi-PT)
+	database.Exec(`ALTER TABLE public.mkt_t_econote ADD COLUMN IF NOT EXISTS bttt_isikiriman TEXT`)
+	database.Exec(`ALTER TABLE public.mkt_t_econote ADD COLUMN IF NOT EXISTS bttt_biayapacking NUMERIC(18,2)`)
 
 	tx := database.Begin()
 	defer func() {
@@ -1146,21 +1226,13 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 
 	savedCount := 0
 
-	// Ambil nomor urut BTT terakhir untuk cabang terkait
-	prefixBTT := fmt.Sprintf("%03s%s", agenID, now.Format("0601")) // contoh: 0012611
-	var lastBTTNo string
-	database.Table("public.mkt_t_econote").
-		Select("bttt_id").
-		Where("bttt_id LIKE ?", prefixBTT+"%").
-		Order("bttt_id DESC").
-		Limit(1).
-		Scan(&lastBTTNo)
-
-	nextBTTSeq := 1
-	if lastBTTNo != "" && len(lastBTTNo) >= len(prefixBTT)+5 {
-		if num, err := strconv.Atoi(lastBTTNo[len(prefixBTT):]); err == nil {
-			nextBTTSeq = num + 1
-		}
+	// 📍 POSISI 1 (SEBELUM LOOP): Ambil nomor urut awal menggunakan generator resmi standar Dakota
+	// Contoh hasil: 001112026C000674 (atau 004112026C000001 jika agen 004)
+	firstResi := GenerateNomorResiBTTStandard(database, fmt.Sprintf("%v", ptID), agenID, now)
+	prefixResi := firstResi[:10] // Contoh: "001112026C"
+	nextBTTSeq, _ := strconv.Atoi(firstResi[10:])
+	if nextBTTSeq <= 0 {
+		nextBTTSeq = 1
 	}
 
 	for _, r := range req.Rows {
@@ -1169,15 +1241,21 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			continue
 		}
 
-		// 1. Generate Nomor BTT Resmi Baru (12 Digit Format Standar Dakota)
-		newBTTNo := fmt.Sprintf("%s%05d", prefixBTT, nextBTTSeq)
+		// 📍 POSISI 2 (DI DALAM LOOP): Generate Nomor BTT Resmi Standar Dakota (16 Digit)
+		newBTTNo := fmt.Sprintf("%s%06d", prefixResi, nextBTTSeq)
 		nextBTTSeq++
 
-		// 🌟 2. PARSING TANGGAL MASING-MASING BARIS DARI CSV (contoh: "6/11/2026")
-		tglBTT := now // default jika CSV tidak ada tanggal
+		// 🌟 PARSING TANGGAL MASING-MASING BARIS DARI CSV (mendukung format tanggal + jam seperti "11/11/2026 7:59")
+		tglBTT := parseFlexibleCSVDate(r.Tanggal, now)
 		if r.Tanggal != "" {
 			cleanTgl := strings.TrimSpace(r.Tanggal)
 			formats := []string{
+				"2/1/2006 15:04",
+				"02/01/2006 15:04",
+				"2/1/2006 15:04:05",
+				"02/01/2006 15:04:05",
+				"2006-01-02 15:04:05",
+				"2006-01-02 15:04",
 				"2/1/2006",
 				"02/01/2006",
 				"2006-01-02",
@@ -1187,11 +1265,15 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			}
 			for _, fmtStr := range formats {
 				if parsedTgl, err := time.Parse(fmtStr, cleanTgl); err == nil {
-					tglBTT = time.Date(
-						parsedTgl.Year(), parsedTgl.Month(), parsedTgl.Day(),
-						now.Hour(), now.Minute(), now.Second(), now.Nanosecond(),
-						now.Location(),
-					)
+					if parsedTgl.Hour() == 0 && parsedTgl.Minute() == 0 && !strings.Contains(cleanTgl, ":") {
+						tglBTT = time.Date(
+							parsedTgl.Year(), parsedTgl.Month(), parsedTgl.Day(),
+							now.Hour(), now.Minute(), now.Second(), now.Nanosecond(),
+							now.Location(),
+						)
+					} else {
+						tglBTT = parsedTgl
+					}
 					break
 				}
 			}
@@ -1200,7 +1282,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 		// 🌟 Fallback untuk UP Pengirim jika di CSV tidak terisi
 		namaUP := r.Up
 		if strings.TrimSpace(namaUP) == "" || namaUP == "-" {
-			namaUP = req.CustomerName // atau "LOGISTIK"
+			namaUP = req.CustomerName
 		}
 
 		// 3. Simpan ke Antrean Staging Upload
@@ -1235,7 +1317,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			"bttt_id":              newBTTNo,
 			"bttt_tanggal":         tglBTT,
 			"bttt_servid":          r.ServID,
-			"bttt_asalagenid":      agenID,
+			"bttt_asalagenid":      agenID, // 👈 Dinamis sesuai cabang/agen aktif
 			"bttt_asalcustid":      req.CustomerID,
 			"bttt_asalname":        req.CustomerName,
 			"bttt_asalalamat":      sender.Alamat1,
@@ -1253,22 +1335,24 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			"bttt_jmlunit":         r.TotalColly,
 			"bttt_berat":           r.TotalWeight,
 			"bttt_beratvol":        r.TotalVolume,
+			"bttt_ukuran":          fmt.Sprintf("%.2f", r.TotalVolume),
 			"bttt_harga":           r.HargaFinal,
 			"bttt_packingid":       r.KodePacking,
 			"bttt_jmlpck":          int(r.TotalPacking),
-			"bttt_biayapacking":    r.BiayaPacking, // 👈 Biaya Packing dari CSV
+			"bttt_biayapacking":    r.BiayaPacking,
 			"bttt_biayapenerus":    0,
 			"bttt_nosuratjalan":    cleanDNList,
-			"bttt_ket":             r.KetDOKembali, // 👈 Keterangan Atas (Hasil Mapping DO Kembali)
-			"bttt_isikiriman":      r.Keterangan,   // 👈 Keterangan Bawah (Teks Asli CSV)
+			"bttt_ket":             r.KetDOKembali,
+			"bttt_isikiriman":      r.Keterangan,
 			"bttt_namabarang":      "PRODUK FARMASI / KESEHATAN",
 			"bttt_paketyn":         paketYN,
 			"bttt_jenisharga":      "2",
 			"bttt_pembayaran":      "KREDIT",
 			"bttt_charterjnskend":  r.KodeKendaraan,
+			"bttt_spyn":            "Y",
+			"bttt_aktifyn":         "Y",
 			"bttt_updateid":        username,
 			"bttt_updatetime":      now,
-			"bttt_aktifyn":         "Y",
 		}
 
 		if err := tx.Table("public.mkt_t_econote").Create(&bttRecord).Error; err != nil {
@@ -1277,7 +1361,7 @@ func SaveTransportPlanningBatch(c *gin.Context) {
 			return
 		}
 
-		// 🌟 6. Hubungkan seluruh nomor DN asli ke tabel relasi LSPB (PERSIS SEPERTI KIMIA FARMA)
+		// 🌟 6. Hubungkan seluruh nomor DN asli ke tabel relasi LSPB
 		if r.DNList != "" {
 			cleanCustID := req.CustomerID
 			if strings.Contains(strings.ToUpper(req.CustomerName), "MERCK") {

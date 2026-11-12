@@ -132,6 +132,9 @@ func GetBTT(c *gin.Context) {
 
 	// 🟢 Tangkap seluruh parameter filter dari React
 	agenID := strings.TrimSpace(c.Query("agen_id"))
+	if strings.EqualFold(agenID, "PUSAT DAKOTA") || strings.EqualFold(agenID, "HOLDING") || strings.EqualFold(agenID, "ALL") {
+		agenID = ""
+	}
 	cabang := strings.TrimSpace(c.Query("cabang"))
 	startDate := strings.TrimSpace(c.Query("start_date"))
 	endDate := strings.TrimSpace(c.Query("end_date"))
@@ -260,7 +263,7 @@ func GetBTT(c *gin.Context) {
 			COALESCE(e.bttt_beratvol, 0) AS berat_volume,
 			COALESCE(NULLIF(regexp_replace(COALESCE(e.bttt_ukuran::text, '0'), '[^0-9.]', '', 'g'), '')::numeric, 0) AS kubikasi,
 			COALESCE(e.bttt_biayapenerus, 0) AS biaya_penerus,
-			COALESCE(p.pck_biaya, 0) AS biaya_packing,
+			COALESCE(NULLIF(e.bttt_biayapacking, 0), p.pck_biaya, 0) AS biaya_packing,
 			CASE 
 				WHEN e.bttt_jenisharga = '0' THEN 'TUNAI'
 				WHEN e.bttt_jenisharga = '2' THEN 'KREDIT'
