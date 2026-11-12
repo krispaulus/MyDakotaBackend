@@ -1548,3 +1548,165 @@ func GenerateNomorResiBTTStandard(database *gorm.DB, ptID string, agenID string,
 
 	return res
 }
+
+// =========================================================================
+// 🗑️ SOFT DELETE / NON-AKTIFKAN BTT (UPDATE bttt_aktifyn = 'N')
+// DELETE /api/marketing/btt/:id
+// =========================================================================
+func DeleteBTT(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = "C"
+	}
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Koneksi database gagal"})
+		return
+	}
+
+	bttID := strings.TrimSpace(c.Param("id"))
+	if bttID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nomor BTT wajib disertakan"})
+		return
+	}
+
+	userID, _ := c.Get("username")
+	if userID == nil || fmt.Sprintf("%v", userID) == "" {
+		userID = "SYSTEM"
+	}
+
+	// Soft delete persis seperti sistem ASP lawas (bttt_aktifyn = 'N')
+	res := database.Table("public.mkt_t_econote").
+		Where("TRIM(bttt_id) = ?", bttID).
+		Updates(map[string]interface{}{
+			"bttt_aktifyn":    "N",
+			"bttt_updateid":   fmt.Sprintf("%v", userID),
+			"bttt_updatetime": time.Now(),
+		})
+
+	if res.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menonaktifkan BTT: " + res.Error.Error()})
+		return
+	}
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Nomor BTT tidak ditemukan"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": fmt.Sprintf("BTT %s berhasil dinonaktifkan / dihapus!", bttID),
+	})
+}
+
+// =========================================================================
+// 🏷️ GET DATA BARCODE KOLI PER BTT (UNTUK CETAK LABEL A4 / THERMAL ZEBRA)
+// GET /api/marketing/btt/:id/barcode-koli?from=1&to=0
+// =========================================================================
+func GetBTTBarcodeKoli(c *gin.Context) {
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = "C"
+	}
+
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Koneksi database gagal"})
+		return
+	}
+
+	bttID := strings.TrimSpace(c.Param("id"))
+	fromKoli, _ := strconv.Atoi(c.DefaultQuery("from", "1"))
+	toKoli, _ := strconv.Atoi(c.DefaultQuery("to", "0"))
+
+	if fromKoli < 1 {
+		fromKoli = 1
+	}
+
+	// Ambil data master BTT & nama agen asal/tujuan
+	var bttInfo struct {
+		BtttID       string `gorm:"column:bttt_id" json:"bttt_id"`
+		JmlUnit      int    `gorm:"column:bttt_jmlunit" json:"bttt_jmlunit"`
+		TujuanNama   string `gorm:"column:bttt_tujuannama" json:"bttt_tujuannama"`
+		TujuanKota   string `gorm:"column:bttt_tujuankota" json:"bttt_tujuankota"`
+		TujuanAlamat string `gorm:"column:bttt_tujuanalamat" json:"bttt_tujuanalamat"`
+		AgenAsal     string `gorm:"column:agen_asal" json:"agen_asal"`
+		AgenTujuan   string `gorm:"column:agen_tujuan" json:"agen_tujuan"`
+		AsalAgenID   string `gorm:"column:bttt_asalagenid" json:"bttt_asalagenid"`
+	}
+
+	err := database.Table("public.mkt_t_econote e").
+		Select(`
+			TRIM(e.bttt_id) AS bttt_id,
+			COALESCE(NULLIF(e.bttt_jmlunit, 0), 1) AS bttt_jmlunit,
+			COALESCE(e.bttt_tujuannama, '') AS bttt_tujuannama,
+			COALESCE(e.bttt_tujuankota, '') AS bttt_tujuankota,
+			COALESCE(e.bttt_tujuanalamat, '') AS bttt_tujuanalamat,
+			COALESCE(e.bttt_asalagenid, '001') AS bttt_asalagenid,
+			COALESCE(a1.agen_nama, 'DLI PUSAT') AS agen_asal,
+			COALESCE(a2.agen_nama, e.bttt_tujuankota, 'DLI PUSAT') AS agen_tujuan
+		`).
+		Joins("LEFT JOIN public.glb_m_agen a1 ON TRIM(a1.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
+		Joins("LEFT JOIN public.glb_m_agen a2 ON TRIM(a2.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)").
+		Where("TRIM(e.bttt_id) = ?", bttID).
+		Scan(&bttInfo).Error
+
+	if err != nil || bttInfo.BtttID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data BTT tidak ditemukan"})
+		return
+	}
+
+	totalKoli := bttInfo.JmlUnit
+	if totalKoli < 1 {
+		totalKoli = 1
+	}
+	if toKoli <= 0 || toKoli > totalKoli {
+		toKoli = totalKoli
+	}
+
+	// Cek apakah ada data koli di mkt_t_econote_koli_temp
+	type KoliItem struct {
+		KoliID     string `json:"koli_id"`
+		Urutan     int    `json:"urutan"`
+		TotalKoli  int    `json:"total_koli"`
+		BtttID     string `json:"bttt_id"`
+		AgenAsal   string `json:"agen_asal"`
+		AgenTujuan string `json:"agen_tujuan"`
+		TujuanNama string `json:"tujuan_nama"`
+		TujuanKota string `json:"tujuan_kota"`
+		ServerID   string `json:"server_id"`
+	}
+
+	var tempKoliIDs []string
+	database.Table("public.mkt_t_econote_koli_temp").
+		Select("TRIM(bttt_koliid)").
+		Where("TRIM(bttt_id) = ?", bttID).
+		Order("bttt_koliid ASC").
+		Scan(&tempKoliIDs)
+
+	var items []KoliItem
+	for idx := fromKoli; idx <= toKoli; idx++ {
+		koliCode := fmt.Sprintf("%s%04d", bttInfo.BtttID, idx)
+		if idx-1 < len(tempKoliIDs) && tempKoliIDs[idx-1] != "" {
+			koliCode = tempKoliIDs[idx-1]
+		}
+		items = append(items, KoliItem{
+			KoliID:     koliCode,
+			Urutan:     idx,
+			TotalKoli:  totalKoli,
+			BtttID:     bttInfo.BtttID,
+			AgenAsal:   bttInfo.AgenAsal,
+			AgenTujuan: bttInfo.AgenTujuan,
+			TujuanNama: bttInfo.TujuanNama,
+			TujuanKota: bttInfo.TujuanKota,
+			ServerID:   bttInfo.AsalAgenID,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"btt":    bttInfo,
+		"items":  items,
+	})
+}

@@ -803,6 +803,9 @@ func main() {
 			authorized.POST("/piutang/penerimaan-pembayaran-kredit/unposting", handler.UnpostingPenerimaanPembayaranKreditHandler)
 			authorized.GET("/piutang/penerimaan-pembayaran-kredit/rekapitulasi-tipe2", handler.GetRekapitulasiTipe2Handler)
 
+			authorized.DELETE("/btt/:id", handler.DeleteBTT)
+			authorized.GET("/btt/:id/barcode-koli", handler.GetBTTBarcodeKoli)
+
 		}
 	}
 
