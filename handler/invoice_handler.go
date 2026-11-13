@@ -260,40 +260,58 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// 2. Query Detail BTT (Lengkap dengan Kodepos & Via dari mkt_t_econote)
+	// 2. Query Detail BTT (Lengkap untuk Cetak Faktur & Print All BTT)
 	var bttList []InvoiceBTTDetailRow
 	err = database.Table("public.art_t_invoiced d").
 		Select(`
 			COALESCE(e.bttt_id::varchar, d.artid_bttid::varchar) AS bttt_id,
 			COALESCE(e.bttt_servid::varchar, '1') AS bttt_servid,
 			COALESCE(e.bttt_tanggal, NOW()) AS bttt_tanggal,
-			COALESCE(e.bttt_asalname::varchar, '') AS bttt_asalname,
+			COALESCE(e.bttt_asalname::varchar, c.cust_name, '') AS bttt_asalname,
+			COALESCE(e.bttt_asalalamat::varchar, c.cust_alamat1, '') AS bttt_asalalamat,
+			COALESCE(e.bttt_asalkota::varchar, c.cust_kotaid, 'BEKASI') AS bttt_asalkota,
+			COALESCE(e.bttt_asaltelp::varchar, c.cust_telp1, '') AS bttt_asaltelp,
+			COALESCE(ag1.agen_nama::varchar, 'DLI PUSAT') AS bttt_asalagennama,
 			COALESCE(e.bttt_tujuannama::varchar, '') AS bttt_tujuannama,
+			COALESCE(e.bttt_tujuanalamat::varchar, '') AS bttt_tujuanalamat,
+			COALESCE(e.bttt_tujuankelurahan::varchar, '') AS bttt_tujuankelurahan,
+			COALESCE(e.bttt_tujuankecamatan::varchar, '') AS bttt_tujuankecamatan,
 			COALESCE(e.bttt_tujuankota::varchar, '') AS bttt_tujuankota,
 			COALESCE(e.bttt_tujuankodepos::varchar, '-') AS bttt_tujuankodepos,
+			COALESCE(e.bttt_tujuantelp::varchar, '') AS bttt_tujuantelp,
+			COALESCE(ag2.agen_nama::varchar, e.bttt_tujuankota::varchar, 'DLI PUSAT') AS bttt_tujuanagennama,
+			COALESCE(e.bttt_up::varchar, '-') AS bttt_up,
 			CASE 
 				WHEN e.bttt_servid::varchar = '2' THEN 'UDARA'
 				WHEN e.bttt_servid::varchar = '3' THEN 'LAUT'
 				ELSE 'DARAT'
 			END AS bttt_via,
+			COALESCE(e.bttt_paketyn::varchar, 'Y') AS bttt_paketyn,
+			COALESCE(e.bttt_jenisharga::varchar, '2') AS bttt_jenisharga,
 			COALESCE(e.bttt_nosuratjalan::varchar, '') AS bttt_nosuratjalan,
-			COALESCE(e.bttt_namabarang::varchar, '') AS bttt_namabarang,
-			COALESCE(NULLIF(TRIM(e.bttt_jmlunit::varchar), '')::numeric, 0) AS bttt_jmlunit,
-			COALESCE(NULLIF(TRIM(e.bttt_berat::varchar), '')::numeric, 0) AS bttt_berat,
+			COALESCE(e.bttt_ket::varchar, '') AS bttt_ket,
+			COALESCE(e.bttt_namabarang::varchar, 'OBAT') AS bttt_namabarang,
+			COALESCE(NULLIF(TRIM(e.bttt_jmlunit::varchar), '')::numeric, 1) AS bttt_jmlunit,
+			COALESCE(NULLIF(TRIM(e.bttt_berat::varchar), '')::numeric, 1) AS bttt_berat,
+			COALESCE(NULLIF(TRIM(e.bttt_beratvol::varchar), '')::numeric, 0) AS bttt_beratvol,
 			COALESCE(NULLIF(regexp_replace(COALESCE(e.bttt_ukuran::varchar, ''), '[^0-9.]', '', 'g'), '')::numeric, 0) AS bttt_ukuran,
 			COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) AS bttt_harga,
 			COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) AS bttt_biayapenerus,
-			COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) AS biaya_packing,
+			COALESCE(NULLIF(TRIM(e.bttt_biayapacking::varchar), '')::numeric, NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) AS biaya_packing,
 			COALESCE(NULLIF(TRIM(asr.totalbiaya::varchar), '')::numeric, 0) AS biaya_asuransi,
+			COALESCE(e.bttt_updateid::varchar, 'STAFF') AS bttt_updateid,
 			COALESCE(e.bttt_nosuratjalan::varchar, '') AS no_skb,
 			(
 				COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) 
 				+ COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) 
-				+ COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) 
+				+ COALESCE(NULLIF(TRIM(e.bttt_biayapacking::varchar), '')::numeric, NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) 
 				+ COALESCE(NULLIF(TRIM(asr.totalbiaya::varchar), '')::numeric, 0)
 			) AS subtotal
 		`).
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(LOWER(e.bttt_id::varchar)) = TRIM(LOWER(d.artid_bttid::varchar))").
+		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(LOWER(c.cust_id::varchar)) = TRIM(LOWER(e.bttt_asalcustid::varchar))").
+		Joins("LEFT JOIN public.glb_m_agen ag1 ON TRIM(ag1.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
+		Joins("LEFT JOIN public.glb_m_agen ag2 ON TRIM(ag2.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Joins("LEFT JOIN public.mkt_t_asuransi asr ON TRIM(asr.bttt_id::varchar) = TRIM(d.artid_bttid::varchar)").
 		Where("TRIM(LOWER(d.artid_artihid::varchar)) = TRIM(LOWER(?))", strings.TrimSpace(header["artih_id"].(string))).
