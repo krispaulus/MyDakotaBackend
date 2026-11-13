@@ -42,7 +42,7 @@ func GetLSPBReportList(c *gin.Context) {
 	queryStr := `
 		SELECT 
 			v."DN_OD_SJ" AS dn_od_sj,
-			COALESCE(v."Cust_Name", '-') AS cust_name,
+			COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), NULLIF(TRIM(m.cust_name), ''), v."Cust_Name", '-') AS cust_name,
 			COALESCE(v."Tanggal_HandOver", '') AS tanggal_handover,
 			COALESCE(v."nomorbtt", '') AS nomorbtt,
 			COALESCE(v."PickupFrom", 'WH MARUNDA') AS pickup_from,
@@ -79,6 +79,10 @@ func GetLSPBReportList(c *gin.Context) {
 			COALESCE(v."BTTT_Berat", 1) AS bttt_berat,
 			COALESCE(v.nomorbtt, '') AS noskb
 		FROM vw_transport_lspb v
+		LEFT JOIN public.mkt_t_econote e 
+			ON TRIM(e.bttt_id::varchar) = TRIM(v."nomorbtt"::varchar)
+		LEFT JOIN public.mkt_m_customer m 
+			ON TRIM(m.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)
 		LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
 			ON v."DN_OD_SJ" = c.nodo
 		WHERE v."DN_OD_SJ" IS NOT NULL AND v."DN_OD_SJ" <> ''

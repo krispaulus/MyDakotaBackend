@@ -856,33 +856,64 @@ func CalculatePreview2(c *gin.Context) {
 			}
 
 			// 3. PRIORITAS 3: Layanan Carter Armada
-		} else if strings.ToUpper(strings.TrimSpace(row.LayananID)) == "C" || row.KodeKendaraan != "" {
-			type CarterTarif struct {
-				Harga   float64 `gorm:"column:harga"`
-				HargaDG float64 `gorm:"column:harga_dg"`
-			}
-			var ct CarterTarif
+			if strings.ToUpper(strings.TrimSpace(row.LayananID)) == "C" || row.KodeKendaraan != "" {
+				type CarterTarif struct {
+					Harga   float64 `gorm:"column:harga"`
+					HargaDG float64 `gorm:"column:harga_dg"`
+				}
+				var ct CarterTarif
 
-			cleanCustID := strings.TrimSpace(req.CustomerID)
-			database.Raw(`
+				cleanCustID := strings.TrimSpace(req.CustomerID)
+
+				regNonWord := regexp.MustCompile(`[^\w\s]`)
+				tempKota := regNonWord.ReplaceAllString(row.Kota, " ")
+				regStrip := regexp.MustCompile(`(?i)\b(KABUPATEN|KAB|KOTA|ADM)\b`)
+				cleanKota := strings.ToUpper(strings.TrimSpace(regStrip.ReplaceAllString(tempKota, " ")))
+
+				jnsKend := strings.ToUpper(strings.TrimSpace(row.KodeKendaraan))
+				if jnsKend == "" || jnsKend == "-" {
+					grp := strings.ToUpper(strings.TrimSpace(row.KodeGroupCarter))
+					regTrailDigits := regexp.MustCompile(`[0-9]+$`)
+					jnsKend = strings.TrimSpace(regTrailDigits.ReplaceAllString(grp, ""))
+				}
+
+				kendPatterns := []string{"%" + jnsKend + "%"}
+				if strings.Contains(jnsKend, "GMAX") || strings.Contains(jnsKend, "GM") {
+					kendPatterns = append(kendPatterns, "%GRANMAX%", "%GRAN MAX%", "%GRAND MAX%", "%G-MAX%", "%GM%", "%BLIND%", "%PICK%")
+				}
+
+				database.Raw(`
 				SELECT 
 					COALESCE(harga, 0) AS harga,
 					COALESCE(harga_dg, 0) AS harga_dg
 				FROM public.mkt_m_eharga_pelanggan_carter
-				WHERE (TRIM(customerid) = TRIM(?) OR TRIM(customerid) = TRIM(?))
-				  AND UPPER(TRIM(tujuan_kabupaten)) = UPPER(TRIM(?))
-				  AND UPPER(TRIM(jns_kend)) = UPPER(TRIM(?))
+				WHERE (
+				      TRIM(customerid) = TRIM(?) 
+				      OR TRIM(customerid) = TRIM(?) 
+				      OR customerid = '0010000021'
+				      OR customerid LIKE '%0021'
+				  )
+				  AND (
+				      UPPER(TRIM(tujuan_kabupaten)) = ?
+				      OR UPPER(TRIM(tujuan_kabupaten)) LIKE ?
+				      OR UPPER(?) LIKE CONCAT('%', UPPER(TRIM(tujuan_kabupaten)), '%')
+				  )
+				  AND UPPER(TRIM(jns_kend)) LIKE ANY (?)
+				ORDER BY 
+					CASE WHEN UPPER(TRIM(jns_kend)) = ? THEN 0 ELSE 1 END,
+					id DESC
 				LIMIT 1
-			`, cleanCustID, strings.TrimLeft(cleanCustID, "0"), row.Kota, row.KodeKendaraan).Scan(&ct)
+			`, cleanCustID, strings.TrimLeft(cleanCustID, "0"), cleanKota, "%"+cleanKota+"%", cleanKota, "{"+strings.Join(kendPatterns, ",")+"}", jnsKend).Scan(&ct)
 
-			tarifCarter := ct.Harga
-			if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" && ct.HargaDG > 0 {
-				tarifCarter = ct.HargaDG
-			}
+				tarifCarter := ct.Harga
+				if strings.ToUpper(strings.TrimSpace(row.IsDG)) == "Y" && ct.HargaDG > 0 {
+					tarifCarter = ct.HargaDG
+				}
 
-			if tarifCarter > 0 {
-				hargaFinal = tarifCarter
-				sumberHarga = "TARIF MASTER"
+				if tarifCarter > 0 {
+					hargaFinal = tarifCarter
+					sumberHarga = "TARIF MASTER"
+				}
 			}
 
 			// 4. PRIORITAS 4: LAYANAN REGULER / LUAR KOTA (MENGGUNAKAN MKT_M_EHARGA_CUSTOMER RESMI 2026)
