@@ -112,7 +112,7 @@ func GetTarifCarterIndex(c *gin.Context) {
 	// 🔵 JIKA PT = DBS / MEMAKAI MKT_M_EHARGA_CHARTER
 	var result []models.CarterIndexDTO
 	queryStr := `
-		SELECT a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_phone1, 
+		SELECT a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, '' AS agen_phone1, 
 		       COUNT(c.id) AS jml 
 		FROM glb_m_agen a 
 		LEFT JOIN mkt_m_eharga_charter c ON a.agen_id = c.agenid_asal 
@@ -121,7 +121,7 @@ func GetTarifCarterIndex(c *gin.Context) {
 	if searchAgen != "" {
 		queryStr += fmt.Sprintf(" AND a.agen_nama ILIKE '%%%s%%'", searchAgen)
 	}
-	queryStr += " GROUP BY a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota, a.agen_phone1 ORDER BY a.agen_nama ASC"
+	queryStr += " GROUP BY a.agen_id, a.agen_nama, a.agen_alamat, a.agen_kota ORDER BY a.agen_nama ASC"
 
 	err := database.Raw(queryStr).Scan(&result).Error
 	if err != nil {

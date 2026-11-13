@@ -818,6 +818,7 @@ func main() {
 			authorized.DELETE("/operasional/surat-tugas/remove-btt", handler.RemoveBTTFromSuratTugasHandler)
 
 			authorized.POST("/btt/update", handler.UpdateBTT)
+			authorized.POST("/master/tarif/import-csv", handler.ImportMasterTarifCSVHandler)
 
 		}
 	}
