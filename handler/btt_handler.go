@@ -33,88 +33,161 @@ type UpdateBTTPayload struct {
 }
 
 func UpdateBTT(c *gin.Context) {
-	db := getTarifCustomerDB(c)
+	ptID, exists := c.Get("pt_id")
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = "C"
+	}
 
-	// Ambil role user dari JWT / Context
-	userRole := strings.ToUpper(fmt.Sprintf("%v", c.MustGet("role_akses")))
-	userID := fmt.Sprintf("%v", c.MustGet("user_id"))
-
-	var req UpdateBTTPayload
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Koneksi database gagal"})
 		return
 	}
 
-	// 1. Ambil data eksisting BTT untuk perbandingan
-	var existingBTT struct {
-		BiayaKirim float64
-		TotalBiaya float64
-	}
-	err := db.Table("public.mkt_t_btt").
-		Select("biaya_kirim, total_biaya").
-		Where("no_btt = ?", req.NoBTT).
-		Scan(&existingBTT).Error
-
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Data BTT tidak ditemukan"})
+	var payload map[string]interface{}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Payload tidak valid: " + err.Error()})
 		return
 	}
 
-	// 2. Proteksi Wewenang: Jika bukan Supervisor/Manager tapi mencoba ubah harga
-	isSupervisor := userRole == "SUPERVISOR" || userRole == "MANAGER" || userRole == "SUPERADMIN"
-	priceChanged := (req.BiayaKirim != existingBTT.BiayaKirim) || (req.TotalBiaya != existingBTT.TotalBiaya)
-
-	if priceChanged && !isSupervisor {
-		c.JSON(http.StatusForbidden, gin.H{
-			"status":  "error",
-			"message": "Akses Ditolak: Hanya Supervisor yang berhak melakukan bypass/edit harga BTT.",
-		})
+	bttID := cleanStringVal(payload["bttt_nobtt"])
+	if bttID == "" {
+		bttID = cleanStringVal(payload["no_btt"])
+	}
+	if bttID == "" {
+		bttID = cleanStringVal(payload["id"])
+	}
+	if bttID == "" {
+		bttID = strings.TrimSpace(c.Param("id"))
+	}
+	if bttID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Nomor BTT tidak ditemukan dalam request"})
 		return
 	}
 
-	tx := db.Begin()
-
-	// 3. Update Data BTT
-	updateData := map[string]interface{}{
-		"penerima_nama":   req.PenerimaNama,
-		"penerima_alamat": req.PenerimaAlamat,
-		"penerima_telp":   req.PenerimaTelp,
-		"no_surat_jalan":  req.NoSuratJalan,
-		"keterangan":      req.Keterangan,
-		"metode_bayar":    req.MetodeBayar,
+	userID, _ := c.Get("username")
+	if userID == nil || fmt.Sprintf("%v", userID) == "" {
+		userID = "SYSTEM"
 	}
 
-	// Hanya update harga jika Supervisor yang mengubahnya
-	if isSupervisor {
-		updateData["biaya_kirim"] = req.BiayaKirim
-		updateData["biaya_penerus"] = req.BiayaPenerus
-		updateData["biaya_packing"] = req.BiayaPacking
-		updateData["total_biaya"] = req.TotalBiaya
-		updateData["is_price_overridden"] = priceChanged
-
-		// Catat ke Audit Log jika harga diubah manual
-		if priceChanged {
-			logEntry := map[string]interface{}{
-				"no_btt":          req.NoBTT,
-				"user_id":         userID,
-				"biaya_awal":      existingBTT.BiayaKirim,
-				"biaya_baru":      req.BiayaKirim,
-				"alasan_override": req.AlasanOverride,
-			}
-			tx.Table("public.mkt_t_btt_price_audit").Create(&logEntry)
+	toFloat := func(v interface{}) float64 {
+		if v == nil {
+			return 0
+		}
+		switch val := v.(type) {
+		case float64:
+			return val
+		case int:
+			return float64(val)
+		case int64:
+			return float64(val)
+		case string:
+			clean := strings.ReplaceAll(strings.TrimSpace(val), ".", "")
+			clean = strings.ReplaceAll(clean, ",", ".")
+			f, _ := strconv.ParseFloat(clean, 64)
+			return f
+		default:
+			return 0
 		}
 	}
 
-	if err := tx.Table("public.mkt_t_btt").Where("no_btt = ?", req.NoBTT).Updates(updateData).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+	toInt := func(v interface{}) int {
+		return int(toFloat(v))
+	}
+
+	// Pastikan kolom bttt_biayapacking tersedia
+	database.Exec(`ALTER TABLE public.mkt_t_econote ADD COLUMN IF NOT EXISTS bttt_biayapacking NUMERIC(18,2)`)
+
+	hargaBaru := toFloat(payload["bttt_harga"])
+	biayaPenerus := toFloat(payload["bttt_biayapenerus"])
+	biayaPacking := toFloat(payload["bttt_biayapacking"])
+
+	updates := map[string]interface{}{
+		"bttt_harga":        hargaBaru,
+		"bttt_biayapenerus": biayaPenerus,
+		"bttt_biayapacking": biayaPacking,
+		"bttt_updateid":     fmt.Sprintf("%v", userID),
+		"bttt_updatetime":   time.Now(),
+	}
+
+	if v := cleanStringVal(payload["bttt_tanggal"]); v != "" {
+		if parsedTgl, errT := time.Parse("2006-01-02", v); errT == nil {
+			updates["bttt_tanggal"] = parsedTgl
+		}
+	}
+	if v := cleanStringVal(payload["bttt_nosuratjalan"]); v != "" {
+		updates["bttt_nosuratjalan"] = v
+	}
+	if v := cleanStringVal(payload["bttt_ket"]); v != "" {
+		updates["bttt_ket"] = v
+	}
+	if v := cleanStringVal(payload["bttt_tujuannama"]); v != "" {
+		updates["bttt_tujuannama"] = v
+	}
+	if v := cleanStringVal(payload["bttt_up_penerima"]); v != "" {
+		updates["bttt_up"] = v
+	} else if v := cleanStringVal(payload["bttt_up"]); v != "" {
+		updates["bttt_up"] = v
+	}
+	if v := cleanStringVal(payload["bttt_tujuanalamat"]); v != "" {
+		updates["bttt_tujuanalamat"] = v
+	}
+	if v := cleanStringVal(payload["bttt_tujuankota"]); v != "" {
+		updates["bttt_tujuankota"] = v
+	}
+	if v := cleanStringVal(payload["bttt_tujuankecamatan"]); v != "" {
+		updates["bttt_tujuankecamatan"] = v
+	}
+	if v := cleanStringVal(payload["bttt_tujuankelurahan"]); v != "" {
+		updates["bttt_tujuankelurahan"] = v
+	}
+	if v := cleanStringVal(payload["bttt_tujuankodepos"]); v != "" {
+		updates["bttt_tujuankodepos"] = v
+	}
+	if v := cleanStringVal(payload["bttt_tujuantelp"]); v != "" {
+		updates["bttt_tujuantelp"] = v
+	}
+	if v := cleanStringVal(payload["bttt_isikiriman"]); v != "" {
+		updates["bttt_namabarang"] = v
+		updates["bttt_isikiriman"] = v
+	}
+	if v := cleanStringVal(payload["bttt_jenisharga"]); v != "" {
+		updates["bttt_jenisharga"] = v
+	}
+	if payload["bttt_jmlkoli"] != nil {
+		if koli := toInt(payload["bttt_jmlkoli"]); koli > 0 {
+			updates["bttt_jmlunit"] = koli
+		}
+	}
+	if payload["bttt_berat"] != nil {
+		if brt := toFloat(payload["bttt_berat"]); brt > 0 {
+			updates["bttt_berat"] = brt
+		}
+	}
+	if payload["bttt_beratvol"] != nil {
+		updates["bttt_beratvol"] = toFloat(payload["bttt_beratvol"])
+	}
+	if payload["bttt_ukuran"] != nil {
+		updates["bttt_ukuran"] = fmt.Sprintf("%.3f", toFloat(payload["bttt_ukuran"]))
+	}
+
+	res := database.Table("public.mkt_t_econote").
+		Where("TRIM(bttt_id) = ?", bttID).
+		Updates(updates)
+
+	if res.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal update BTT: " + res.Error.Error()})
+		return
+	}
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": fmt.Sprintf("Data BTT %s tidak ditemukan di database", bttID)})
 		return
 	}
 
-	tx.Commit()
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
-		"message": "Data BTT berhasil diperbarui",
+		"btt_no":  bttID,
+		"message": fmt.Sprintf("Data & harga BTT %s berhasil diperbarui!", bttID),
 	})
 }
 

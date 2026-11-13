@@ -817,6 +817,8 @@ func main() {
 			authorized.POST("/operasional/surat-tugas/scan-btt-koli", handler.ScanBTTKoliToSuratTugasHandler)
 			authorized.DELETE("/operasional/surat-tugas/remove-btt", handler.RemoveBTTFromSuratTugasHandler)
 
+			authorized.POST("/btt/update", handler.UpdateBTT)
+
 		}
 	}
 
