@@ -291,6 +291,8 @@ func GetBTT(c *gin.Context) {
 		BtttTujuanAgenID   string  `json:"bttt_tujuanagenid" gorm:"column:tujuan_agen_id"`
 		BtttPaketYN        string  `json:"bttt_paketyn" gorm:"column:bttt_paketyn"`
 		BtttCharterJnsKend string  `json:"bttt_charterjnskend" gorm:"column:bttt_charterjnskend"`
+		StorageCode        string  `json:"storagecode" gorm:"column:storagecode"`
+		KetDOKembali       string  `json:"ket_do_kembali" gorm:"column:ket_do_kembali"`
 	}
 
 	// 🌟 QUERY DETAIL BTT DENGAN AUTO-JOIN MASTER CUSTOMER PENGIRIM
@@ -306,6 +308,8 @@ func GetBTT(c *gin.Context) {
 			COALESCE(NULLIF(e.bttt_asalalamat, ''), c.cust_alamat1, '') AS asal_alamat,
 			COALESCE(NULLIF(e.bttt_asalkota, ''), c.cust_kotaid, 'BEKASI KAB.') AS asal_kota,
 			COALESCE(NULLIF(e.bttt_asaltelp, ''), c.cust_telp1, '') AS asal_telp,
+			COALESCE(to_jsonb(e)->>'bttt_storagecode', to_jsonb(e)->>'storagecode', '') AS storagecode,
+			COALESCE(to_jsonb(e)->>'ket_do_kembali', '') AS ket_do_kembali,
 
 			-- IDENTITAS PENERIMA
 			COALESCE(e.bttt_tujuancustid, '') AS tujuan_custid,
