@@ -240,6 +240,7 @@ func GetBTT(c *gin.Context) {
 		BtttAsalKota   string `json:"bttt_asalkota" gorm:"column:asal_kota"`
 		AsalTelp       string `json:"asal_telp" gorm:"column:asal_telp"`
 		BtttAsalTelp   string `json:"bttt_asaltelp" gorm:"column:asal_telp"`
+		BtttJenisHarga string `json:"bttt_jenisharga" gorm:"column:bttt_jenisharga"`
 
 		// Penerima
 		TujuanCustID     string `json:"tujuan_custid" gorm:"column:tujuan_custid"`
@@ -351,12 +352,12 @@ func GetBTT(c *gin.Context) {
 				WHEN TRIM(e.bttt_jenisharga) = '0' THEN 'TUNAI'
 				WHEN TRIM(e.bttt_jenisharga) = '2' THEN 'KREDIT'
 				ELSE 'KREDIT'
-			END AS metode_pembayaran
+			END AS metode_pembayaran,
 			CASE 
 				WHEN COALESCE(TRIM(e.bttt_charterjnskend), '') <> '' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CARTER%' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CHARTER%' THEN 'CHARTER'
 				WHEN e.bttt_paketyn = 'Y' THEN 'REGULER'
 				ELSE 'CHARTER'
-			END AS jenis_layanan
+			END AS jenis_layanan,
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
 			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
 			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id
