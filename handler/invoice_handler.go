@@ -57,6 +57,23 @@ type InvoiceBTTDetailRow struct {
 	BiayaAsuransi     float64   `json:"biaya_asuransi" gorm:"column:biaya_asuransi"`
 	NoSKB             string    `json:"no_skb" gorm:"column:no_skb"`
 	Subtotal          float64   `json:"subtotal" gorm:"column:subtotal"`
+
+	BTTTAsalAlamat      string  `json:"bttt_asalalamat" gorm:"column:bttt_asalalamat"`
+	BTTTAsalKota        string  `json:"bttt_asalkota" gorm:"column:bttt_asalkota"`
+	BTTTAsalTelp        string  `json:"bttt_asaltelp" gorm:"column:bttt_asaltelp"`
+	BTTTAsalAgenNama    string  `json:"bttt_asalagennama" gorm:"column:bttt_asalagennama"`
+	BTTTTujuanAlamat    string  `json:"bttt_tujuanalamat" gorm:"column:bttt_tujuanalamat"`
+	BTTTTujuanKelurahan string  `json:"bttt_tujuankelurahan" gorm:"column:bttt_tujuankelurahan"`
+	BTTTTujuanKecamatan string  `json:"bttt_tujuankecamatan" gorm:"column:bttt_tujuankecamatan"`
+	BTTTTujuanTelp      string  `json:"bttt_tujuantelp" gorm:"column:bttt_tujuantelp"`
+	BTTTTujuanAgenNama  string  `json:"bttt_tujuanagennama" gorm:"column:bttt_tujuanagennama"`
+	BTTTUP              string  `json:"bttt_up" gorm:"column:bttt_up"`
+	BTTTPaketYN         string  `json:"bttt_paketyn" gorm:"column:bttt_paketyn"`
+	BTTTPembayaran      string  `json:"bttt_pembayaran" gorm:"column:bttt_pembayaran"`
+	BTTTJenisHarga      string  `json:"bttt_jenisharga" gorm:"column:bttt_jenisharga"`
+	BTTTKet             string  `json:"bttt_ket" gorm:"column:bttt_ket"`
+	BTTTBeratVol        float64 `json:"bttt_beratvol" gorm:"column:bttt_beratvol"`
+	BTTTUpdateID        string  `json:"bttt_updateid" gorm:"column:bttt_updateid"`
 }
 
 type CreateInvoiceReq struct {
@@ -264,8 +281,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 	var bttList []InvoiceBTTDetailRow
 	err = database.Table("public.art_t_invoiced d").
 		Select(`
-			COALESCE(e.bttt_id::varchar, d.artid_bttid::varchar) AS bttt_id,
-			COALESCE(e.bttt_servid::varchar, '1') AS bttt_servid,
+			COALESCE(e.bttt_id::varchar, d.artid_bttid::varchar) AS bttt_id,			
 			COALESCE(e.bttt_tanggal, NOW()) AS bttt_tanggal,
 			COALESCE(e.bttt_asalname::varchar, c.cust_name, '') AS bttt_asalname,
 			COALESCE(e.bttt_asalalamat::varchar, c.cust_alamat1, '') AS bttt_asalalamat,
@@ -281,13 +297,11 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			COALESCE(e.bttt_tujuantelp::varchar, '') AS bttt_tujuantelp,
 			COALESCE(ag2.agen_nama::varchar, e.bttt_tujuankota::varchar, 'DLI PUSAT') AS bttt_tujuanagennama,
 			COALESCE(e.bttt_up::varchar, '-') AS bttt_up,
-			CASE 
-				WHEN e.bttt_servid::varchar = '2' THEN 'UDARA'
-				WHEN e.bttt_servid::varchar = '3' THEN 'LAUT'
-				ELSE 'DARAT'
-			END AS bttt_via,
+			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
+			UPPER(TRIM(COALESCE(s.serv_nama, ''))) AS bttt_via,
 			COALESCE(e.bttt_paketyn::varchar, 'Y') AS bttt_paketyn,
 			COALESCE(e.bttt_jenisharga::varchar, '2') AS bttt_jenisharga,
+			TRIM(COALESCE(NULLIF(e.bttt_pembayaran::varchar, ''), e.bttt_jenisharga::varchar, '0')) AS bttt_pembayaran,
 			COALESCE(e.bttt_nosuratjalan::varchar, '') AS bttt_nosuratjalan,
 			COALESCE(e.bttt_ket::varchar, '') AS bttt_ket,
 			COALESCE(e.bttt_namabarang::varchar, 'OBAT') AS bttt_namabarang,
@@ -311,6 +325,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(LOWER(e.bttt_id::varchar)) = TRIM(LOWER(d.artid_bttid::varchar))").
 		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(LOWER(c.cust_id::varchar)) = TRIM(LOWER(e.bttt_asalcustid::varchar))").
 		Joins("LEFT JOIN public.glb_m_agen ag1 ON TRIM(ag1.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
+		Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
 		Joins("LEFT JOIN public.glb_m_agen ag2 ON TRIM(ag2.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Joins("LEFT JOIN public.mkt_t_asuransi asr ON TRIM(asr.bttt_id::varchar) = TRIM(d.artid_bttid::varchar)").
@@ -359,7 +374,7 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 	query := database.Table("public.mkt_t_econote e").
 		Select(`
 			TRIM(BOTH FROM e.bttt_id::varchar) AS bttt_id,
-			COALESCE(e.bttt_servid::varchar, '1') AS bttt_servid,
+			
 			COALESCE(e.bttt_tanggal, NOW()) AS bttt_tanggal,
 			COALESCE(e.bttt_asalname::varchar, '') AS bttt_asalname,
 			COALESCE(e.bttt_tujuannama::varchar, '') AS bttt_tujuannama,
@@ -372,6 +387,8 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 			COALESCE(NULLIF(TRIM(e.bttt_harga::varchar), '')::numeric, 0) AS bttt_harga,
 			COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) AS bttt_biayapenerus,
 			COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) AS biaya_packing,
+			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
+			UPPER(TRIM(COALESCE(s.serv_nama, ''))) AS bttt_via,
 			0::numeric AS biaya_asuransi,
 			''::varchar AS no_skb,
 			(
@@ -384,6 +401,7 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 			) AS subtotal
 		`).
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
+		Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
 		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
 
 		// 🔒 VALIDASI 1: FILTER ANTI-SUDAH BAYAR / LUNAS

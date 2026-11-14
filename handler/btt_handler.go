@@ -242,6 +242,8 @@ func GetBTT(c *gin.Context) {
 		BtttAsalTelp   string `json:"bttt_asaltelp" gorm:"column:asal_telp"`
 		BtttJenisHarga string `json:"bttt_jenisharga" gorm:"column:bttt_jenisharga"`
 		BtttPembayaran string `json:"bttt_pembayaran" gorm:"column:bttt_pembayaran"`
+		BtttServID     string `json:"bttt_servid" gorm:"column:bttt_servid"`
+		BtttVia        string `json:"bttt_via" gorm:"column:bttt_via"`
 
 		// Penerima
 		TujuanCustID     string `json:"tujuan_custid" gorm:"column:tujuan_custid"`
@@ -362,10 +364,13 @@ func GetBTT(c *gin.Context) {
 			END AS jenis_layanan,
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
 			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
+			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
+			UPPER(TRIM(COALESCE(s.serv_nama, ''))) AS bttt_via,
 			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id
 		`).
 		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)"). // 👈 JOIN OTOMATIS DATA PROFIL PENGIRIM
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
+		Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
 		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
 		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
 
