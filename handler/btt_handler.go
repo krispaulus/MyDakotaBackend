@@ -241,6 +241,7 @@ func GetBTT(c *gin.Context) {
 		AsalTelp       string `json:"asal_telp" gorm:"column:asal_telp"`
 		BtttAsalTelp   string `json:"bttt_asaltelp" gorm:"column:asal_telp"`
 		BtttJenisHarga string `json:"bttt_jenisharga" gorm:"column:bttt_jenisharga"`
+		BtttPembayaran string `json:"bttt_pembayaran" gorm:"column:bttt_pembayaran"`
 
 		// Penerima
 		TujuanCustID     string `json:"tujuan_custid" gorm:"column:tujuan_custid"`
@@ -347,11 +348,12 @@ func GetBTT(c *gin.Context) {
 				(SELECT COALESCE(SUM(p2.pck_biaya), 0) FROM public.pck_t_packing p2 WHERE TRIM(to_jsonb(p2)->>'pck_bttid') = TRIM(e.bttt_id::varchar)),
 				0
 			) AS biaya_packing,
-			TRIM(COALESCE(e.bttt_jenisharga, '0')) AS bttt_jenisharga,
+			TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text, '0')) AS bttt_pembayaran,
+			TRIM(COALESCE(e.bttt_jenisharga::text, '0')) AS bttt_jenisharga,
 			CASE 
-				WHEN TRIM(e.bttt_jenisharga) = '0' THEN 'TUNAI'
-				WHEN TRIM(e.bttt_jenisharga) = '2' THEN 'KREDIT'
-				ELSE 'KREDIT'
+				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '0' THEN 'TUNAI'
+				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '2' THEN 'KREDIT'
+				ELSE 'TAGIH TUJUAN'
 			END AS metode_pembayaran,
 			CASE 
 				WHEN COALESCE(TRIM(e.bttt_charterjnskend), '') <> '' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CARTER%' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CHARTER%' THEN 'CHARTER'
@@ -935,6 +937,7 @@ func CreateBTT(c *gin.Context) {
 		"bttt_tujuantelp":      cleanStringVal(rawPayload["bttt_tujuantelp"]),
 		"bttt_tujuanagenid":    cleanStringVal(tujuanAgenIDFinal),
 		"bttt_paketyn":         cleanStringVal(rawPayload["bttt_paketyn"]),
+		"bttt_pembayaran":      cleanStringVal(rawPayload["bttt_jenisharga"]),
 		"bttt_jenisharga":      cleanStringVal(rawPayload["bttt_jenisharga"]),
 		"bttt_berat":           rawPayload["bttt_berat"],
 		"bttt_beratvol":        rawPayload["bttt_beratvol"],
