@@ -365,7 +365,7 @@ func GetBTT(c *gin.Context) {
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
 			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
 			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
-			UPPER(TRIM(COALESCE(s.serv_nama, ''))) AS bttt_via,
+			UPPER(TRIM(COALESCE(s.serv_name, ''))) AS bttt_via,
 			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id
 		`).
 		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)"). // 👈 JOIN OTOMATIS DATA PROFIL PENGIRIM

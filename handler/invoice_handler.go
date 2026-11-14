@@ -298,7 +298,7 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			COALESCE(ag2.agen_nama::varchar, e.bttt_tujuankota::varchar, 'DLI PUSAT') AS bttt_tujuanagennama,
 			COALESCE(e.bttt_up::varchar, '-') AS bttt_up,
 			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
-			UPPER(TRIM(COALESCE(s.serv_nama, ''))) AS bttt_via,
+			UPPER(TRIM(COALESCE(s.serv_name, ''))) AS bttt_via,
 			COALESCE(e.bttt_paketyn::varchar, 'Y') AS bttt_paketyn,
 			COALESCE(e.bttt_jenisharga::varchar, '2') AS bttt_jenisharga,
 			TRIM(COALESCE(NULLIF(e.bttt_pembayaran::varchar, ''), e.bttt_jenisharga::varchar, '0')) AS bttt_pembayaran,
@@ -388,7 +388,7 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 			COALESCE(NULLIF(TRIM(e.bttt_biayapenerus::varchar), '')::numeric, 0) AS bttt_biayapenerus,
 			COALESCE(NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0) AS biaya_packing,
 			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
-			UPPER(TRIM(COALESCE(s.serv_nama, ''))) AS bttt_via,
+			UPPER(TRIM(COALESCE(s.serv_name, ''))) AS bttt_via,
 			0::numeric AS biaya_asuransi,
 			''::varchar AS no_skb,
 			(
