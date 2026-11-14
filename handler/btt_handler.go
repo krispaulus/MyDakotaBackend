@@ -340,16 +340,23 @@ func GetBTT(c *gin.Context) {
 			COALESCE(e.bttt_beratvol, 0) AS berat_volume,
 			COALESCE(NULLIF(regexp_replace(COALESCE(e.bttt_ukuran::text, '0'), '[^0-9.]', '', 'g'), '')::numeric, 0) AS kubikasi,
 			COALESCE(e.bttt_biayapenerus, 0) AS biaya_penerus,
-			COALESCE(NULLIF(e.bttt_biayapacking, 0), p.pck_biaya, 0) AS biaya_packing,
+			COALESCE(
+				NULLIF(e.bttt_biayapacking, 0),
+				p.pck_biaya,
+				(SELECT COALESCE(SUM(p2.pck_biaya), 0) FROM public.pck_t_packing p2 WHERE TRIM(to_jsonb(p2)->>'pck_bttid') = TRIM(e.bttt_id::varchar)),
+				0
+			) AS biaya_packing,
+			TRIM(COALESCE(e.bttt_jenisharga, '0')) AS bttt_jenisharga,
 			CASE 
-				WHEN e.bttt_jenisharga = '0' THEN 'TUNAI'
-				WHEN e.bttt_jenisharga = '2' THEN 'KREDIT'
-				ELSE 'TAGIH TUJUAN'
-			END AS metode_pembayaran,
+				WHEN TRIM(e.bttt_jenisharga) = '0' THEN 'TUNAI'
+				WHEN TRIM(e.bttt_jenisharga) = '2' THEN 'KREDIT'
+				ELSE 'KREDIT'
+			END AS metode_pembayaran
 			CASE 
+				WHEN COALESCE(TRIM(e.bttt_charterjnskend), '') <> '' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CARTER%' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CHARTER%' THEN 'CHARTER'
 				WHEN e.bttt_paketyn = 'Y' THEN 'REGULER'
-				ELSE 'EKONOMIS'
-			END AS jenis_layanan,
+				ELSE 'CHARTER'
+			END AS jenis_layanan
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
 			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
 			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id
