@@ -365,7 +365,6 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 	}
 
 	custID := strings.TrimSpace(c.Query("cust_id"))
-	custName := strings.TrimSpace(c.Query("cust_name"))
 	startDate := strings.TrimSpace(c.Query("start_date"))
 	endDate := strings.TrimSpace(c.Query("end_date"))
 	bypassTanggal := c.Query("bypass_tanggal") == "true" || c.Query("bypass_tanggal") == "1"
@@ -374,7 +373,6 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 	query := database.Table("public.mkt_t_econote e").
 		Select(`
 			TRIM(BOTH FROM e.bttt_id::varchar) AS bttt_id,
-			
 			COALESCE(e.bttt_tanggal, NOW()) AS bttt_tanggal,
 			COALESCE(e.bttt_asalname::varchar, '') AS bttt_asalname,
 			COALESCE(e.bttt_tujuannama::varchar, '') AS bttt_tujuannama,
@@ -404,17 +402,16 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 		Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
 		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
 
-		// 🔒 VALIDASI 1: FILTER ANTI-SUDAH BAYAR / LUNAS
+	// 🔒 VALIDASI 1: FILTER ANTI-SUDAH BAYAR / LUNAS
 	query = query.Where(`
-        NOT EXISTS (
-            SELECT 1 FROM public.art_t_receiptdddd rc 
-            WHERE TRIM(BOTH FROM rc.trectddd_nobtt::varchar) = TRIM(BOTH FROM e.bttt_id::varchar)
-              AND COALESCE(rc.trectddd_bayar, 0) > 0
-        )
-    `)
+		NOT EXISTS (
+			SELECT 1 FROM public.art_t_receiptdddd rc 
+			WHERE TRIM(BOTH FROM rc.trectddd_nobtt::varchar) = TRIM(BOTH FROM e.bttt_id::varchar)
+			  AND COALESCE(rc.trectddd_bayar, 0) > 0
+		)
+	`)
 
 	// 🔒 VALIDASI 2: FILTER ANTI-DOUBLE INVOICE
-	// Resi yang sudah masuk ke Invoice yang masih aktif (artih_delete <> 'Y') TIDAK BOLEH TAMPIL
 	if displayType == "PI" {
 		query = query.Joins("INNER JOIN public.art_t_proformad pid ON TRIM(pid.pid_bttid::varchar) = TRIM(e.bttt_id::varchar)")
 	} else {
@@ -428,39 +425,18 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 		`)
 	}
 
-	// Filter pencarian Customer
-	var searchKeywords []string
-	reg := regexp.MustCompile(`(?i)\b(PT|CV|TBK|UD|TOKO|CORP|INC|LTD)\b|[^a-zA-Z0-9\s]`)
-	cleanName := reg.ReplaceAllString(custName, " ")
-
-	for _, w := range strings.Fields(cleanName) {
-		if len(w) >= 3 {
-			searchKeywords = append(searchKeywords, w)
-		}
-	}
-
-	cleanCustID := strings.TrimLeft(custID, "0")
-
-	if len(searchKeywords) > 0 {
-		var nameConditions []string
-		var args []interface{}
-
-		for _, kw := range searchKeywords {
-			nameConditions = append(nameConditions, "e.bttt_asalname ILIKE ?")
-			args = append(args, "%"+kw+"%")
-		}
-
-		nameClause := strings.Join(nameConditions, " OR ")
-		finalClause := fmt.Sprintf(`(
-			(%s)
-			OR TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?))
-			OR TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?))
-		)`, nameClause)
-
-		args = append(args, custID, cleanCustID)
-		query = query.Where(finalClause, args...)
-	} else if custID != "" {
-		query = query.Where("(TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?)) OR TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?)))", custID, cleanCustID)
+	// 🔒 VALIDASI 3: EXACT MATCH CUST ID (TANPA LIKE NAMA)
+	if custID != "" {
+		cleanCustID := strings.TrimLeft(custID, "0")
+		query = query.Where(`(
+			TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, ''))) = TRIM(LOWER(?))
+			OR (
+				? <> ''
+				AND TRIM(LEADING '0' FROM TRIM(LOWER(COALESCE(e.bttt_asalcustid::varchar, '')))) = TRIM(LOWER(?))
+			)
+		)`, custID, cleanCustID, cleanCustID)
+	} else {
+		query = query.Where("1 = 0")
 	}
 
 	if !bypassTanggal && startDate != "" && endDate != "" {
