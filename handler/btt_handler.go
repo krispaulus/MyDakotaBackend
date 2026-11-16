@@ -393,6 +393,30 @@ func GetBTT(c *gin.Context) {
 				WHEN e.bttt_paketyn = 'Y' THEN 'REGULER'
 				ELSE 'CHARTER'
 			END AS jenis_layanan,
+
+			CASE 
+				WHEN UPPER(TRIM(COALESCE(c.cust_name, e.bttt_asalname, ''))) LIKE '%MERCK%' 
+				     OR TRIM(COALESCE(e.bttt_asalcustid, '')) = '0010000073' 
+				THEN '2'
+				ELSE TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text, '0'))
+			END AS bttt_pembayaran,
+
+			CASE 
+				WHEN UPPER(TRIM(COALESCE(c.cust_name, e.bttt_asalname, ''))) LIKE '%MERCK%' 
+				     OR TRIM(COALESCE(e.bttt_asalcustid, '')) = '0010000073' 
+				THEN '2'
+				ELSE TRIM(COALESCE(e.bttt_jenisharga::text, '0'))
+			END AS bttt_jenisharga,
+
+			CASE 
+				WHEN UPPER(TRIM(COALESCE(c.cust_name, e.bttt_asalname, ''))) LIKE '%MERCK%' 
+				     OR TRIM(COALESCE(e.bttt_asalcustid, '')) = '0010000073' 
+				THEN 'KREDIT'
+				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '0' THEN 'TUNAI'
+				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '2' THEN 'KREDIT'
+				ELSE 'TAGIH TUJUAN'
+			END AS metode_pembayaran,
+
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
 			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
 			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
