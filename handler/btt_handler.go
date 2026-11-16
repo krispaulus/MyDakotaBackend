@@ -171,6 +171,22 @@ func UpdateBTT(c *gin.Context) {
 		updates["bttt_ukuran"] = fmt.Sprintf("%.3f", toFloat(payload["bttt_ukuran"]))
 	}
 
+	if v := cleanStringVal(payload["bttt_asalcustid"]); v != "" {
+		updates["bttt_asalcustid"] = v
+	}
+	if v := cleanStringVal(payload["bttt_asalname"]); v != "" {
+		updates["bttt_asalname"] = v
+	}
+	if v := cleanStringVal(payload["bttt_asalalamat"]); v != "" {
+		updates["bttt_asalalamat"] = v
+	}
+	if v := cleanStringVal(payload["bttt_asalkota"]); v != "" {
+		updates["bttt_asalkota"] = v
+	}
+	if v := cleanStringVal(payload["bttt_asaltelp"]); v != "" {
+		updates["bttt_asaltelp"] = v
+	}
+
 	res := database.Table("public.mkt_t_econote").
 		Where("TRIM(bttt_id) = ?", bttID).
 		Updates(updates)
@@ -230,6 +246,9 @@ func GetBTT(c *gin.Context) {
 		BtttTanggal string    `json:"bttt_tanggal" gorm:"column:bttt_tanggal_str"`
 
 		// Pengirim (Dua format tag agar tabel & form modal sama-sama terbaca)
+		CustomerNama  string `json:"customer_nama" gorm:"column:customer_nama"`
+		PengirimCetak string `json:"pengirim_cetak" gorm:"column:pengirim_cetak"`
+
 		AsalCustID     string `json:"asal_custid" gorm:"column:asal_custid"`
 		BtttAsalCustID string `json:"bttt_asalcustid" gorm:"column:asal_custid"`
 		AsalName       string `json:"asal_name" gorm:"column:asal_name"`
@@ -293,6 +312,7 @@ func GetBTT(c *gin.Context) {
 		BtttAsalAgenID     string  `json:"bttt_asalagenid" gorm:"column:asal_agen_id"`
 		TujuanAgenID       string  `json:"tujuan_agen_id" gorm:"column:tujuan_agen_id"`
 		BtttTujuanAgenID   string  `json:"bttt_tujuanagenid" gorm:"column:tujuan_agen_id"`
+		TujuanAgenNama     string  `json:"tujuan_agen_nama" gorm:"column:tujuan_agen_nama"`
 		BtttPaketYN        string  `json:"bttt_paketyn" gorm:"column:bttt_paketyn"`
 		BtttCharterJnsKend string  `json:"bttt_charterjnskend" gorm:"column:bttt_charterjnskend"`
 		StorageCode        string  `json:"storagecode" gorm:"column:storagecode"`
@@ -306,14 +326,24 @@ func GetBTT(c *gin.Context) {
 			e.bttt_tanggal AS tanggal,
 			TO_CHAR(e.bttt_tanggal, 'YYYY-MM-DD') AS bttt_tanggal_str,
 			
-			-- 🌟 IDENTITAS PENGIRIM (Fallback otomatis ambil dari master mkt_m_customer)
-			COALESCE(NULLIF(e.bttt_asalcustid, ''), c.cust_id, '') AS asal_custid,
-			COALESCE(NULLIF(e.bttt_asalname, ''), c.cust_name, 'UMUM') AS asal_name,
+			-- 🌟 IDENTITAS CUSTOMER & PENGIRIM (Sama dengan logika aplikasi lawas)
+			COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(c.cust_id), '') AS asal_custid,
+			COALESCE(NULLIF(TRIM(c.cust_name), ''), NULLIF(TRIM(e.bttt_asalname), ''), 'UMUM') AS customer_nama,
+			COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), TRIM(c.cust_name), 'UMUM') AS asal_name,
+			CASE 
+				WHEN TRIM(COALESCE(c.cust_name, '')) <> '' 
+				     AND UPPER(TRIM(COALESCE(e.bttt_asalname, ''))) <> UPPER(TRIM(c.cust_name))
+				     AND TRIM(COALESCE(e.bttt_asalname, '')) <> ''
+				THEN TRIM(e.bttt_asalname) || ' (' || TRIM(c.cust_name) || ')'
+				ELSE COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), TRIM(c.cust_name), 'UMUM')
+			END AS pengirim_cetak,
 			COALESCE(NULLIF(e.bttt_asalalamat, ''), c.cust_alamat1, '') AS asal_alamat,
 			COALESCE(NULLIF(e.bttt_asalkota, ''), c.cust_kotaid, 'BEKASI KAB.') AS asal_kota,
 			COALESCE(NULLIF(e.bttt_asaltelp, ''), c.cust_telp1, '') AS asal_telp,
 			COALESCE(to_jsonb(e)->>'bttt_storagecode', to_jsonb(e)->>'storagecode', '') AS storagecode,
 			COALESCE(to_jsonb(e)->>'ket_do_kembali', '') AS ket_do_kembali,
+			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id,
+			COALESCE(a2.agen_nama, '') AS tujuan_agen_nama,
 
 			-- IDENTITAS PENERIMA
 			COALESCE(e.bttt_tujuancustid, '') AS tujuan_custid,
@@ -368,7 +398,9 @@ func GetBTT(c *gin.Context) {
 			UPPER(TRIM(COALESCE(s.serv_name, ''))) AS bttt_via,
 			COALESCE(e.bttt_tujuanagenid, '') AS tujuan_agen_id
 		`).
-		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)"). // 👈 JOIN OTOMATIS DATA PROFIL PENGIRIM
+		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)").
+		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
+		Joins("LEFT JOIN public.glb_m_agen a2 ON TRIM(a2.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
 		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
