@@ -153,6 +153,7 @@ func UpdateBTT(c *gin.Context) {
 	}
 	if v := cleanStringVal(payload["bttt_jenisharga"]); v != "" {
 		updates["bttt_jenisharga"] = v
+		updates["bttt_pembayaran"] = v
 	}
 	if payload["bttt_jmlkoli"] != nil {
 		if koli := toInt(payload["bttt_jmlkoli"]); koli > 0 {
@@ -403,7 +404,6 @@ func GetBTT(c *gin.Context) {
 		Joins("LEFT JOIN public.glb_m_agen a2 ON TRIM(a2.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
 		Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
-		Joins("LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_asalagenid::varchar)").
 		Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
 
 	// 1. Filter Tanggal
