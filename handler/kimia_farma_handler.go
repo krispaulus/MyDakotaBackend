@@ -82,8 +82,27 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	now := time.Now().In(loc)
 
-	// 🌟 Tampung nomor resi yang berhasil digenerate untuk dicetak oleh frontend
+	// 🌟 Simpan state nomor urut BTT di LUAR loop agar naik +1 setiap baris
 	var createdBttList []string
+	lastSeqByPrefix := make(map[string]int)
+	processedDNInFile := make(map[string]bool)
+	var skippedDuplicateDNs []string
+
+	nextBTTNumber := func(tgl time.Time) string {
+		baseNo := GenerateNomorResiBTTStandard(tx, fmt.Sprintf("%v", ptID), "001", tgl)
+		if len(baseNo) >= 16 {
+			prefix := baseNo[:10]
+			if lastSeq, exists := lastSeqByPrefix[prefix]; exists {
+				lastSeqByPrefix[prefix] = lastSeq + 1
+				return fmt.Sprintf("%s%06d", prefix, lastSeq+1)
+			}
+			if n, err := strconv.Atoi(baseNo[10:]); err == nil {
+				lastSeqByPrefix[prefix] = n
+				return fmt.Sprintf("%s%06d", prefix, n)
+			}
+		}
+		return baseNo
+	}
 
 	for {
 		rec, err := reader.Read()
@@ -117,6 +136,27 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			continue
 		}
 
+		cleanNoDN := strings.ToUpper(strings.TrimSpace(noDN))
+
+		// 🔒 PENJAGAAN 1: Cek duplikat NoDN di dalam file CSV yang sama
+		if processedDNInFile[cleanNoDN] {
+			skippedDuplicateDNs = append(skippedDuplicateDNs, cleanNoDN+" (double di file CSV)")
+			continue
+		}
+
+		// 🔒 PENJAGAAN 2: Cek apakah NoDN sudah pernah di-upload ke database
+		var existingCount int64
+		tx.Table("public.mkt_t_econote").
+			Where("TRIM(UPPER(COALESCE(bttt_nosuratjalan, ''))) = ? AND TRIM(COALESCE(bttt_asalcustid, '')) = ? AND COALESCE(bttt_aktifyn, 'Y') = 'Y'", cleanNoDN, custID).
+			Count(&existingCount)
+
+		if existingCount > 0 {
+			skippedDuplicateDNs = append(skippedDuplicateDNs, cleanNoDN+" (sudah ada di DB)")
+			continue
+		}
+
+		processedDNInFile[cleanNoDN] = true
+
 		pengirimName := getVal("Pengirim", "Nama_Pengirim")
 		if pengirimName == "" {
 			pengirimName = custName
@@ -145,8 +185,8 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			volClean = "0"
 		}
 
-		// 🌟 Generate Nomor Resi Resmi Dakota (contoh: 001112026C000145)
-		bttNoResmi := GenerateNomorResiBTTStandard(database, fmt.Sprintf("%v", ptID), "001", tglTrans)
+		// 🌟 Generate Nomor Resi Resmi Dakota (Unik per baris)
+		bttNoResmi := nextBTTNumber(tglTrans)
 
 		econoteRow := map[string]interface{}{
 			"bttt_id":              bttNoResmi,
@@ -182,8 +222,8 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			"bttt_updateid":        "CSV_KIMIA_FARMA",
 		}
 
-		// 1. Simpan BTT Resmi ke mkt_t_econote (Wajib pakai tx)
-		tx.Table("public.mkt_t_econote").Where("bttt_nosuratjalan = ? OR bttt_id = ?", noDN, bttNoResmi).Delete(&map[string]interface{}{})
+		// 1. Simpan BTT Resmi ke mkt_t_econote (Wajib pakai tx & hanya hapus jika bttt_id sama)
+		tx.Table("public.mkt_t_econote").Where("bttt_id = ?", bttNoResmi).Delete(&map[string]interface{}{})
 
 		if errSave := tx.Table("public.mkt_t_econote").Create(&econoteRow).Error; errSave != nil {
 			tx.Rollback()
@@ -195,19 +235,19 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			return
 		}
 
-		// 🌟 2. Sinkronisasi ke opr_t_transportlspb (Tabel Relasi Standar)
+		// 🌟 2. Sinkronisasi ke opr_t_transportlspb
 		lspbRow := map[string]interface{}{
 			"dn_od_sj":         noDN,
 			"customerid":       custID,
 			"tanggal_handover": tglTrans.Format("2006-01-02"),
 			"nomorbtt":         bttNoResmi,
 		}
-		database.Table("public.opr_t_transportlspb").Where("dn_od_sj = ?", noDN).Delete(&map[string]interface{}{})
-		if errLSPB := database.Table("public.opr_t_transportlspb").Create(&lspbRow).Error; errLSPB != nil {
+		tx.Table("public.opr_t_transportlspb").Where("nomorbtt = ?", bttNoResmi).Delete(&map[string]interface{}{})
+		if errLSPB := tx.Table("public.opr_t_transportlspb").Create(&lspbRow).Error; errLSPB != nil {
 			log.Printf("⚠️ [Warning LSPB Insert]: %v", errLSPB)
 		}
 
-		// 🌟 3. Sinkronisasi ke opr_t_transportlspbwithcarinoutanddatetime (TABEL SUMBER VIEW vw_transport_lspb)
+		// 🌟 3. Sinkronisasi ke opr_t_transportlspbwithcarinoutanddatetime
 		lspbWithCarRow := map[string]interface{}{
 			"nodo":       noDN,
 			"noskb":      bttNoResmi,
@@ -215,13 +255,22 @@ func UploadKimiaFarmaCSVHandler(c *gin.Context) {
 			"created_at": tglTrans,
 			"updated_at": now,
 		}
-		database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Where("nodo = ?", noDN).Delete(&map[string]interface{}{})
-		if errCar := database.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Create(&lspbWithCarRow).Error; errCar != nil {
+		tx.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Where("noskb = ?", bttNoResmi).Delete(&map[string]interface{}{})
+		if errCar := tx.Table("public.opr_t_transportlspbwithcarinoutanddatetime").Create(&lspbWithCarRow).Error; errCar != nil {
 			log.Printf("⚠️ [Warning LSPB Car Insert]: %v", errCar)
 		}
 
 		createdBttList = append(createdBttList, bttNoResmi)
 		totalSuccess++
+	}
+
+	if totalSuccess == 0 && len(skippedDuplicateDNs) > 0 {
+		tx.Rollback()
+		c.JSON(http.StatusConflict, gin.H{
+			"status":  "error",
+			"message": fmt.Sprintf("Upload Ditolak! Semua No. DN dalam file ini sudah pernah di-upload sebelumnya (%s).", strings.Join(skippedDuplicateDNs, ", ")),
+		})
+		return
 	}
 
 	if errCommit := tx.Commit().Error; errCommit != nil {
