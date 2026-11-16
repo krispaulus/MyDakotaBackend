@@ -541,30 +541,69 @@ func SaveInvoiceHandler(c *gin.Context) {
 		return
 	}
 
-	// 1. Generate Nomor Invoice
+	// 1. Generate Nomor Invoice (Cek nomor urut tertinggi dari format 11-digit & format /FP)
 	mmyy := tgl.Format("0106")
-	var maxInv string
+	mmYYYY := tgl.Format("01/2006")
+	var maxUrut int
+
 	tx.Raw(`
-        SELECT artih_id FROM public.art_t_invoiceh
-        WHERE LEFT(artih_id, 3) = ? AND SUBSTRING(artih_id, 4, 4) = ?
-        ORDER BY artih_id DESC LIMIT 1 FOR UPDATE
-    `, agenIDPad, mmyy).Scan(&maxInv)
+    SELECT COALESCE(MAX(urut_num), 0) FROM (
+        SELECT RIGHT(TRIM(artih_id), 4)::int AS urut_num
+        FROM public.art_t_invoiceh
+        WHERE LEFT(TRIM(artih_id), 3) = ?
+          AND SUBSTRING(TRIM(artih_id), 4, 4) = ?
+          AND TRIM(artih_id) ~ '^[0-9]{11}$'
+        UNION ALL
+        SELECT SUBSTRING(TRIM(artih_id), 4, 4)::int AS urut_num
+        FROM public.art_t_invoiceh
+        WHERE LEFT(TRIM(artih_id), 3) = ?
+          AND TRIM(artih_id) LIKE ?
+          AND SUBSTRING(TRIM(artih_id), 4, 4) ~ '^[0-9]{4}$'
+    ) sub
+	`, agenIDPad, mmyy, agenIDPad, agenIDPad+"%/"+mmYYYY+"/FP").Scan(&maxUrut)
 
-	urut := 1
-	if len(maxInv) >= 11 {
-		var lastUrut int
-		fmt.Sscanf(maxInv[7:], "%d", &lastUrut)
-		urut = lastUrut + 1
-	}
+	urut := maxUrut + 1
 	newInvoiceID := fmt.Sprintf("%s%s%04d", agenIDPad, mmyy, urut)
-
-	// Format Nomor Kwitansi Resmi: 0010/DLI/001/09/26
 	noKW := fmt.Sprintf("%04d/DLI/%s/%s/%s", urut, agenIDPad, tgl.Format("01"), tgl.Format("06"))
+
+	for {
+		var existCount int64
+		newInvoiceIDFP := fmt.Sprintf("%s%04d/%s/FP", agenIDPad, urut, mmYYYY)
+		tx.Table("public.art_t_invoiceh").
+			Where("TRIM(artih_id) IN (?, ?) OR TRIM(artih_nokw) = ?", newInvoiceID, newInvoiceIDFP, noKW).
+			Count(&existCount)
+		if existCount == 0 {
+			break
+		}
+		urut++
+		newInvoiceID = fmt.Sprintf("%s%s%04d", agenIDPad, mmyy, urut)
+		noKW = fmt.Sprintf("%04d/DLI/%s/%s/%s", urut, agenIDPad, tgl.Format("01"), tgl.Format("06"))
+	}
 
 	// 2. Hitung Total Tagihan dari BTT Terpilih
 	var jbttTotal float64 = 0
 	var bpckTotal float64 = 0
 	var basrTotal float64 = 0
+
+	// 3. Validasi kepemilikan BTT sesuai CustID invoice
+	var mismatchBTTs []string
+	cleanTargetCust := strings.TrimLeft(strings.TrimSpace(req.ARTIHCustID), "0")
+	tx.Raw(`
+		SELECT TRIM(bttt_id)
+		FROM public.mkt_t_econote
+		WHERE TRIM(bttt_id) IN ?
+		  AND TRIM(LEADING '0' FROM TRIM(COALESCE(bttt_asalcustid, ''))) <> ?
+		LIMIT 5
+	`, req.BTTList, cleanTargetCust).Scan(&mismatchBTTs)
+
+	if len(mismatchBTTs) > 0 {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": fmt.Sprintf("Gagal Simpan! Resi berikut bukan milik customer %s: %s", req.ARTIHCustID, strings.Join(mismatchBTTs, ", ")),
+		})
+		return
+	}
 
 	for _, bttID := range req.BTTList {
 		var row struct {
@@ -632,7 +671,7 @@ func SaveInvoiceHandler(c *gin.Context) {
 		}
 	} else {
 		var topHari int
-		database.Table("public.mkt_m_customer c").
+		tx.Table("public.mkt_m_customer c").
 			Select(`COALESCE(NULLIF(TRIM(COALESCE(to_jsonb(c)->>'cust_top', to_jsonb(c)->>'cust_jangkawaktu', to_jsonb(c)->>'cust_hari', to_jsonb(c)->>'cust_kredit', '0')), '')::int, 0)`).
 			Where("TRIM(c.cust_id) = TRIM(?)", req.ARTIHCustID).
 			Scan(&topHari)
@@ -668,7 +707,10 @@ func SaveInvoiceHandler(c *gin.Context) {
 		return
 	}
 
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal commit transaksi invoice: " + err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":     "success",
