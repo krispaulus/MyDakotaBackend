@@ -877,6 +877,7 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 			BTTID     string `gorm:"column:btt_id"`
 			InvoiceID string `gorm:"column:invoice_id"`
 		}
+
 		tx.Raw(`
 			SELECT d.artid_bttid AS btt_id, h.artih_id AS invoice_id
 			FROM public.art_t_invoiced d
@@ -903,18 +904,43 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 		// 🔒 Validasi: Pastikan BTT belum lunas/terbayar
 		var paidList []string
 		tx.Raw(`
-            SELECT DISTINCT rc.trectddd_nobtt 
-            FROM public.art_t_receiptdddd rc
-            WHERE TRIM(rc.trectddd_nobtt) IN ? 
-              AND COALESCE(rc.trectddd_bayar, 0) > 0
-            LIMIT 5
-        `, req.AddBTTList).Scan(&paidList)
+			SELECT DISTINCT rc.trectddd_nobtt 
+			FROM public.art_t_receiptdddd rc
+			WHERE TRIM(rc.trectddd_nobtt) IN ? 
+			  AND COALESCE(rc.trectddd_bayar, 0) > 0
+			LIMIT 5
+		`, req.AddBTTList).Scan(&paidList)
 
 		if len(paidList) > 0 {
 			tx.Rollback()
 			c.JSON(http.StatusBadRequest, gin.H{
 				"status":  "error",
 				"message": fmt.Sprintf("Gagal Update! Resi berikut sudah lunas/terbayar: %s", strings.Join(paidList, ", ")),
+			})
+			return
+		}
+
+		var invCustID string
+		tx.Table("public.art_t_invoiceh").
+			Select("COALESCE(artih_custid, '')").
+			Where("TRIM(artih_id) = TRIM(?)", invoiceID).
+			Scan(&invCustID)
+
+		cleanInvCust := strings.TrimLeft(strings.TrimSpace(invCustID), "0")
+		var mismatchAddBTTs []string
+		tx.Raw(`
+			SELECT TRIM(bttt_id)
+			FROM public.mkt_t_econote
+			WHERE TRIM(bttt_id) IN ?
+			  AND TRIM(LEADING '0' FROM TRIM(COALESCE(bttt_asalcustid, ''))) <> ?
+			LIMIT 5
+		`, req.AddBTTList, cleanInvCust).Scan(&mismatchAddBTTs)
+
+		if len(mismatchAddBTTs) > 0 {
+			tx.Rollback()
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": fmt.Sprintf("Gagal Update! Resi berikut bukan milik customer %s: %s", invCustID, strings.Join(mismatchAddBTTs, ", ")),
 			})
 			return
 		}
