@@ -957,7 +957,7 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 		Select(`
 			COALESCE(SUM(COALESCE(e.bttt_harga, 0)), 0) AS biaya_kirim,
 			COALESCE(SUM(COALESCE(e.bttt_biayapenerus, 0)), 0) AS penerus,
-			COALESCE(SUM(COALESCE(p.pck_biaya, 0)), 0) AS packing
+			COALESCE(SUM(COALESCE(NULLIF(TRIM(e.bttt_biayapacking::varchar), '')::numeric, NULLIF(TRIM(p.pck_biaya::varchar), '')::numeric, 0)), 0) AS packing
 		`).
 		Joins("LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = TRIM(d.artid_bttid)").
 		Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(e.bttt_packingid::varchar)").
