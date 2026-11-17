@@ -85,7 +85,7 @@ type CreateInvoiceReq struct {
 	ARTIHJenis      string   `json:"artih_jenis" binding:"required"` // K, B, T
 	ARTIHFktPajak   string   `json:"artih_fktpajak"`
 	ARTIHKeterangan string   `json:"artih_keterangan"`
-	BTTList         []string `json:"btt_list" binding:"required"`
+	BTTList         []string `json:"btt_list"`
 }
 
 // Helper konversi nama/kode cabang ke 3-digit kode agen resmi Dakota
@@ -472,11 +472,6 @@ func SaveInvoiceHandler(c *gin.Context) {
 		return
 	}
 
-	if len(req.BTTList) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Minimal pilih 1 resi BTT untuk difakturkan"})
-		return
-	}
-
 	tgl, err := time.Parse("2006-01-02", strings.TrimSpace(req.ARTIHTanggal))
 	if err != nil {
 		tgl = time.Now()
@@ -491,54 +486,55 @@ func SaveInvoiceHandler(c *gin.Context) {
 			tx.Rollback()
 		}
 	}()
-
-	// 🔒 VALIDASI PENGAMAN MUTLAK (ANTI-DOUBLE INVOICE & ANTI-DOUBLE PAYMENT)
-	type ConflictBTT struct {
-		BTTID     string `gorm:"column:btt_id"`
-		InvoiceID string `gorm:"column:invoice_id"`
-	}
-	var conflicts []ConflictBTT
-
-	// 1. Cek apakah ada BTT yang sudah masuk ke invoice lain yang aktif
-	tx.Raw(`
-		SELECT d.artid_bttid AS btt_id, h.artih_id AS invoice_id
-		FROM public.art_t_invoiced d
-		INNER JOIN public.art_t_invoiceh h ON TRIM(h.artih_id) = TRIM(d.artid_artihid)
-		WHERE TRIM(d.artid_bttid) IN ?
-		  AND COALESCE(h.artih_delete, 'N') <> 'Y'
-		LIMIT 5
-	`, req.BTTList).Scan(&conflicts)
-
-	if len(conflicts) > 0 {
-		tx.Rollback()
-		var msg []string
-		for _, c := range conflicts {
-			msg = append(msg, fmt.Sprintf("BTT %s (sudah di Invoice %s)", c.BTTID, c.InvoiceID))
+	if len(req.BTTList) > 0 {
+		// 🔒 VALIDASI PENGAMAN MUTLAK (ANTI-DOUBLE INVOICE & ANTI-DOUBLE PAYMENT)
+		type ConflictBTT struct {
+			BTTID     string `gorm:"column:btt_id"`
+			InvoiceID string `gorm:"column:invoice_id"`
 		}
-		c.JSON(http.StatusBadRequest, gin.H{
-			"status":  "error",
-			"message": fmt.Sprintf("Gagal Simpan! Resi berikut sudah terdaftar di invoice lain: %s", strings.Join(msg, ", ")),
-		})
-		return
-	}
+		var conflicts []ConflictBTT
 
-	// 2. Cek apakah ada BTT yang sudah lunas/terbayar di kasir / pelunasan piutang
-	var paidBTTs []string
-	tx.Raw(`
-        SELECT DISTINCT rc.trectddd_nobtt 
-        FROM public.art_t_receiptdddd rc
-        WHERE TRIM(rc.trectddd_nobtt) IN ? 
-          AND COALESCE(rc.trectddd_bayar, 0) > 0
-        LIMIT 5
-    `, req.BTTList).Scan(&paidBTTs)
+		// 1. Cek apakah ada BTT yang sudah masuk ke invoice lain yang aktif
+		tx.Raw(`
+			SELECT d.artid_bttid AS btt_id, h.artih_id AS invoice_id
+			FROM public.art_t_invoiced d
+			INNER JOIN public.art_t_invoiceh h ON TRIM(h.artih_id) = TRIM(d.artid_artihid)
+			WHERE TRIM(d.artid_bttid) IN ?
+			  AND COALESCE(h.artih_delete, 'N') <> 'Y'
+			LIMIT 5
+		`, req.BTTList).Scan(&conflicts)
 
-	if len(paidBTTs) > 0 {
-		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"status":  "error",
-			"message": fmt.Sprintf("Gagal Simpan! Resi berikut sudah memiliki histori pembayaran/lunas: %s", strings.Join(paidBTTs, ", ")),
-		})
-		return
+		if len(conflicts) > 0 {
+			tx.Rollback()
+			var msg []string
+			for _, c := range conflicts {
+				msg = append(msg, fmt.Sprintf("BTT %s (sudah di Invoice %s)", c.BTTID, c.InvoiceID))
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": fmt.Sprintf("Gagal Simpan! Resi berikut sudah terdaftar di invoice lain: %s", strings.Join(msg, ", ")),
+			})
+			return
+		}
+
+		// 2. Cek apakah ada BTT yang sudah lunas/terbayar di kasir / pelunasan piutang
+		var paidBTTs []string
+		tx.Raw(`
+			SELECT DISTINCT rc.trectddd_nobtt 
+			FROM public.art_t_receiptdddd rc
+			WHERE TRIM(rc.trectddd_nobtt) IN ? 
+			  AND COALESCE(rc.trectddd_bayar, 0) > 0
+			LIMIT 5
+		`, req.BTTList).Scan(&paidBTTs)
+
+		if len(paidBTTs) > 0 {
+			tx.Rollback()
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": fmt.Sprintf("Gagal Simpan! Resi berikut sudah memiliki histori pembayaran/lunas: %s", strings.Join(paidBTTs, ", ")),
+			})
+			return
+		}
 	}
 
 	// 1. Generate Nomor Invoice (Cek nomor urut tertinggi dari format 11-digit & format /FP)
@@ -603,6 +599,28 @@ func SaveInvoiceHandler(c *gin.Context) {
 			"message": fmt.Sprintf("Gagal Simpan! Resi berikut bukan milik customer %s: %s", req.ARTIHCustID, strings.Join(mismatchBTTs, ", ")),
 		})
 		return
+	}
+
+	// 3. Validasi kepemilikan BTT sesuai CustID invoice
+	if len(req.BTTList) > 0 {
+		var mismatchBTTs []string
+		cleanTargetCust := strings.TrimLeft(strings.TrimSpace(req.ARTIHCustID), "0")
+		tx.Raw(`
+			SELECT TRIM(bttt_id)
+			FROM public.mkt_t_econote
+			WHERE TRIM(bttt_id) IN ?
+			  AND TRIM(LEADING '0' FROM TRIM(COALESCE(bttt_asalcustid, ''))) <> ?
+			LIMIT 5
+		`, req.BTTList, cleanTargetCust).Scan(&mismatchBTTs)
+
+		if len(mismatchBTTs) > 0 {
+			tx.Rollback()
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": fmt.Sprintf("Gagal Simpan! Resi berikut bukan milik customer %s: %s", req.ARTIHCustID, strings.Join(mismatchBTTs, ", ")),
+			})
+			return
+		}
 	}
 
 	for _, bttID := range req.BTTList {
@@ -1238,6 +1256,19 @@ func PostingInvoiceHandler(c *gin.Context) {
 	}
 
 	realInvoiceID := strings.TrimSpace(invHeader.ArtihID)
+
+	var bttCount int64
+	database.Table("public.art_t_invoiced").
+		Where("TRIM(LOWER(artid_artihid)) = TRIM(LOWER(?))", realInvoiceID).
+		Count(&bttCount)
+
+	if bttCount == 0 || invHeader.ArtihTotal <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": "Gagal Posting! Invoice masih kosong (0 resi BTT). Silakan pilih minimal 1 BTT dan simpan terlebih dahulu.",
+		})
+		return
+	}
 
 	// Normalisasi agenID
 	agenID := strings.TrimSpace(req.AgenID)
