@@ -51,11 +51,22 @@ func getItemDB(c *gin.Context) *gorm.DB {
 func GetDaftarItemHandler(c *gin.Context) {
 	database := getItemDB(c)
 
-	catID := c.Query("kategori")
-	nama := c.Query("nama")
+	// Mendukung parameter dari React (cat_id, q, status, aktif_yn) maupun parameter lama (kategori, nama)
+	catID := c.Query("cat_id")
+	if catID == "" {
+		catID = c.Query("kategori")
+	}
+
+	nama := c.Query("q")
+	if nama == "" {
+		nama = c.Query("nama")
+	}
+
 	status := c.Query("status")
+	aktifYN := c.Query("aktif_yn")
+
 	pageStr := c.DefaultQuery("page", "1")
-	limitStr := c.DefaultQuery("limit", "500")
+	limitStr := c.DefaultQuery("limit", "2000")
 
 	page, _ := strconv.Atoi(pageStr)
 	limit, _ := strconv.Atoi(limitStr)
@@ -63,21 +74,21 @@ func GetDaftarItemHandler(c *gin.Context) {
 		page = 1
 	}
 	if limit < 1 {
-		limit = 500
+		limit = 2000
 	}
 	offset := (page - 1) * limit
 
 	query := database.Table("public.gl_m_item i").
 		Select(`
-			i.item_id, 
-			i.item_catid AS item_cat_id, 
-			i.item_name, 
-			i.item_status, 
-			i.item_owncaid AS item_own_caid, 
-			i.item_depcaid AS item_dep_caid, 
-			i.item_cashcaid AS item_cash_caid, 
-			COALESCE(i.item_aktifyn, 'Y') AS item_aktif_yn, 
-			COALESCE(c.cat_name, i.item_catid, '-') AS cat_name
+			TRIM(BOTH FROM i.item_id) AS item_id, 
+			TRIM(BOTH FROM CAST(i.item_catid AS VARCHAR)) AS item_catid, 
+			TRIM(BOTH FROM i.item_name) AS item_name, 
+			COALESCE(NULLIF(TRIM(BOTH FROM i.item_status), ''), 'L') AS item_status, 
+			COALESCE(NULLIF(TRIM(BOTH FROM i.item_owncaid), ''), '-') AS item_owncaid, 
+			COALESCE(NULLIF(TRIM(BOTH FROM i.item_depcaid), ''), '-') AS item_depcaid, 
+			COALESCE(NULLIF(TRIM(BOTH FROM i.item_cashcaid), ''), '-') AS item_cashcaid, 
+			COALESCE(NULLIF(TRIM(BOTH FROM i.item_aktifyn), ''), 'N') AS item_aktifyn, 
+			COALESCE(NULLIF(TRIM(BOTH FROM c.cat_name), ''), NULLIF(TRIM(BOTH FROM CAST(i.item_catid AS VARCHAR)), ''), '-') AS cat_name
 		`).
 		Joins("LEFT JOIN public.gl_m_categoryitem c ON TRIM(BOTH FROM CAST(i.item_catid AS VARCHAR)) = TRIM(BOTH FROM CAST(c.cat_id AS VARCHAR))")
 
@@ -85,18 +96,22 @@ func GetDaftarItemHandler(c *gin.Context) {
 		query = query.Where("TRIM(BOTH FROM CAST(i.item_catid AS VARCHAR)) = TRIM(BOTH FROM ?)", catID)
 	}
 	if nama != "" {
-		query = query.Where("LOWER(i.item_name) LIKE ?", "%"+strings.ToLower(nama)+"%")
+		searchPattern := "%" + strings.ToLower(strings.TrimSpace(nama)) + "%"
+		query = query.Where("(LOWER(i.item_name) LIKE ? OR LOWER(i.item_id) LIKE ?)", searchPattern, searchPattern)
 	}
 	if status != "" {
-		query = query.Where("i.item_status = ?", status)
+		query = query.Where("TRIM(BOTH FROM i.item_status) = TRIM(BOTH FROM ?)", status)
+	}
+	if aktifYN != "" {
+		query = query.Where("COALESCE(NULLIF(TRIM(BOTH FROM i.item_aktifyn), ''), 'N') = TRIM(BOTH FROM ?)", aktifYN)
 	}
 
 	var totalRecords int64
 	query.Count(&totalRecords)
 
 	var list []ItemModel
-	// 🎯 FIX SORTING: Urutkan dari Waktu Update Terbaru / ID Terbesar (DESC)
-	err := query.Order("i.item_updatetime DESC, i.item_id DESC").Limit(limit).Offset(offset).Scan(&list).Error
+	// Urutkan berdasarkan item_id ASC (sama seperti GL_M_Item.asp)
+	err := query.Order("i.item_id ASC").Limit(limit).Offset(offset).Scan(&list).Error
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
