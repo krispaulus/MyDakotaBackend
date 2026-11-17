@@ -1209,8 +1209,12 @@ func ScanBTTKoliToSuratTugasHandler(c *gin.Context) {
 
 	// Ekstrak Nomor BTT (12 karakter pertama jika scan stiker koli 16 digit)
 	noBTT := kodeScan
-	if len(kodeScan) > 12 {
+	if len(kodeScan) == 20 {
+		noBTT = kodeScan[:16]
+	} else if len(kodeScan) == 16 && !regexp.MustCompile(`^\d{9}[A-Z]\d{6}$`).MatchString(kodeScan) {
 		noBTT = kodeScan[:12]
+	} else if len(kodeScan) > 16 {
+		noBTT = kodeScan[:len(kodeScan)-4]
 	}
 
 	// 1. Validasi eksistensi BTT di mkt_t_econote

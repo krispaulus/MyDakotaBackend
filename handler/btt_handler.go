@@ -225,6 +225,7 @@ func GetBTT(c *gin.Context) {
 	if strings.EqualFold(agenID, "PUSAT DAKOTA") || strings.EqualFold(agenID, "HOLDING") || strings.EqualFold(agenID, "ALL") {
 		agenID = ""
 	}
+
 	cabang := strings.TrimSpace(c.Query("cabang"))
 	startDate := strings.TrimSpace(c.Query("start_date"))
 	endDate := strings.TrimSpace(c.Query("end_date"))
@@ -901,6 +902,10 @@ func CreateBTT(c *gin.Context) {
 	if jmlKoliRaw == "<nil>" || strings.TrimSpace(jmlKoliRaw) == "" {
 		jmlKoliRaw = "1"
 	}
+	jmlKoliInt, errKoli := strconv.Atoi(strings.TrimSpace(jmlKoliRaw))
+	if errKoli != nil || jmlKoliInt < 1 {
+		jmlKoliInt = 1
+	}
 
 	kodeCabangRaw := fmt.Sprintf("%v", rawPayload["bttt_kodecabangagen"])
 	if kodeCabangRaw == "<nil>" || strings.TrimSpace(kodeCabangRaw) == "" {
@@ -1000,6 +1005,7 @@ func CreateBTT(c *gin.Context) {
 		"bttt_paketyn":         cleanStringVal(rawPayload["bttt_paketyn"]),
 		"bttt_pembayaran":      cleanStringVal(rawPayload["bttt_jenisharga"]),
 		"bttt_jenisharga":      cleanStringVal(rawPayload["bttt_jenisharga"]),
+		"bttt_jmlunit":         jmlKoliInt,
 		"bttt_berat":           rawPayload["bttt_berat"],
 		"bttt_beratvol":        rawPayload["bttt_beratvol"],
 		"bttt_ukuran":          cleanStringVal(rawPayload["bttt_ukuran"]),
@@ -1008,7 +1014,7 @@ func CreateBTT(c *gin.Context) {
 		"bttt_aktifyn":         "Y",
 		"bttt_servid":          cleanStringVal(servIDFinal),
 		"bttt_asalagenid":      cleanStringVal(asalAgenIDFinal),
-		"bttt_updateid":        fmt.Sprintf("%v", userID), // 🌟 Tersimpan langsung di sini
+		"bttt_updateid":        fmt.Sprintf("%v", userID),
 	}
 
 	err := database.Table("public.mkt_t_econote").Create(&dbRow).Error
@@ -1025,6 +1031,14 @@ func CreateBTT(c *gin.Context) {
 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal simpan ke database pusat logistik: " + err.Error()})
 		return
+	}
+
+	for idx := 1; idx <= jmlKoliInt; idx++ {
+		koliID := fmt.Sprintf("%s%04d", cleanStringVal(bttIDStr), idx)
+		database.Table("public.mkt_t_econote_koli_temp").Create(map[string]interface{}{
+			"bttt_id":     cleanStringVal(bttIDStr),
+			"bttt_koliid": koliID,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
