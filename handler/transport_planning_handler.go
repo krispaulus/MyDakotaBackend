@@ -302,15 +302,15 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 		}
 
 		// 🌟 Chargeable Weight per Baris (Sesuai ASP Lawas: Ambil Max lalu bulatkan ke atas per resi jika colly terpisah)
-		lineWeight := rawWeight
-		if rawVolume > lineWeight {
-			lineWeight = rawVolume
-		}
+		// lineWeight := rawWeight
+		// if rawVolume > lineWeight {
+		// 	lineWeight = rawVolume
+		// }
 		// Pembulatan per baris resi
-		roundedLineWeight := math.Ceil(lineWeight)
-		if roundedLineWeight <= 0 {
-			roundedLineWeight = 1
-		}
+		// roundedLineWeight := math.Ceil(lineWeight)
+		// if roundedLineWeight <= 0 {
+		// 	roundedLineWeight = 1
+		// }
 		// 🌟 Pembacaan Kolom Tambahan dari CSV
 		up := ""
 		if len(record) > 14 {
@@ -346,9 +346,6 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 		keterangan := ""
 		if len(record) > 19 {
 			keterangan = strings.TrimSpace(record[19])
-		}
-		if keterangan == "" {
-			keterangan = "SURAT JALAN KEMBALI"
 		}
 
 		kodeKendaraan := ""
@@ -441,7 +438,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 
 		if existing, exists := groupMap[groupKey]; exists {
 			existing.TotalColly += colly
-			existing.TotalWeight += roundedLineWeight
+			existing.TotalWeight += rawWeight
 			existing.TotalVolume += rawVolume
 			existing.TotalPacking += packing
 			existing.Harga += harga
@@ -561,7 +558,7 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 				ServID:          servID,
 				LayananID:       layananID,
 				TotalColly:      colly,
-				TotalWeight:     roundedLineWeight, // 🌟 Gunakan roundedLineWeight agar baris 1 koli langsung terbulatkan benar
+				TotalWeight:     rawWeight, // 🌟 Gunakan roundedLineWeight agar baris 1 koli langsung terbulatkan benar
 				TotalVolume:     rawVolume,
 				TotalPacking:    packing,
 				KodeKendaraan:   kodeKendaraan,
@@ -587,8 +584,10 @@ func ParseTransportPlanningCSV(c *gin.Context) {
 	var validList []TransportPlanningGroupedRow
 	for _, k := range orderedKeys {
 		row := groupMap[k]
-		// Pembulatan ke atas (Ceil) persis ASP lawas
 		row.TotalWeight = math.Ceil(row.TotalWeight)
+		if row.TotalWeight <= 0 {
+			row.TotalWeight = 1
+		}
 		row.TotalVolume = math.Ceil(row.TotalVolume)
 		validList = append(validList, *row)
 	}
