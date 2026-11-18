@@ -120,8 +120,8 @@ func GetLSPBReportList(c *gin.Context) {
 					ELSE NULL
 				END AS dt_handover,
 				COALESCE(TRIM(v."nomorbtt"), '') AS nomorbtt,
-				COALESCE(NULLIF(TRIM(v."PickupFrom"), ''), 'WH MARUNDA') AS pickup_from,
-				COALESCE(NULLIF(TRIM(e.bttt_tujuannama), ''), NULLIF(TRIM(v."BTTT_TujuanNama"), ''), '-') AS bttt_tujuannama,
+				COALESCE(NULLIF(TRIM(v."PickupFrom"), ''), '') AS pickup_from,
+				COALESCE(NULLIF(TRIM(e.bttt_tujuannama), ''), '-') AS bttt_tujuannama,
 				COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '-') AS bttt_tujuan_kota,
 				UPPER(COALESCE(NULLIF(TRIM(s.serv_name), ''), NULLIF(TRIM(v."Serv_Name"), ''), 'DARAT')) AS serv_name,
 
@@ -139,6 +139,7 @@ func GetLSPBReportList(c *gin.Context) {
 					ELSE NULL
 				END AS dt_diterima,
 				COALESCE(NULLIF(TRIM(v."Nama_Penerima"), ''), '') AS nama_penerima,
+
 				CASE 
 					WHEN UPPER(COALESCE(v."Keterangan", '')) LIKE '%%GAGAL%%' THEN 1
 					ELSE 0
@@ -170,9 +171,9 @@ func GetLSPBReportList(c *gin.Context) {
 			FROM vw_transport_lspb v
 			LEFT JOIN public.opr_t_transportlspb t
 				ON t.dn_od_sj::text = v."DN_OD_SJ"::text
-				AND COALESCE(t.nomorbtt::text, '') = COALESCE(v."nomorbtt"::text, '')
+				AND UPPER(TRIM(COALESCE(t.nomorbtt::text, ''))) = UPPER(TRIM(COALESCE(v."nomorbtt"::text, '')))
 			LEFT JOIN public.mkt_t_econote e 
-				ON e.bttt_id::text = v."nomorbtt"::text
+				ON UPPER(TRIM(e.bttt_id::text)) = UPPER(TRIM(v."nomorbtt"::text))
 			LEFT JOIN public.mkt_m_service s
 				ON s.serv_id::text = e.bttt_servid::text
 			LEFT JOIN public.mkt_m_customer m 
