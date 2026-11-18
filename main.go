@@ -204,9 +204,10 @@ func main() {
 			authorized.PUT("/operasional/retur-btt-update", handler.UpdateReturBTT)
 			authorized.DELETE("/operasional/retur-btt-delete", handler.DeleteReturBTT)
 
-			// 📑 OPERASIONAL: LAPORAN LSBP (INFORMASI LSPB)
+			// 📑 OPERASIONAL: LAPORAN lspb (INFORMASI LSPB)
 			authorized.GET("/operasional/laporan-lspb/list", handler.GetLSPBReportList)
-			authorized.GET("/operasional/laporan-lsbp", handler.GetLSPBReportList)
+			authorized.GET("/operasional/laporan-lspb", handler.GetLSPBReportList)
+			authorized.GET("/operasional/laporan-lspb/customers", handler.GetLSPBCustomers)
 			authorized.POST("/operasional/laporan-lspb/save", handler.SaveLSPB)
 			authorized.DELETE("/operasional/laporan-lspb/delete/:nodo", handler.DeleteLSPB)
 

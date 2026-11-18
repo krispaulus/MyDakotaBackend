@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// LSPBV2DTO Struct khusus penampung Laporan LSBP V2
+// LSPBV2DTO Struct khusus penampung Laporan lspb V2
 type LSPBV2DTO struct {
 	DNODSJ            string `json:"dn_od_sj" gorm:"column:DN_OD_SJ"`
 	CustName          string `json:"cust_name" gorm:"column:Cust_Name"`
@@ -42,7 +42,7 @@ type LSPBV2DTO struct {
 	TglDokumenKembali string `json:"tgl_dokumen_kembali" gorm:"column:TB_TglKembali"`
 }
 
-// GET LIST LAPORAN LSBP V2
+// GET LIST LAPORAN lspb V2
 func GetLSPBV2ReportList(c *gin.Context) {
 	ptID, _ := c.Get("pt_id")
 	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
@@ -112,7 +112,7 @@ func GetLSPBV2ReportList(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  "error",
-			"message": "Gagal memuat Laporan LSBP V2: " + err.Error(),
+			"message": "Gagal memuat Laporan lspb V2: " + err.Error(),
 		})
 		return
 	}

@@ -20,7 +20,7 @@ func (TransportLSPBWithCarInOut) TableName() string {
 	return "public.opr_t_transportlspbwithcarinoutanddatetime"
 }
 
-// LSPBReportDTO Struct hasil gabungan query Laporan LSBP
+// LSPBReportDTO Struct hasil gabungan query Laporan lspb
 type LSPBReportDTO struct {
 	DNODSJ            string  `json:"dn_od_sj" gorm:"column:DN_OD_SJ"`
 	CustName          string  `json:"cust_name" gorm:"column:Cust_Name"`
