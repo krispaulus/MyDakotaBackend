@@ -466,7 +466,7 @@ func SaveLSPB(c *gin.Context) {
 	if isEdit {
 		// 1. Update spesifik baris DO yang sedang dibuka (termasuk jika DN/OD/SJ-nya diubah)
 		res := database.Table("public.opr_t_transportlspb").
-			Where("TRIM(dn_od_sj) = ? AND TRIM(COALESCE(nomorbtt, '')) = ?", originalNoDO, originalNoBTT).
+			Where("UPPER(TRIM(dn_od_sj)) = UPPER(TRIM(?)) AND UPPER(TRIM(COALESCE(nomorbtt, ''))) = UPPER(TRIM(?))", originalNoDO, originalNoBTT).
 			Updates(updates)
 
 		if res.Error != nil {
@@ -475,11 +475,11 @@ func SaveLSPB(c *gin.Context) {
 		}
 		if res.RowsAffected == 0 {
 			database.Table("public.opr_t_transportlspb").
-				Where("TRIM(dn_od_sj) = ?", originalNoDO).
+				Where("UPPER(TRIM(dn_od_sj)) = UPPER(TRIM(?))", originalNoDO).
 				Updates(updates)
 		}
 
-		// 2. 🌟 JIKA NOMOR BTT SAMA: Update semua DO lain yang bernaung di BTT yang sama!
+		// 2. Update semua DO lain yang memiliki Nomor BTT sama (case-insensitive)
 		targetBTT := noBTT
 		if targetBTT == "" {
 			targetBTT = originalNoBTT
@@ -487,7 +487,6 @@ func SaveLSPB(c *gin.Context) {
 
 		totalDOUpdated := res.RowsAffected
 		if targetBTT != "" {
-			// Salin seluruh field update KECUALI dn_od_sj agar nomor DO masing-masing baris tetap utuh
 			bulkUpdatesByBTT := make(map[string]interface{})
 			for k, v := range updates {
 				if k != "dn_od_sj" {
@@ -496,7 +495,7 @@ func SaveLSPB(c *gin.Context) {
 			}
 
 			resBulk := database.Table("public.opr_t_transportlspb").
-				Where("TRIM(COALESCE(nomorbtt, '')) = ? AND TRIM(dn_od_sj) <> ?", targetBTT, noDO).
+				Where("UPPER(TRIM(COALESCE(nomorbtt, ''))) = UPPER(TRIM(?)) AND UPPER(TRIM(dn_od_sj)) <> UPPER(TRIM(?))", targetBTT, noDO).
 				Updates(bulkUpdatesByBTT)
 
 			if resBulk.Error == nil {
