@@ -498,6 +498,7 @@ func main() {
 			authorized.POST("/gl/cashbank/unpost", handler.UnpostCashBankHandler)
 			authorized.GET("/gl/cashbank/items", handler.GetMasterItemBiayaHandler)
 			authorized.GET("/gl/cashbank/laporan-cashflow", handler.GetLaporanCashFlowHandler)
+			authorized.GET("/gl/cashbank/detail", handler.GetCashBankDetailHandler)
 
 			authorized.GET("/gl/cashbank/bplk/detail", handler.GetBPLKDetailHandler)
 			authorized.POST("/gl/cashbank/bplk/proses-uang-muka", handler.ProsesUangMukaBPLKHandler)

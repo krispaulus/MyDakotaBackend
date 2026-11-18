@@ -271,3 +271,48 @@ func DeleteItemHandler(c *gin.Context) {
 		"message": fmt.Sprintf("Item %s berhasil dihapus permanen!", itemID),
 	})
 }
+
+// GET /api/gl/cashbank/detail?cb_id=...
+func GetCashBankDetailHandler(c *gin.Context) {
+	database := getCashBankDB(c)
+	cbID := strings.TrimSpace(c.Query("cb_id"))
+	if cbID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Parameter cb_id wajib diisi!"})
+		return
+	}
+
+	type DetailRow struct {
+		CbdItemID      string  `json:"cbd_itemid" gorm:"column:cbd_itemid"`
+		ItemName       string  `json:"item_name" gorm:"column:item_name"`
+		ItemOwnCAID    string  `json:"item_owncaid" gorm:"column:item_owncaid"`
+		CbdKet         string  `json:"cbd_ket" gorm:"column:cbd_ket"`
+		CbdQuantity    float64 `json:"cbd_quantity" gorm:"column:cbd_quantity"`
+		CbdHargaSatuan float64 `json:"cbd_hargasatuan" gorm:"column:cbd_hargasatuan"`
+		CbdAgenID      string  `json:"cbd_agenid" gorm:"column:cbd_agenid"`
+	}
+
+	var details []DetailRow
+	err := database.Table("public.gl_t_cashbankdetil d").
+		Select(`
+			TRIM(BOTH FROM d.cbd_itemid) AS cbd_itemid,
+			TRIM(BOTH FROM COALESCE(i.item_name, '')) AS item_name,
+			TRIM(BOTH FROM COALESCE(i.item_owncaid, '')) AS item_owncaid,
+			TRIM(BOTH FROM COALESCE(d.cbd_ket, '')) AS cbd_ket,
+			d.cbd_quantity,
+			d.cbd_hargasatuan,
+			TRIM(BOTH FROM COALESCE(d.cbd_agenid, '')) AS cbd_agenid
+		`).
+		Joins("LEFT JOIN public.gl_m_item i ON TRIM(BOTH FROM d.cbd_itemid) = TRIM(BOTH FROM i.item_id)").
+		Where("TRIM(BOTH FROM d.cbd_cbid) = ?", cbID).
+		Scan(&details).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"details": details,
+	})
+}

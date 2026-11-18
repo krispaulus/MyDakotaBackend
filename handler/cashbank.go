@@ -129,7 +129,6 @@ func PostCashBankHandler(c *gin.Context) {
 	sumber := strings.ToLower(strings.TrimSpace(req.SumberDana))
 
 	if strings.Contains(sumber, "bank") {
-		// Kasus 1: Bank (Wajib mengambil dari inputan dropdown hasil query gl_m_bank)
 		if strings.TrimSpace(req.BankCode) == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Pilihan Bank tidak boleh kosong!"})
 			return
@@ -137,15 +136,21 @@ func PostCashBankHandler(c *gin.Context) {
 		lawanAccCode = strings.TrimSpace(req.BankCode)
 		lawanAccName = strings.TrimSpace(req.BankName)
 
+	} else if strings.Contains(sumber, "etoll") || strings.Contains(sumber, "toll") {
+		if strings.TrimSpace(req.EtollCode) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Pilihan E-TOLL tidak boleh kosong!"})
+			return
+		}
+		lawanAccCode = strings.TrimSpace(req.EtollCode)
+		lawanAccName = strings.TrimSpace(req.EtollName)
+
 	} else if strings.Contains(sumber, "fleet") {
-		// Kasus 2: BCA FLEET (Query ke gl_m_bank atau gl_m_chartaccount)
 		err := database.Table("public.gl_m_bank").
 			Select("COALESCE(NULLIF(bank_acccode, ''), bank_id::varchar) AS code, bank_name").
 			Where("bank_name ILIKE '%FLEET%' AND COALESCE(bank_aktifyn, 'Y') = 'Y'").
 			Row().Scan(&lawanAccCode, &lawanAccName)
 
 		if err != nil || lawanAccCode == "" {
-			// Jika di tabel bank tidak ada, cari di COA
 			err = database.Table("public.gl_m_chartaccount").
 				Select("ca_id, ca_name").
 				Where("ca_name ILIKE '%FLEET%' AND COALESCE(ca_aktifyn, 'Y') = 'Y'").
@@ -153,7 +158,6 @@ func PostCashBankHandler(c *gin.Context) {
 		}
 
 	} else if strings.Contains(sumber, "lk") {
-		// Kasus 3: Kas Operasional LK (Query COA Kas Luar Kota)
 		err := database.Table("public.gl_m_chartaccount").
 			Select("ca_id, ca_name").
 			Where("ca_name ILIKE '%KAS%' AND ca_name ILIKE '%LK%' AND COALESCE(ca_aktifyn, 'Y') = 'Y'").
@@ -167,7 +171,6 @@ func PostCashBankHandler(c *gin.Context) {
 		}
 
 	} else {
-		// Kasus 4: Kas Operasional DK (Query COA Kas Dalam Kota / Operasional)
 		err := database.Table("public.gl_m_chartaccount").
 			Select("ca_id, ca_name").
 			Where("ca_name ILIKE '%KAS%' AND (ca_name ILIKE '%DK%' OR ca_name ILIKE '%OPERASIONAL%') AND COALESCE(ca_aktifyn, 'Y') = 'Y'").
@@ -181,7 +184,6 @@ func PostCashBankHandler(c *gin.Context) {
 		}
 	}
 
-	// Validasi akhir: pastikan akun lawan berhasil ditemukan dari database
 	if strings.TrimSpace(lawanAccCode) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"status":  "error",
@@ -213,23 +215,70 @@ func PostCashBankHandler(c *gin.Context) {
 	}
 	docNo := fmt.Sprintf("%s%05d", prefixJurnal, nextUrut)
 
-	// 4. Ambil Rincian Kas dari gl_t_cashbankdetil
+	// 4. Ambil Rincian Kas dari gl_t_cashbankdetil + LEFT JOIN gl_m_item (TANPA HARDCODE)
 	type CBDetail struct {
 		ItemID      string  `gorm:"column:cbd_itemid"`
 		Ket         string  `gorm:"column:cbd_ket"`
 		Quantity    float64 `gorm:"column:cbd_quantity"`
 		HargaSatuan float64 `gorm:"column:cbd_hargasatuan"`
 		AgenID      string  `gorm:"column:cbd_agenid"`
+		OwnCAID     string  `gorm:"column:item_owncaid"`
+		ItemName    string  `gorm:"column:item_name"`
 	}
-	var rincian []CBDetail
-	database.Table("public.gl_t_cashbankdetil").Where("TRIM(cbd_cbid) = TRIM(?)", req.CBID).Scan(&rincian)
 
+	var rincian []CBDetail
+	if err := database.Table("public.gl_t_cashbankdetil d").
+		Select(`
+			TRIM(BOTH FROM d.cbd_itemid) AS cbd_itemid,
+			TRIM(BOTH FROM d.cbd_ket) AS cbd_ket,
+			d.cbd_quantity,
+			d.cbd_hargasatuan,
+			TRIM(BOTH FROM COALESCE(d.cbd_agenid, '')) AS cbd_agenid,
+			TRIM(BOTH FROM COALESCE(i.item_owncaid, '')) AS item_owncaid,
+			TRIM(BOTH FROM COALESCE(i.item_name, '')) AS item_name
+		`).
+		Joins("LEFT JOIN public.gl_m_item i ON TRIM(BOTH FROM d.cbd_itemid) = TRIM(BOTH FROM i.item_id)").
+		Where("TRIM(BOTH FROM d.cbd_cbid) = TRIM(?)", req.CBID).
+		Scan(&rincian).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membaca rincian kas: " + err.Error()})
+		return
+	}
+
+	// Validasi 1: Rincian kas tidak boleh kosong (tidak boleh fallback ke akun hardcode)
+	if len(rincian) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": fmt.Sprintf("Transaksi %s belum memiliki rincian item biaya di GL_T_CashBankDetil. Silakan lengkapi rincian terlebih dahulu!", req.CBID),
+		})
+		return
+	}
+
+	// Validasi 2: Setiap item rincian wajib memiliki Kode Item & No. Acc Utama (item_owncaid) di Master Item
 	var totalNominal float64
 	for _, r := range rincian {
+		if strings.TrimSpace(r.ItemID) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": fmt.Sprintf("Rincian kas pada transaksi %s tidak memiliki Kode Item (cbd_itemid kosong di GL_T_CashBankDetil). Silakan edit dan simpan ulang transaksi!", req.CBID),
+			})
+			return
+		}
+		if strings.TrimSpace(r.OwnCAID) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": fmt.Sprintf("Item '%s' (%s) belum memiliki No. Acc Utama (item_owncaid) di Master Pemasukan & Pengeluaran!", r.ItemName, r.ItemID),
+			})
+			return
+		}
 		totalNominal += (r.Quantity * r.HargaSatuan)
 	}
+
 	if totalNominal <= 0 {
-		totalNominal = cbHeader.CBTotal
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": "Total nominal rincian kas harus lebih dari 0!",
+		})
+		return
 	}
 
 	// 5. Simpan Header Jurnal (GL_T_JurnalH)
@@ -243,7 +292,10 @@ func PostCashBankHandler(c *gin.Context) {
 		"tjurh_updateid":   fmt.Sprintf("%v", userID),
 		"tjurh_updatetime": time.Now(),
 	}
-	database.Table("public.gl_t_jurnalh").Create(insertJH)
+	if err := database.Table("public.gl_t_jurnalh").Create(insertJH).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membuat header jurnal: " + err.Error()})
+		return
+	}
 
 	// 6. Simpan Baris 1: Akun Sumber Dana (Kredit jika Keluar Kas, Debet jika Terima Kas)
 	var debetLawan, kreditLawan float64
@@ -253,57 +305,49 @@ func PostCashBankHandler(c *gin.Context) {
 		debetLawan = totalNominal
 	}
 
-	// 💡 Kolom murni sesuai skema gl_t_jurnald legacy
-	database.Table("public.gl_t_jurnald").Create(map[string]interface{}{
+	if err := database.Table("public.gl_t_jurnald").Create(map[string]interface{}{
 		"tjurd_tjurhno":    docNo,
 		"tjurd_acccode":    lawanAccCode,
 		"tjurd_agenid":     cbHeader.CBAgenID,
 		"tjurd_keterangan": fmt.Sprintf("%s : %s", lawanAccName, cbHeader.CBKet),
 		"tjurd_debet":      debetLawan,
 		"tjurd_kredit":     kreditLawan,
-	})
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan jurnal sumber dana: " + err.Error()})
+		return
+	}
 
-	// 7. Simpan Baris 2+: Akun Rincian Biaya / Uang Muka
-	if len(rincian) > 0 {
-		for _, r := range rincian {
-			subtotal := r.Quantity * r.HargaSatuan
-			var dDebet, dKredit float64
-			if cbHeader.CBTipe == "K" {
-				dDebet = subtotal
-			} else {
-				dKredit = subtotal
-			}
-
-			itemAccCode := strings.TrimSpace(r.ItemID)
-			if itemAccCode == "" {
-				itemAccCode = "084000000007"
-			}
-
-			database.Table("public.gl_t_jurnald").Create(map[string]interface{}{
-				"tjurd_tjurhno":    docNo,
-				"tjurd_acccode":    itemAccCode,
-				"tjurd_agenid":     cbHeader.CBAgenID,
-				"tjurd_keterangan": r.Ket,
-				"tjurd_debet":      dDebet,
-				"tjurd_kredit":     dKredit,
-			})
-		}
-	} else {
+	// 7. Simpan Baris 2+: Akun Rincian Biaya dari Master Item (100% dari DB)
+	for _, r := range rincian {
+		subtotal := r.Quantity * r.HargaSatuan
 		var dDebet, dKredit float64
 		if cbHeader.CBTipe == "K" {
-			dDebet = totalNominal
+			dDebet = subtotal
 		} else {
-			dKredit = totalNominal
+			dKredit = subtotal
 		}
 
-		database.Table("public.gl_t_jurnald").Create(map[string]interface{}{
+		ketJurnal := strings.TrimSpace(r.Ket)
+		if ketJurnal == "" {
+			ketJurnal = strings.TrimSpace(r.ItemName)
+		}
+
+		agenBaris := strings.TrimSpace(r.AgenID)
+		if agenBaris == "" {
+			agenBaris = cbHeader.CBAgenID
+		}
+
+		if err := database.Table("public.gl_t_jurnald").Create(map[string]interface{}{
 			"tjurd_tjurhno":    docNo,
-			"tjurd_acccode":    "084000000007",
-			"tjurd_agenid":     cbHeader.CBAgenID,
-			"tjurd_keterangan": cbHeader.CBKet,
+			"tjurd_acccode":    strings.TrimSpace(r.OwnCAID),
+			"tjurd_agenid":     agenBaris,
+			"tjurd_keterangan": ketJurnal,
 			"tjurd_debet":      dDebet,
 			"tjurd_kredit":     dKredit,
-		})
+		}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan rincian jurnal: " + err.Error()})
+			return
+		}
 	}
 
 	// 8. Update status Posting & Nomor Jurnal di tabel gl_t_cashbank

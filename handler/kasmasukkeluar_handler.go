@@ -13,6 +13,24 @@ import (
 	"gorm.io/gorm"
 )
 
+type CashBankDetailReq struct {
+	ItemID      string  `json:"item_id"`
+	Keterangan  string  `json:"keterangan"`
+	Quantity    float64 `json:"quantity"`
+	HargaSatuan float64 `json:"harga_satuan"`
+}
+
+type CreateCashBankReq struct {
+	CBID        string              `json:"cb_id"`
+	CBTanggal   string              `json:"cb_tanggal" binding:"required"`
+	CBTipe      string              `json:"cb_tipe" binding:"required"` // 'T' = Terima, 'K' = Keluar
+	CBTransAgen string              `json:"cb_transagenid"`
+	CBKet       string              `json:"cb_ket"`
+	CBPostYN    string              `json:"cb_postyn"`
+	Nominal     float64             `json:"nominal"`
+	Details     []CashBankDetailReq `json:"details"`
+}
+
 type BPLKHeaderResponse struct {
 	SJHID           string               `json:"sjh_id"`
 	SJHKendID       string               `json:"sjh_kendid"`
@@ -70,16 +88,6 @@ type CashBankListModel struct {
 	CBPostYN    string  `json:"cb_postyn" gorm:"column:cb_postyn"`
 	AgenNama    string  `json:"agen_nama" gorm:"column:agen_nama"`
 	TotalAmount float64 `json:"total_amount" gorm:"column:total_amount"`
-}
-
-type CreateCashBankReq struct {
-	CBID        string  `json:"cb_id"`
-	CBTanggal   string  `json:"cb_tanggal" binding:"required"`
-	CBTipe      string  `json:"cb_tipe" binding:"required"` // 'T' = Terima, 'K' = Keluar
-	CBTransAgen string  `json:"cb_transagenid"`
-	CBKet       string  `json:"cb_ket"`
-	CBPostYN    string  `json:"cb_postyn"`
-	Nominal     float64 `json:"nominal"`
 }
 
 // type PostCashBankReq struct {
@@ -299,17 +307,51 @@ func CreateCashBankHandler(c *gin.Context) {
 		return
 	}
 
-	// Insert Detail jika ada nominal (Ke tabel public.gl_t_cashbankdetil)
-	if req.Nominal > 0 {
+	// Insert Detail rincian ke public.gl_t_cashbankdetil (100% dari req.Details)
+	if len(req.Details) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": "Rincian item biaya tidak boleh kosong!",
+		})
+		return
+	}
+
+	for _, d := range req.Details {
+		cleanItemID := strings.TrimSpace(d.ItemID)
+		if cleanItemID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": "Kode Item (item_id) pada rincian kas tidak boleh kosong!",
+			})
+			return
+		}
+
+		qty := d.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+
+		ketDetail := strings.TrimSpace(d.Keterangan)
+		if ketDetail == "" {
+			ketDetail = req.CBKet
+		}
+
 		insertDetail := map[string]interface{}{
 			"cbd_cbid":        strings.TrimSpace(req.CBID),
-			"cbd_ket":         req.CBKet,
-			"cbd_quantity":    1,
-			"cbd_hargasatuan": req.Nominal,
+			"cbd_itemid":      cleanItemID,
+			"cbd_ket":         ketDetail,
+			"cbd_quantity":    qty,
+			"cbd_hargasatuan": d.HargaSatuan,
 			"cbd_agenid":      agenIDFinal,
 			"cbd_susutyn":     "N",
 		}
-		database.Table("public.gl_t_cashbankdetil").Create(insertDetail)
+		if err := database.Table("public.gl_t_cashbankdetil").Create(insertDetail).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "Gagal menyimpan rincian kas: " + err.Error(),
+			})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -387,13 +429,62 @@ func UpdateCashBankHandler(c *gin.Context) {
 		return
 	}
 
-	// Update rincian nominal di tabel detail
-	database.Table("public.gl_t_cashbankdetil").
-		Where("cbd_cbid = ?", strings.TrimSpace(req.CBID)).
-		Updates(map[string]interface{}{
-			"cbd_ket":         req.CBKet,
-			"cbd_hargasatuan": req.Nominal,
-		})
+	// Ambil agen_id transaksi yang sedang diedit
+	var cbAgenID string
+	database.Table("public.gl_t_cashbank").
+		Select("COALESCE(NULLIF(TRIM(cb_transagenid), ''), NULLIF(TRIM(cb_agenid), ''), '')").
+		Where("cb_id = ?", strings.TrimSpace(req.CBID)).
+		Scan(&cbAgenID)
+
+	if strings.TrimSpace(req.CBTransAgen) != "" {
+		cbAgenID = strings.TrimSpace(req.CBTransAgen)
+	}
+
+	// Sinkronkan rincian item di public.gl_t_cashbankdetil
+	if len(req.Details) > 0 {
+		// Hapus detail lama lalu insert ulang sesuai list rincian terbaru dari form
+		database.Table("public.gl_t_cashbankdetil").
+			Where("TRIM(cbd_cbid) = ?", strings.TrimSpace(req.CBID)).
+			Delete(nil)
+
+		for _, d := range req.Details {
+			cleanItemID := strings.TrimSpace(d.ItemID)
+			if cleanItemID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"status":  "error",
+					"message": "Kode Item (item_id) pada rincian kas tidak boleh kosong!",
+				})
+				return
+			}
+
+			qty := d.Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+
+			ketDetail := strings.TrimSpace(d.Keterangan)
+			if ketDetail == "" {
+				ketDetail = req.CBKet
+			}
+
+			insertDetail := map[string]interface{}{
+				"cbd_cbid":        strings.TrimSpace(req.CBID),
+				"cbd_itemid":      cleanItemID,
+				"cbd_ket":         ketDetail,
+				"cbd_quantity":    qty,
+				"cbd_hargasatuan": d.HargaSatuan,
+				"cbd_agenid":      cbAgenID,
+				"cbd_susutyn":     "N",
+			}
+			if err := database.Table("public.gl_t_cashbankdetil").Create(insertDetail).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"status":  "error",
+					"message": "Gagal memperbarui rincian kas: " + err.Error(),
+				})
+				return
+			}
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
