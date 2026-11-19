@@ -663,20 +663,26 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 
 	var listBTT []BTTItem
 	queryBTT := `
-		SELECT 
-			TRIM(COALESCE(d.sjd_bttid, d.sjd_nobtt, '-')) AS nobtt,
-			TRIM(COALESCE(a.agen_nama, d.sjd_tujuan, '-')) AS tujuan,
-			COALESCE(d.sjd_koli, d.sjd_colly, 0) AS colly,
-			COALESCE(d.sjd_koli_scan, d.sjd_colly_scan, COALESCE(d.sjd_koli, d.sjd_colly, 0)) AS discan,
-			GREATEST(0, COALESCE(d.sjd_koli, d.sjd_colly, 0) - COALESCE(d.sjd_koli_scan, d.sjd_colly_scan, COALESCE(d.sjd_koli, d.sjd_colly, 0))) AS kurang,
-			'SESUAI' AS keterangan
-		FROM public.opr_t_esuratjalandetil d
-		LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(d.sjd_agenid::varchar)
-		WHERE TRIM(d.sjd_sjhid) = TRIM(?) 
-		   OR TRIM(d.sjd_sjhid) LIKE ?
-		ORDER BY d.sjd_bttid ASC
+	SELECT 
+		TRIM(e.bttt_id) AS nobtt,
+		TRIM(COALESCE(a.agen_nama, e.bttt_tujuankota, '-')) AS tujuan,
+		COALESCE(NULLIF(e.bttt_jmlunit, 0), 1) AS colly,
+		COUNT(ld.loadd_id)::int AS discan,
+		GREATEST(0, COALESCE(NULLIF(e.bttt_jmlunit, 0), 1) - COUNT(ld.loadd_id)::int) AS kurang,
+		CASE 
+			WHEN COUNT(ld.loadd_id) >= COALESCE(NULLIF(e.bttt_jmlunit, 0), 1) THEN 'SESUAI'
+			ELSE 'KURANG'
+		END AS keterangan
+	FROM public.opr_t_esuratjalan s
+	INNER JOIN public.opr_t_loadingd ld ON TRIM(ld.loadd_loadhid) = TRIM(s.sjh_loadhid)
+	INNER JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = SPLIT_PART(TRIM(ld.loadd_bttkoliid), '-', 1)
+	                                  OR LEFT(TRIM(ld.loadd_bttkoliid), LENGTH(TRIM(e.bttt_id))) = TRIM(e.bttt_id)
+	LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)
+	WHERE TRIM(s.sjh_id) = TRIM(?)
+	GROUP BY e.bttt_id, a.agen_nama, e.bttt_tujuankota, e.bttt_jmlunit
+	ORDER BY e.bttt_id ASC
 	`
-	database.Raw(queryBTT, detail.RawSJHID, "%"+urut).Scan(&listBTT)
+	database.Raw(queryBTT, detail.RawSJHID).Scan(&listBTT)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
@@ -1159,19 +1165,56 @@ func StartLoadingSuratTugasHandler(c *gin.Context) {
 		userNameStr = "CHECKER"
 	}
 
-	now := time.Now()
-	// Generate Loading ID standar Dakota: LC + 001 + YYYYMM + 000001
-	prefix := fmt.Sprintf("LC001%s", now.Format("200601"))
-	loadingID := fmt.Sprintf("%s%06d", prefix, now.Unix()%1000000)
+	// Cek apakah Surat Tugas sudah punya sjh_loadhid
+	var sjhInfo struct {
+		SjhID       string `gorm:"column:sjh_id"`
+		SjhLoadhID  string `gorm:"column:sjh_loadhid"`
+		SjhKendID   string `gorm:"column:sjh_kendid"`
+		StartAgenID string `gorm:"column:sjh_startagenid"`
+	}
+	database.Raw(`
+		SELECT sjh_id, COALESCE(sjh_loadhid, '') AS sjh_loadhid, COALESCE(sjh_kendid, '') AS sjh_kendid, COALESCE(sjh_startagenid, '001') AS sjh_startagenid
+		FROM public.opr_t_esuratjalan
+		WHERE TRIM(sjh_id) = TRIM(?)
+		LIMIT 1
+	`, req.NoSuratTugas).Scan(&sjhInfo)
 
-	// Tandai status loading aktif pada surat tugas
-	database.Exec(`
-		UPDATE public.opr_t_esuratjalan 
-		SET sjh_byloading = 'Y',
-		    sjh_updateid = ?,
-		    sjh_updatetime = ?
-		WHERE sjh_id = ?
-	`, userNameStr, now.Format("2006-01-02 15:04:05"), req.NoSuratTugas)
+	if sjhInfo.SjhID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Surat tugas tidak ditemukan"})
+		return
+	}
+
+	loadingID := strings.TrimSpace(sjhInfo.SjhLoadhID)
+	now := time.Now()
+	nowStr := now.Format("2006-01-02 15:04:05")
+
+	// Jika belum punya sesi loading, buat baru di opr_t_loadingh (format CLDYYYYMMDD0001 sesuai data Anda)
+	if loadingID == "" {
+		prefix := fmt.Sprintf("CLD%s", now.Format("20060102"))
+		var lastLoadID string
+		database.Raw(`SELECT loadh_id FROM public.opr_t_loadingh WHERE loadh_id LIKE ? ORDER BY loadh_id DESC LIMIT 1`, prefix+"%").Scan(&lastLoadID)
+
+		urut := 1
+		if len(lastLoadID) >= len(prefix)+4 {
+			fmt.Sscanf(lastLoadID[len(prefix):], "%d", &urut)
+			urut++
+		}
+		loadingID = fmt.Sprintf("%s%04d", prefix, urut)
+
+		if err := database.Exec(`
+			INSERT INTO public.opr_t_loadingh (loadh_id, loadh_tanggal, loadh_agenid, loadh_kendid, loadh_approveyn, loadh_updateid, loadh_updatetime, created_at)
+			VALUES (?, ?, ?, ?, 'N', ?, ?, CURRENT_TIMESTAMP)
+		`, loadingID, nowStr, sjhInfo.StartAgenID, sjhInfo.SjhKendID, userNameStr, nowStr).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membuat header loading: " + err.Error()})
+			return
+		}
+
+		database.Exec(`
+			UPDATE public.opr_t_esuratjalan
+			SET sjh_loadhid = ?, sjh_updateid = ?, sjh_updatetime = ?
+			WHERE TRIM(sjh_id) = TRIM(?)
+		`, loadingID, userNameStr, nowStr, sjhInfo.SjhID)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":     "success",
@@ -1197,7 +1240,7 @@ func ScanBTTKoliToSuratTugasHandler(c *gin.Context) {
 
 	var req struct {
 		NoSuratTugas string `json:"no_surat_tugas" binding:"required"`
-		KodeScan     string `json:"kode_scan" binding:"required"` // Bisa berupa KoliID (16 digit) atau No BTT (12 digit)
+		KodeScan     string `json:"kode_scan" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Kode barcode/QR tidak valid"})
@@ -1207,9 +1250,11 @@ func ScanBTTKoliToSuratTugasHandler(c *gin.Context) {
 	rawSJH := strings.TrimSpace(req.NoSuratTugas)
 	kodeScan := strings.ToUpper(strings.TrimSpace(req.KodeScan))
 
-	// Ekstrak Nomor BTT (12 karakter pertama jika scan stiker koli 16 digit)
+	// Ekstrak Nomor BTT (mendukung format "BTT001-K01" maupun format 16/20 digit)
 	noBTT := kodeScan
-	if len(kodeScan) == 20 {
+	if strings.Contains(kodeScan, "-") {
+		noBTT = strings.Split(kodeScan, "-")[0]
+	} else if len(kodeScan) == 20 {
 		noBTT = kodeScan[:16]
 	} else if len(kodeScan) == 16 && !regexp.MustCompile(`^\d{9}[A-Z]\d{6}$`).MatchString(kodeScan) {
 		noBTT = kodeScan[:12]
@@ -1217,21 +1262,13 @@ func ScanBTTKoliToSuratTugasHandler(c *gin.Context) {
 		noBTT = kodeScan[:len(kodeScan)-4]
 	}
 
-	// 1. Validasi eksistensi BTT di mkt_t_econote
+	// 1. Validasi BTT di mkt_t_econote
 	var bttInfo struct {
-		BtttID     string `gorm:"column:bttt_id"`
-		TujuanKota string `gorm:"column:bttt_tujuankota"`
-		JmlUnit    int    `gorm:"column:bttt_jmlunit"`
-		TujuanAgen string `gorm:"column:bttt_tujuanagenid"`
+		BtttID  string `gorm:"column:bttt_id"`
+		JmlUnit int    `gorm:"column:bttt_jmlunit"`
 	}
-
 	err := database.Table("public.mkt_t_econote").
-		Select(`
-			TRIM(bttt_id) AS bttt_id,
-			COALESCE(bttt_tujuankota, '-') AS bttt_tujuankota,
-			COALESCE(NULLIF(bttt_jmlunit, 0), 1) AS bttt_jmlunit,
-			COALESCE(bttt_tujuanagenid, '001') AS bttt_tujuanagenid
-		`).
+		Select(`TRIM(bttt_id) AS bttt_id, COALESCE(NULLIF(bttt_jmlunit, 0), 1) AS bttt_jmlunit`).
 		Where("TRIM(bttt_id) = ? AND COALESCE(bttt_aktifyn, 'Y') = 'Y'", noBTT).
 		Take(&bttInfo).Error
 
@@ -1243,53 +1280,62 @@ func ScanBTTKoliToSuratTugasHandler(c *gin.Context) {
 		return
 	}
 
-	// 2. Cek apakah BTT sudah terdaftar di detail surat tugas (opr_t_esuratjalandetil)
-	var existingDetail struct {
-		SjdBttID    string `gorm:"column:sjd_bttid"`
-		SjdKoli     int    `gorm:"column:sjd_koli"`
-		SjdKoliScan int    `gorm:"column:sjd_koli_scan"`
+	// 2. Ambil loadh_id milik Surat Tugas
+	var loadhID string
+	database.Raw(`SELECT COALESCE(sjh_loadhid, '') FROM public.opr_t_esuratjalan WHERE TRIM(sjh_id) = TRIM(?) LIMIT 1`, rawSJH).Scan(&loadhID)
+	loadhID = strings.TrimSpace(loadhID)
+	if loadhID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Sesi loading belum dimulai. Klik 'Tambah Rincian' terlebih dahulu."})
+		return
 	}
 
+	// 3. Cek duplikasi kode stiker koli di opr_t_loadingd
+	var dupCount int64
 	database.Raw(`
-		SELECT 
-			TRIM(COALESCE(sjd_bttid, sjd_nobtt, '')) AS sjd_bttid,
-			COALESCE(sjd_koli, sjd_colly, 0) AS sjd_koli,
-			COALESCE(sjd_koli_scan, sjd_colly_scan, 0) AS sjd_koli_scan
-		FROM public.opr_t_esuratjalandetil
-		WHERE TRIM(sjd_sjhid) = TRIM(?) AND TRIM(COALESCE(sjd_bttid, sjd_nobtt)) = TRIM(?)
-		LIMIT 1
-	`, rawSJH, bttInfo.BtttID).Scan(&existingDetail)
+		SELECT COUNT(*) FROM public.opr_t_loadingd
+		WHERE TRIM(loadd_loadhid) = TRIM(?) AND UPPER(TRIM(loadd_bttkoliid)) = ?
+	`, loadhID, kodeScan).Scan(&dupCount)
 
-	if existingDetail.SjdBttID == "" {
-		// Belum ada di surat tugas -> Insert baru dengan jumlah discan = 1
-		errIns := database.Exec(`
-			INSERT INTO public.opr_t_esuratjalandetil (
-				sjd_sjhid, sjd_bttid, sjd_nobtt, sjd_tujuan, sjd_agenid, sjd_koli, sjd_colly, sjd_koli_scan, sjd_colly_scan
-			) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)
-		`, rawSJH, bttInfo.BtttID, bttInfo.BtttID, bttInfo.TujuanKota, bttInfo.TujuanAgen, bttInfo.JmlUnit, bttInfo.JmlUnit).Error
-
-		if errIns != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memasukkan BTT ke surat tugas: " + errIns.Error()})
-			return
-		}
-	} else {
-		// Sudah ada -> Tambah counter scan +1 (maksimal sesuai total koli BTT)
-		if existingDetail.SjdKoliScan >= bttInfo.JmlUnit {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"status":  "warning",
-				"message": fmt.Sprintf("Seluruh koli untuk BTT %s (%d/%d Koli) sudah selesai di-scan!", bttInfo.BtttID, existingDetail.SjdKoliScan, bttInfo.JmlUnit),
-			})
-			return
-		}
-
-		newScanCount := existingDetail.SjdKoliScan + 1
-		database.Exec(`
-			UPDATE public.opr_t_esuratjalandetil
-			SET sjd_koli_scan = ?,
-			    sjd_colly_scan = ?
-			WHERE TRIM(sjd_sjhid) = TRIM(?) AND TRIM(COALESCE(sjd_bttid, sjd_nobtt)) = TRIM(?)
-		`, newScanCount, newScanCount, rawSJH, bttInfo.BtttID)
+	if dupCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "warning",
+			"message": fmt.Sprintf("Stiker koli [%s] sudah pernah di-scan pada surat tugas ini!", kodeScan),
+		})
+		return
 	}
+
+	// 4. Cek apakah total scan BTT sudah mencapai total colly-nya
+	var scannedCount int64
+	database.Raw(`
+		SELECT COUNT(*) FROM public.opr_t_loadingd
+		WHERE TRIM(loadd_loadhid) = TRIM(?) AND (TRIM(loadd_bttkoliid) = ? OR TRIM(loadd_bttkoliid) LIKE ?)
+	`, loadhID, bttInfo.BtttID, bttInfo.BtttID+"%").Scan(&scannedCount)
+
+	if int(scannedCount) >= bttInfo.JmlUnit {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  "warning",
+			"message": fmt.Sprintf("Seluruh koli untuk BTT %s (%d/%d Koli) sudah selesai di-scan!", bttInfo.BtttID, scannedCount, bttInfo.JmlUnit),
+		})
+		return
+	}
+
+	userLogin, _ := c.Get("username")
+	userNameStr := fmt.Sprintf("%v", userLogin)
+	if userNameStr == "" || userNameStr == "<nil>" {
+		userNameStr = "CHECKER"
+	}
+
+	// 5. Simpan ke opr_t_loadingd
+	if errIns := database.Exec(`
+		INSERT INTO public.opr_t_loadingd (loadd_loadhid, loadd_bttkoliid, loadd_updateid, loadd_updatetime, created_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, loadhID, kodeScan, userNameStr).Error; errIns != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan scan koli: " + errIns.Error()})
+		return
+	}
+
+	// Update nomor surat jalan pada mkt_t_econote
+	database.Exec(`UPDATE public.mkt_t_econote SET bttt_nosuratjalan = ? WHERE TRIM(bttt_id) = TRIM(?)`, rawSJH, bttInfo.BtttID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
@@ -1313,9 +1359,14 @@ func RemoveBTTFromSuratTugasHandler(c *gin.Context) {
 	noBTT := strings.TrimSpace(c.Query("no_btt"))
 
 	database.Exec(`
-		DELETE FROM public.opr_t_esuratjalandetil
-		WHERE TRIM(sjd_sjhid) = TRIM(?) AND TRIM(COALESCE(sjd_bttid, sjd_nobtt)) = TRIM(?)
-	`, rawSJH, noBTT)
+		DELETE FROM public.opr_t_loadingd
+		WHERE TRIM(loadd_loadhid) = (
+			SELECT TRIM(sjh_loadhid) FROM public.opr_t_esuratjalan WHERE TRIM(sjh_id) = TRIM(?) LIMIT 1
+		)
+		AND (TRIM(loadd_bttkoliid) = ? OR TRIM(loadd_bttkoliid) LIKE ?)
+	`, rawSJH, noBTT, noBTT+"%")
+
+	database.Exec(`UPDATE public.mkt_t_econote SET bttt_nosuratjalan = NULL WHERE TRIM(bttt_id) = TRIM(?)`, noBTT)
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "BTT berhasil dikeluarkan dari surat tugas"})
 }
