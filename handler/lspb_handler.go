@@ -73,13 +73,15 @@ func GetLSPBReportList(c *gin.Context) {
 	var baseConditions []string
 	var args []interface{}
 
-	// 1. Filter utama langsung di sumber view agar cepat (< 150ms)
+	// 1. Filter utama langsung ke tabel fisik opr_t_transportlspb (t)
 	if tglAwal != "" && tglAkhir != "" {
 		baseConditions = append(baseConditions, `
 			(
 				CASE 
-					WHEN v."Tanggal_HandOver"::text LIKE '%/%/%' THEN TO_DATE(SPLIT_PART(v."Tanggal_HandOver"::text, ' ', 1), 'MM/DD/YYYY')
-					WHEN NULLIF(SPLIT_PART(COALESCE(v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL THEN SPLIT_PART(v."Tanggal_HandOver"::text, ' ', 1)::date
+					WHEN COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text) LIKE '%/%/%' 
+						THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1), 'MM/DD/YYYY')
+					WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL 
+						THEN SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1)::date
 					ELSE NULL
 				END BETWEEN ?::date AND ?::date
 			)
@@ -87,19 +89,19 @@ func GetLSPBReportList(c *gin.Context) {
 		args = append(args, tglAwal, tglAkhir)
 	}
 	if nobtt != "" {
-		baseConditions = append(baseConditions, `v."nomorbtt" ILIKE ?`)
+		baseConditions = append(baseConditions, `COALESCE(NULLIF(TRIM(t.nomorbtt), ''), v."nomorbtt", '') ILIKE ?`)
 		args = append(args, "%"+nobtt+"%")
 	}
 	if spb != "" {
-		baseConditions = append(baseConditions, `v.spb_id ILIKE ?`)
+		baseConditions = append(baseConditions, `COALESCE(NULLIF(TRIM(t.spb_id), ''), v.spb_id, '') ILIKE ?`)
 		args = append(args, "%"+spb+"%")
 	}
 	if nosj != "" {
-		baseConditions = append(baseConditions, `v."DN_OD_SJ" ILIKE ?`)
+		baseConditions = append(baseConditions, `t.dn_od_sj ILIKE ?`)
 		args = append(args, "%"+nosj+"%")
 	}
 	if service != "" {
-		baseConditions = append(baseConditions, `TRIM(COALESCE(v."bttt_servid"::text, '')) = ?`)
+		baseConditions = append(baseConditions, `TRIM(COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '')) = ?`)
 		args = append(args, service)
 	}
 
@@ -111,15 +113,17 @@ func GetLSPBReportList(c *gin.Context) {
 	queryStr := fmt.Sprintf(`
 		WITH base_lspb AS (
 			SELECT 
-				TRIM(v."DN_OD_SJ") AS dn_od_sj,
+				TRIM(t.dn_od_sj) AS dn_od_sj,
 				COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), NULLIF(TRIM(m.cust_name), ''), v."Cust_Name", '-') AS cust_name,
 				COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(t.customerid), '') AS customer_id,
 				CASE 
-					WHEN v."Tanggal_HandOver"::text LIKE '%%/%%/%%' THEN TO_DATE(SPLIT_PART(v."Tanggal_HandOver"::text, ' ', 1), 'MM/DD/YYYY')
-					WHEN NULLIF(SPLIT_PART(COALESCE(v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL THEN SPLIT_PART(v."Tanggal_HandOver"::text, ' ', 1)::date
+					WHEN COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text) LIKE '%%/%%/%%' 
+						THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1), 'MM/DD/YYYY')
+					WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL 
+						THEN SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1)::date
 					ELSE NULL
 				END AS dt_handover,
-				COALESCE(TRIM(v."nomorbtt"), '') AS nomorbtt,
+				COALESCE(NULLIF(TRIM(t.nomorbtt), ''), TRIM(v."nomorbtt"), '') AS nomorbtt,
 				COALESCE(NULLIF(TRIM(t.pickupfrom), ''), NULLIF(TRIM(v."PickupFrom"), ''), '') AS pickup_from,
 				COALESCE(NULLIF(TRIM(e.bttt_tujuannama), ''), '-') AS bttt_tujuannama,
 				COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '-') AS bttt_tujuan_kota,
@@ -148,11 +152,11 @@ func GetLSPBReportList(c *gin.Context) {
 
 				COALESCE(NULLIF(TRIM(t.keterangan), ''), v."Keterangan", '') AS keterangan,
 				CASE 
-					WHEN NULLIF(SPLIT_PART(COALESCE(v."TB_TglKembali"::text, ''), ' ', 1), '') IS NOT NULL 
-					THEN SPLIT_PART(v."TB_TglKembali"::text, ' ', 1)::date
+					WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_dokumenkembali::text, v."TB_TglKembali"::text, ''), ' ', 1), '') IS NOT NULL 
+					THEN SPLIT_PART(COALESCE(t.tanggal_dokumenkembali::text, v."TB_TglKembali"::text), ' ', 1)::date
 					ELSE NULL
 				END AS dt_dokumen_kembali,
-				COALESCE(v.spb_id, '') AS spb_id,
+				COALESCE(NULLIF(TRIM(t.spb_id), ''), v.spb_id, '') AS spb_id,
 				COALESCE(v.artih_nokw, '') AS artih_nokw,
 				COALESCE(NULLIF(TRIM(c.nomobil), ''), '') AS no_mobil,
 
@@ -168,20 +172,19 @@ func GetLSPBReportList(c *gin.Context) {
 				COALESCE(e.bttt_beratvol, v."BTTT_BeratVol", 0) AS bttt_beratvol,
 				COALESCE(NULLIF(e.bttt_ukuran::text, ''), v."BTTT_Ukuran", '0') AS bttt_ukuran,
 				COALESCE(e.bttt_berat, v."BTTT_Berat", 1) AS bttt_berat,
-				v."bttt_servid" AS bttt_servid
-			FROM vw_transport_lspb v
-			LEFT JOIN public.opr_t_transportlspb t
-				ON TRIM(t.dn_od_sj::text) = TRIM(v."DN_OD_SJ"::text)
-				AND UPPER(TRIM(COALESCE(t.nomorbtt::text, ''))) = UPPER(TRIM(COALESCE(v."nomorbtt"::text, '')))
+				COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '') AS bttt_servid
+			FROM public.opr_t_transportlspb t
+			LEFT JOIN vw_transport_lspb v
+				ON TRIM(v."DN_OD_SJ"::text) = TRIM(t.dn_od_sj::text)
 			LEFT JOIN public.mkt_t_econote e 
-				ON UPPER(TRIM(e.bttt_id::text)) = UPPER(TRIM(v."nomorbtt"::text))
+				ON UPPER(TRIM(e.bttt_id::text)) = UPPER(TRIM(COALESCE(NULLIF(TRIM(t.nomorbtt::text), ''), v."nomorbtt"::text, '')))
 			LEFT JOIN public.mkt_m_service s
-				ON TRIM(s.serv_id::text) = TRIM(e.bttt_servid::text)
+				ON TRIM(s.serv_id::text) = TRIM(COALESCE(e.bttt_servid::text, v."bttt_servid"::text, ''))
 			LEFT JOIN public.mkt_m_customer m 
 				ON TRIM(m.cust_id::text) = COALESCE(NULLIF(TRIM(e.bttt_asalcustid::text), ''), TRIM(t.customerid::text))
 			LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
-				ON TRIM(v."DN_OD_SJ"::text) = TRIM(c.nodo::text)
-			WHERE v."DN_OD_SJ" IS NOT NULL AND v."DN_OD_SJ" <> ''
+				ON TRIM(t.dn_od_sj::text) = TRIM(c.nodo::text)
+			WHERE t.dn_od_sj IS NOT NULL AND TRIM(t.dn_od_sj) <> ''
 			%s
 			LIMIT 1000
 		),
