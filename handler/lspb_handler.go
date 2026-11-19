@@ -112,15 +112,15 @@ func GetLSPBReportList(c *gin.Context) {
 		WITH base_lspb AS (
 			SELECT 
 				TRIM(v."DN_OD_SJ") AS dn_od_sj,
-				COALESCE(NULLIF(TRIM(m.cust_name), ''), NULLIF(TRIM(e.bttt_asalname), ''), v."Cust_Name", '-') AS cust_name,
-				COALESCE(TRIM(t.customerid), TRIM(e.bttt_asalcustid), '') AS customer_id,
+				COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), NULLIF(TRIM(m.cust_name), ''), v."Cust_Name", '-') AS cust_name,
+				COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(t.customerid), '') AS customer_id,
 				CASE 
 					WHEN v."Tanggal_HandOver"::text LIKE '%%/%%/%%' THEN TO_DATE(SPLIT_PART(v."Tanggal_HandOver"::text, ' ', 1), 'MM/DD/YYYY')
 					WHEN NULLIF(SPLIT_PART(COALESCE(v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL THEN SPLIT_PART(v."Tanggal_HandOver"::text, ' ', 1)::date
 					ELSE NULL
 				END AS dt_handover,
 				COALESCE(TRIM(v."nomorbtt"), '') AS nomorbtt,
-				COALESCE(NULLIF(TRIM(v."PickupFrom"), ''), '') AS pickup_from,
+				COALESCE(NULLIF(TRIM(t.pickupfrom), ''), NULLIF(TRIM(v."PickupFrom"), ''), '') AS pickup_from,
 				COALESCE(NULLIF(TRIM(e.bttt_tujuannama), ''), '-') AS bttt_tujuannama,
 				COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '-') AS bttt_tujuan_kota,
 				UPPER(COALESCE(NULLIF(TRIM(s.serv_name), ''), NULLIF(TRIM(v."Serv_Name"), ''), 'DARAT')) AS serv_name,
@@ -131,21 +131,22 @@ func GetLSPBReportList(c *gin.Context) {
 				COALESCE(NULLIF(regexp_replace(COALESCE(t.harilibur::text, ''), '[^0-9-]', '', 'g'), '')::int, 0) AS hari_libur_manual,
 
 				CASE 
-					WHEN NULLIF(TRIM(COALESCE(v."Tanggal_Diterima"::text, '')), '') IS NOT NULL THEN
+					WHEN NULLIF(TRIM(COALESCE(t.tanggal_diterima::text, v."Tanggal_Diterima"::text, '')), '') IS NOT NULL THEN
 						CASE 
-							WHEN v."Tanggal_Diterima"::text LIKE '%%/%%/%%' THEN TO_DATE(SPLIT_PART(v."Tanggal_Diterima"::text, ' ', 1), 'MM/DD/YYYY')
-							ELSE SPLIT_PART(v."Tanggal_Diterima"::text, ' ', 1)::date
+							WHEN COALESCE(t.tanggal_diterima::text, v."Tanggal_Diterima"::text) LIKE '%%/%%/%%' 
+								THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_diterima::text, v."Tanggal_Diterima"::text), ' ', 1), 'MM/DD/YYYY')
+							ELSE SPLIT_PART(COALESCE(t.tanggal_diterima::text, v."Tanggal_Diterima"::text), ' ', 1)::date
 						END
 					ELSE NULL
 				END AS dt_diterima,
-				COALESCE(NULLIF(TRIM(v."Nama_Penerima"), ''), '') AS nama_penerima,
+				COALESCE(NULLIF(TRIM(t.nama_penerima), ''), NULLIF(TRIM(v."Nama_Penerima"), ''), '') AS nama_penerima,
 
 				CASE 
-					WHEN UPPER(COALESCE(v."Keterangan", '')) LIKE '%%GAGAL%%' THEN 1
+					WHEN UPPER(COALESCE(NULLIF(TRIM(t.keterangan), ''), v."Keterangan", '')) LIKE '%%GAGAL%%' THEN 1
 					ELSE 0
 				END AS is_gagal,
 
-				COALESCE(v."Keterangan", '') AS keterangan,
+				COALESCE(NULLIF(TRIM(t.keterangan), ''), v."Keterangan", '') AS keterangan,
 				CASE 
 					WHEN NULLIF(SPLIT_PART(COALESCE(v."TB_TglKembali"::text, ''), ' ', 1), '') IS NOT NULL 
 					THEN SPLIT_PART(v."TB_TglKembali"::text, ' ', 1)::date
@@ -155,7 +156,7 @@ func GetLSPBReportList(c *gin.Context) {
 				COALESCE(v.artih_nokw, '') AS artih_nokw,
 				COALESCE(NULLIF(TRIM(c.nomobil), ''), '') AS no_mobil,
 
-				COALESCE(SPLIT_PART(COALESCE(v."Tanggal_berangkat"::text, ''), ' ', 1), '') AS tanggal_berangkat,
+				COALESCE(SPLIT_PART(COALESCE(t.tanggal_berangkat::text, v."Tanggal_berangkat"::text, ''), ' ', 1), '') AS tanggal_berangkat,
 				COALESCE(to_jsonb(t)->>'tanggal_kendaraan_tiba', c.jammobiltiba, '') AS tanggal_kendaraan_tiba,
 				COALESCE(to_jsonb(t)->>'tanggal_pi_approve', v.artih_tglacc, '') AS artih_tgl_acc,
 				COALESCE(to_jsonb(t)->>'inv', 'N') AS inv,
@@ -170,16 +171,16 @@ func GetLSPBReportList(c *gin.Context) {
 				v."bttt_servid" AS bttt_servid
 			FROM vw_transport_lspb v
 			LEFT JOIN public.opr_t_transportlspb t
-				ON t.dn_od_sj::text = v."DN_OD_SJ"::text
+				ON TRIM(t.dn_od_sj::text) = TRIM(v."DN_OD_SJ"::text)
 				AND UPPER(TRIM(COALESCE(t.nomorbtt::text, ''))) = UPPER(TRIM(COALESCE(v."nomorbtt"::text, '')))
 			LEFT JOIN public.mkt_t_econote e 
 				ON UPPER(TRIM(e.bttt_id::text)) = UPPER(TRIM(v."nomorbtt"::text))
 			LEFT JOIN public.mkt_m_service s
-				ON s.serv_id::text = e.bttt_servid::text
+				ON TRIM(s.serv_id::text) = TRIM(e.bttt_servid::text)
 			LEFT JOIN public.mkt_m_customer m 
-				ON m.cust_id::text = COALESCE(NULLIF(TRIM(t.customerid::text), ''), e.bttt_asalcustid::text)
+				ON TRIM(m.cust_id::text) = COALESCE(NULLIF(TRIM(e.bttt_asalcustid::text), ''), TRIM(t.customerid::text))
 			LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
-				ON v."DN_OD_SJ"::text = c.nodo::text
+				ON TRIM(v."DN_OD_SJ"::text) = TRIM(c.nodo::text)
 			WHERE v."DN_OD_SJ" IS NOT NULL AND v."DN_OD_SJ" <> ''
 			%s
 			LIMIT 1000
