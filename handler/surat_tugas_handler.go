@@ -1188,32 +1188,52 @@ func StartLoadingSuratTugasHandler(c *gin.Context) {
 	now := time.Now()
 	nowStr := now.Format("2006-01-02 15:04:05")
 
-	// Jika belum punya sesi loading, buat baru di opr_t_loadingh (format CLDYYYYMMDD0001 sesuai data Anda)
+	// Hanya buat Loading ID baru jika surat tugas ini belum memiliki sjh_loadhid
 	if loadingID == "" {
-		prefix := fmt.Sprintf("CLD%s", now.Format("20060102"))
+		ptCode := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", ptID)))
+		if ptCode == "" || ptCode == "<NIL>" {
+			ptCode = "C"
+		}
+		cabangCode := strings.TrimSpace(sjhInfo.StartAgenID)
+		if cabangCode == "" || strings.ToUpper(cabangCode) == "PST" || strings.ToUpper(cabangCode) == "OTA" {
+			cabangCode = "001"
+		}
+		if len(cabangCode) < 3 {
+			cabangCode = fmt.Sprintf("%03s", cabangCode)
+		} else if len(cabangCode) > 3 {
+			cabangCode = cabangCode[:3]
+		}
+
+		// Format Resmi Dakota: L + PT_ID (C) + 3 digit Cabang (001) + YYYYMM + 7 digit urut -> LC0012026110000003
+		prefix := fmt.Sprintf("L%s%s%s", ptCode, cabangCode, now.Format("200601"))
 		var lastLoadID string
 		database.Raw(`SELECT loadh_id FROM public.opr_t_loadingh WHERE loadh_id LIKE ? ORDER BY loadh_id DESC LIMIT 1`, prefix+"%").Scan(&lastLoadID)
 
 		urut := 1
-		if len(lastLoadID) >= len(prefix)+4 {
+		if len(lastLoadID) >= len(prefix)+7 {
 			fmt.Sscanf(lastLoadID[len(prefix):], "%d", &urut)
 			urut++
 		}
-		loadingID = fmt.Sprintf("%s%04d", prefix, urut)
+		loadingID = fmt.Sprintf("%s%07d", prefix, urut)
 
+		// 1. Simpan header ke opr_t_loadingh
 		if err := database.Exec(`
 			INSERT INTO public.opr_t_loadingh (loadh_id, loadh_tanggal, loadh_agenid, loadh_kendid, loadh_approveyn, loadh_updateid, loadh_updatetime, created_at)
 			VALUES (?, ?, ?, ?, 'N', ?, ?, CURRENT_TIMESTAMP)
-		`, loadingID, nowStr, sjhInfo.StartAgenID, sjhInfo.SjhKendID, userNameStr, nowStr).Error; err != nil {
+		`, loadingID, nowStr, cabangCode, sjhInfo.SjhKendID, userNameStr, nowStr).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membuat header loading: " + err.Error()})
 			return
 		}
 
-		database.Exec(`
+		// 2. Hubungkan loadingID ke opr_t_esuratjalan.sjh_loadhid
+		if err := database.Exec(`
 			UPDATE public.opr_t_esuratjalan
 			SET sjh_loadhid = ?, sjh_updateid = ?, sjh_updatetime = ?
 			WHERE TRIM(sjh_id) = TRIM(?)
-		`, loadingID, userNameStr, nowStr, sjhInfo.SjhID)
+		`, loadingID, userNameStr, nowStr, sjhInfo.SjhID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghubungkan loading ke surat tugas: " + err.Error()})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

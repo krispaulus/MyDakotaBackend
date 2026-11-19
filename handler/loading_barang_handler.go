@@ -181,29 +181,35 @@ func GetDetailLoadingBarang(c *gin.Context) {
 	var summaryList []SummaryRow
 	database.Raw(`
 		SELECT 
-			COALESCE(TRIM(sub.bttt_servid), '1') AS serv_id,
-			COALESCE(TRIM(sub.bttt_tujuanagenid), '-') AS agen_id,
-			COALESCE(a.agen_nama, 'TANPA CABANG') AS cabang_nama,
-			COUNT(sub.bttt_id)::int AS jml_btt,
-			COALESCE(SUM(sub.berat_hitung), 0) AS total_berat
-		FROM (
-			SELECT DISTINCT 
-				e.bttt_id,
-				e.bttt_servid,
-				e.bttt_tujuanagenid,
+			CASE 
+				WHEN UPPER(TRIM(COALESCE(e.bttt_servid, '1'))) IN ('2', 'LAUT') THEN '2'
+				WHEN UPPER(TRIM(COALESCE(e.bttt_servid, '1'))) IN ('3', 'UDARA') THEN '3'
+				ELSE '1'
+			END AS serv_id,
+			COALESCE(NULLIF(TRIM(e.bttt_tujuanagenid), ''), '-') AS agen_id,
+			COALESCE(NULLIF(TRIM(a.agen_nama), ''), NULLIF(TRIM(e.bttt_tujuankota), ''), 'TANPA CABANG') AS cabang_nama,
+			COUNT(d.loadd_id)::int AS jml_btt,
+			COALESCE(SUM(
 				CASE WHEN COALESCE(e.bttt_berat, 0) >= COALESCE(e.bttt_beratvol, 0) 
 				     THEN COALESCE(e.bttt_berat, 0) 
 				     ELSE COALESCE(e.bttt_beratvol, 0) 
-				END AS berat_hitung
-			FROM public.opr_t_loadingd d
-			INNER JOIN public.mkt_t_econote e 
-				ON TRIM(e.bttt_id) = SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1)
-				OR LEFT(TRIM(d.loadd_bttkoliid), LENGTH(TRIM(e.bttt_id))) = TRIM(e.bttt_id)
-			WHERE TRIM(d.loadd_loadhid) = TRIM(?)
-		) sub
-		LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(sub.bttt_tujuanagenid::varchar)
-		GROUP BY sub.bttt_servid, sub.bttt_tujuanagenid, a.agen_nama
-		ORDER BY sub.bttt_servid ASC, a.agen_nama ASC
+				END
+			), 0) AS total_berat
+		FROM public.opr_t_loadingd d
+		LEFT JOIN public.mkt_t_econote e 
+			ON TRIM(e.bttt_id) = SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1)
+			OR LEFT(TRIM(d.loadd_bttkoliid), LENGTH(TRIM(e.bttt_id))) = TRIM(e.bttt_id)
+		LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)
+		WHERE TRIM(d.loadd_loadhid) = TRIM(?)
+		GROUP BY 
+			CASE 
+				WHEN UPPER(TRIM(COALESCE(e.bttt_servid, '1'))) IN ('2', 'LAUT') THEN '2'
+				WHEN UPPER(TRIM(COALESCE(e.bttt_servid, '1'))) IN ('3', 'UDARA') THEN '3'
+				ELSE '1'
+			END,
+			COALESCE(NULLIF(TRIM(e.bttt_tujuanagenid), ''), '-'),
+			COALESCE(NULLIF(TRIM(a.agen_nama), ''), NULLIF(TRIM(e.bttt_tujuankota), ''), 'TANPA CABANG')
+		ORDER BY serv_id ASC, cabang_nama ASC
 	`, loID).Scan(&summaryList)
 
 	c.JSON(http.StatusOK, gin.H{
