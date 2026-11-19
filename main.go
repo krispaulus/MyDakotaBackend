@@ -219,6 +219,9 @@ func main() {
 			authorized.GET("/operasional/laporan-data-penerima-customer", handler.GetLaporanDataPenerimaCustomer)
 			authorized.GET("/operasional/laporan-pendapatan-operasional", handler.GetLaporanPendapatanOperasional)
 			authorized.GET("/operasional/loading-barang", handler.GetListLoadingBarang)
+			authorized.GET("/operasional/loading-barang/detail", handler.GetDetailLoadingBarang)
+			authorized.PUT("/operasional/loading-barang/update", handler.UpdateAndApproveLoadingBarang)
+			authorized.DELETE("/operasional/loading-barang/delete", handler.DeleteLoadingBarang)
 
 			// 📄 OPERASIONAL: PENGAMBILAN BARANG RETUR
 			authorized.GET("/operasional/ambilretur-list", handler.GetAmbilReturList)
