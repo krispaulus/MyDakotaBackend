@@ -289,15 +289,19 @@ func GetBTT(c *gin.Context) {
 		BtttUP           string `json:"bttt_up" gorm:"column:up"`
 
 		// Rincian Muatan & Biaya
-		NamaBarang         string  `json:"nama_barang" gorm:"column:nama_barang"`
-		BtttNamaBarang     string  `json:"bttt_namabarang" gorm:"column:nama_barang"`
-		Harga              float64 `json:"harga" gorm:"column:harga"`
-		BtttHarga          float64 `json:"bttt_harga" gorm:"column:harga"`
-		CreateBy           string  `json:"create_by" gorm:"column:create_by"`
-		NoSuratJalan       string  `json:"no_surat_jalan" gorm:"column:no_surat_jalan"`
-		BtttNoSuratJalan   string  `json:"bttt_nosuratjalan" gorm:"column:no_surat_jalan"`
-		Keterangan         string  `json:"keterangan" gorm:"column:keterangan"`
-		BtttKet            string  `json:"bttt_ket" gorm:"column:keterangan"`
+		NamaBarang     string  `json:"nama_barang" gorm:"column:nama_barang"`
+		BtttNamaBarang string  `json:"bttt_namabarang" gorm:"column:nama_barang"`
+		Harga          float64 `json:"harga" gorm:"column:harga"`
+		BtttHarga      float64 `json:"bttt_harga" gorm:"column:harga"`
+		CreateBy       string  `json:"create_by" gorm:"column:create_by"`
+
+		NoSuratJalan     string `json:"no_surat_jalan" gorm:"column:no_surat_jalan"`
+		BtttNoSuratJalan string `json:"bttt_nosuratjalan" gorm:"column:no_surat_jalan"`
+		Keterangan       string `json:"keterangan" gorm:"column:keterangan"`
+		BtttKet          string `json:"bttt_ket" gorm:"column:keterangan"`
+		IsiKiriman       string `json:"isi_kiriman" gorm:"column:isi_kiriman"`
+		BtttIsiKiriman   string `json:"bttt_isikiriman" gorm:"column:isi_kiriman"`
+
 		JumlahKoli         int     `json:"jumlah_koli" gorm:"column:jumlah_koli"`
 		BtttJmlKoli        int     `json:"bttt_jmlkoli" gorm:"column:jumlah_koli"`
 		Berat              float64 `json:"berat" gorm:"column:berat"`
@@ -371,6 +375,7 @@ func GetBTT(c *gin.Context) {
 			END AS create_by,
 			COALESCE(e.bttt_nosuratjalan, '') AS no_surat_jalan,
 			COALESCE(e.bttt_ket, '') AS keterangan,
+			COALESCE(to_jsonb(e)->>'bttt_isikiriman', '') AS isi_kiriman,
 			COALESCE(e.bttt_jmlunit, 1) AS jumlah_koli,
 			COALESCE(e.bttt_berat, 0) AS berat,
 			COALESCE(e.bttt_beratvol, 0) AS berat_volume,
