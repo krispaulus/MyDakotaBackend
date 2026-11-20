@@ -65,6 +65,15 @@ func UpdateBTT(c *gin.Context) {
 		return
 	}
 
+	var existingBtt struct {
+		BtttTanggal time.Time `gorm:"column:bttt_tanggal"`
+		BtttKet     string    `gorm:"column:bttt_ket"`
+	}
+	database.Table("public.mkt_t_econote").
+		Select("bttt_tanggal, COALESCE(bttt_ket, '') AS bttt_ket").
+		Where("TRIM(bttt_id) = ?", bttID).
+		Scan(&existingBtt)
+
 	userID, _ := c.Get("username")
 	if userID == nil || fmt.Sprintf("%v", userID) == "" {
 		userID = "SYSTEM"
@@ -95,7 +104,6 @@ func UpdateBTT(c *gin.Context) {
 		return int(toFloat(v))
 	}
 
-	// Pastikan kolom bttt_biayapacking tersedia
 	database.Exec(`ALTER TABLE public.mkt_t_econote ADD COLUMN IF NOT EXISTS bttt_biayapacking NUMERIC(18,2)`)
 
 	hargaBaru := toFloat(payload["bttt_harga"])
@@ -110,17 +118,29 @@ func UpdateBTT(c *gin.Context) {
 		"bttt_updatetime":   time.Now(),
 	}
 
-	if v := cleanStringVal(payload["bttt_tanggal"]); v != "" {
-		if parsedTgl, errT := time.Parse("2006-01-02", v); errT == nil {
-			updates["bttt_tanggal"] = parsedTgl
+	// 1. Jaga tanggal asli BTT: hanya update tanggal jika allow_edit_tanggal == true
+	if allowEditTgl, ok := payload["allow_edit_tanggal"].(bool); ok && allowEditTgl {
+		if v := cleanStringVal(payload["bttt_tanggal"]); v != "" {
+			if parsedTgl, errT := time.Parse("2006-01-02", v); errT == nil {
+				updates["bttt_tanggal"] = parsedTgl
+			}
 		}
 	}
+
 	if v := cleanStringVal(payload["bttt_nosuratjalan"]); v != "" {
 		updates["bttt_nosuratjalan"] = v
 	}
+
+	// 2. Jaga keterangan asli: jangan timpa dengan default "SURAT JALAN KEMBALI"
 	if v := cleanStringVal(payload["bttt_ket"]); v != "" {
-		updates["bttt_ket"] = v
+		isDefaultReset := strings.EqualFold(v, "SURAT JALAN KEMBALI") &&
+			strings.TrimSpace(existingBtt.BtttKet) != "" &&
+			!strings.EqualFold(strings.TrimSpace(existingBtt.BtttKet), "SURAT JALAN KEMBALI")
+		if !isDefaultReset {
+			updates["bttt_ket"] = v
+		}
 	}
+
 	if v := cleanStringVal(payload["bttt_tujuannama"]); v != "" {
 		updates["bttt_tujuannama"] = v
 	}
