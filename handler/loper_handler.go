@@ -363,20 +363,39 @@ func GetLoperDetail(c *gin.Context) {
 	database.Raw(`
 		SELECT 
 			TRIM(d.loperd_bttid) AS no_btt,
-			TO_CHAR(e.bttt_tanggal, 'DD/MM/YYYY') AS tgl_btt,
+			COALESCE(e.bttt_nosuratjalan, '-') AS surat_jalan,
+			TO_CHAR(e.bttt_tanggal, 'MM/DD/YYYY') AS tgl_btt,
 			COALESCE(e.bttt_asalname, '-') AS pengirim,
 			COALESCE(e.bttt_tujuannama, '-') AS penerima,
+			COALESCE(e.bttt_up, '-') AS up_penerima,
 			COALESCE(e.bttt_tujuanalamat, '-') AS alamat,
 			COALESCE(e.bttt_tujuankota, '-') AS kota,
+			COALESCE(e.bttt_ket, '') AS keterangan,
 			COALESCE(e.bttt_jmlunit, 1) AS jml_koli,
 			COALESCE(e.bttt_berat, 0) AS berat,
 			COALESCE(e.bttt_beratvol, 0) AS berat_vol,
+			COALESCE(e.bttt_ukuran, 0) AS ukuran,
 			COALESCE(e.bttt_harga, 0) AS harga,
-			COALESCE(e.bttt_tagihtujuan, 0) AS cod
+			COALESCE(e.bttt_tagihtujuan, 0) AS cod,
+			CASE 
+				WHEN bbl.bbl_terimayn = 'Y' THEN 'Diterima'
+				WHEN bbl.bbl_terimayn = 'N' THEN 'Gagal'
+				ELSE ''
+			END AS status_bbl,
+			COALESCE(TO_CHAR(bbl.bbl_tanggal, 'HH24:MI'), '') AS jam_bbl,
+			COALESCE(bbl.bbl_updateid, '') AS input_oleh
 		FROM public.opr_t_eloperdetail d
 		LEFT JOIN public.mkt_t_econote e ON TRIM(d.loperd_bttid) = TRIM(e.bttt_id)
+		LEFT JOIN LATERAL (
+			SELECT bbl_terimayn, bbl_tanggal, bbl_updateid
+			FROM public.opr_t_ebbl
+			WHERE TRIM(bbl_bttid) = TRIM(d.loperd_bttid)
+			  AND TRIM(bbl_noloper) = TRIM(d.loperd_eloperid)
+			ORDER BY bbl_tanggal DESC
+			LIMIT 1
+		) bbl ON true
 		WHERE TRIM(d.loperd_eloperid) = TRIM(?)
-		ORDER BY e.bttt_tujuannama ASC, d.loperd_bttid ASC
+		ORDER BY d.loperd_updatetime DESC, e.bttt_tujuannama ASC, d.loperd_bttid ASC
 	`, loperID).Scan(&details)
 
 	c.JSON(http.StatusOK, gin.H{

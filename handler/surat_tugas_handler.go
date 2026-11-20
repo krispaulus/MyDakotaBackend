@@ -421,6 +421,7 @@ func GetSuratTugasDetailPrint(c *gin.Context) {
 			COALESCE(sp1.kry_nama, '-') AS nmsopir1,
 			COALESCE(sp2.kry_nama, '-') AS nmsopir2,
 			COALESCE(a.ass_nama, '-') AS ass_nama,
+			COALESCE(NULLIF(TRIM(s.sjh_keterangan), ''), a.ass_nama, '-') AS sjh_keterangan,
 			COALESCE(s.sjh_trayekid, '') AS sjh_trayekid,
 			COALESCE(trh.trh_name, '') AS nama_trayek,
 			COALESCE(cStart.agen_nama, 'BEKASI KOTA') AS cbgmulai,
