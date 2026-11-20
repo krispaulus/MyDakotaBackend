@@ -138,33 +138,28 @@ func CreateSuratTugas(c *gin.Context) {
 	}
 
 	// 🌟 AUTO-GENERATE NOMOR SURAT TUGAS JIKA KOSONG DARI FORM TAMBAH
-	if strings.TrimSpace(req.SJHID) == "" {
+if strings.TrimSpace(req.SJHID) == "" {
 		cabangCode := strings.TrimSpace(req.SJHStartAgenID)
-		if len(cabangCode) >= 3 {
+		if cabangCode == "" || strings.ToUpper(cabangCode) == "PST" || strings.ToUpper(cabangCode) == "OTA" {
+			cabangCode = "001"
+		} else if len(cabangCode) >= 3 {
 			cabangCode = cabangCode[:3]
 		} else {
-			cabangCode = "001"
+			cabangCode = fmt.Sprintf("%03s", cabangCode)
 		}
 
 		datePrefix := nowTime.Format("20060102") // YYYYMMDD
 		prefix := fmt.Sprintf("%sJC%s", cabangCode, datePrefix)
 
-		var lastID string
+		var maxUrut int
 		database.Raw(`
-            SELECT sjh_id 
-            FROM public.opr_t_esuratjalan 
-            WHERE sjh_id LIKE ? 
-            ORDER BY sjh_id DESC 
-            LIMIT 1
-        `, prefix+"%").Scan(&lastID)
+			SELECT COALESCE(MAX(CAST(RIGHT(TRIM(sjh_id), 4) AS INTEGER)), 0)
+			FROM public.opr_t_esuratjalan
+			WHERE TRIM(sjh_id) LIKE ?
+			  AND RIGHT(TRIM(sjh_id), 4) ~ '^[0-9]{4}$'
+		`, prefix+"%").Scan(&maxUrut)
 
-		urut := 1
-		if len(lastID) >= len(prefix)+4 {
-			suffix := lastID[len(prefix):]
-			fmt.Sscanf(suffix, "%d", &urut)
-			urut++
-		}
-		req.SJHID = fmt.Sprintf("%s%04d", prefix, urut)
+		req.SJHID = fmt.Sprintf("%s%04d", prefix, maxUrut+1)
 	}
 
 	insertHeader := `

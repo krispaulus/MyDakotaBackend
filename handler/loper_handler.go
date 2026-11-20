@@ -339,7 +339,7 @@ func GetLoperDetail(c *gin.Context) {
 	}
 
 	var header map[string]interface{}
-	database.Raw(`
+	if err := database.Raw(`
 		SELECT 
 			l.loper_eid,
 			TO_CHAR(l.loper_tanggal, 'YYYY-MM-DD HH24:MI:SS') AS loper_tanggal,
@@ -349,7 +349,7 @@ func GetLoperDetail(c *gin.Context) {
 			COALESCE(l.loper_keraniyn, 'N') AS loper_keraniyn,
 			COALESCE(l.loper_nipkerani, '-') AS loper_nipkerani,
 			COALESCE(k.kry_nama, '-') AS nama_kerani,
-			COALESCE(l.loper_otp, '-') AS loper_otp,
+			COALESCE(CAST(l.loper_otp AS VARCHAR), '-') AS loper_otp,
 			COALESCE(l.loper_loadhid, '-') AS loper_loadhid,
 			COALESCE(l.loper_updateid, '-') AS loper_updateid
 		FROM public.opr_t_eloper l
@@ -357,10 +357,13 @@ func GetLoperDetail(c *gin.Context) {
 		LEFT JOIN public.hrd_m_karyawan k ON TRIM(l.loper_nipkerani) = TRIM(k.kry_nip)
 		WHERE TRIM(l.loper_eid) = TRIM(?)
 		LIMIT 1
-	`, loperID).Scan(&header)
+	`, loperID).Scan(&header).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal query header loper: " + err.Error()})
+		return
+	}
 
 	var details []map[string]interface{}
-	errDet := database.Raw(`
+	if errDet := database.Raw(`
 		SELECT 
 			TRIM(d.loperd_bttid) AS no_btt,
 			COALESCE(e.bttt_nosuratjalan, '-') AS surat_jalan,
@@ -374,7 +377,7 @@ func GetLoperDetail(c *gin.Context) {
 			COALESCE(e.bttt_jmlunit, 1) AS jml_koli,
 			COALESCE(e.bttt_berat, 0) AS berat,
 			COALESCE(e.bttt_beratvol, 0) AS berat_vol,
-			COALESCE(e.bttt_ukuran, 0) AS ukuran,
+			COALESCE(NULLIF(TRIM(e.bttt_ukuran), ''), '0') AS ukuran,
 			COALESCE(e.bttt_harga, 0) AS harga,
 			COALESCE(e.bttt_tagihtujuan, 0) AS cod,
 			'' AS status_bbl,
@@ -384,14 +387,11 @@ func GetLoperDetail(c *gin.Context) {
 		LEFT JOIN public.mkt_t_econote e ON TRIM(d.loperd_bttid) = TRIM(e.bttt_id)
 		WHERE TRIM(d.loperd_eloperid) = TRIM(?)
 		ORDER BY d.loperd_bttid DESC
-	`, loperID).Scan(&details).Error
-
-	if errDet != nil {
+	`, loperID).Scan(&details).Error; errDet != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal query detail BTT: " + errDet.Error()})
 		return
 	}
 
-	// Lengkapi status BBL secara terpisah agar tidak memblokir query utama jika tabel/kolom BBL berbeda
 	for idx, row := range details {
 		noBtt := fmt.Sprintf("%v", row["no_btt"])
 		var bblInfo struct {
