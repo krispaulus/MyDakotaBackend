@@ -42,10 +42,10 @@ func GetLoperList(c *gin.Context) {
 			COALESCE(l.loper_aktifyn, 'Y') AS loper_aktifyn,
 			COALESCE(COUNT(d.loperd_bttid), 0) AS total_btt
 		FROM public.opr_t_eloper l
-		LEFT JOIN public.opr_t_eloperdetail d ON l.loper_eid = d.loperd_eloperid
-		LEFT JOIN public.hrd_m_karyawan s ON l.loper_nipsopir = s.kry_nip
-		LEFT JOIN public.hrd_m_karyawan k ON l.loper_nipkerani = k.kry_nip
-		WHERE 1=1 %s
+		LEFT JOIN public.opr_t_eloperdetail d ON TRIM(l.loper_eid) = TRIM(d.loperd_eloperid)
+		LEFT JOIN public.hrd_m_karyawan s ON TRIM(l.loper_nipsopir) = TRIM(s.kry_nip)
+		LEFT JOIN public.hrd_m_karyawan k ON TRIM(l.loper_nipkerani) = TRIM(k.kry_nip)
+		WHERE COALESCE(TRIM(l.loper_aktifyn), 'Y') = 'Y' %s
 		GROUP BY l.loper_eid, l.loper_tanggal, l.loper_agenid, l.loper_nomobil, l.loper_nipsopir, s.kry_nama, l.loper_keraniyn, l.loper_nipkerani, k.kry_nama, l.loper_aktifyn
 		ORDER BY l.loper_tanggal DESC, l.loper_eid DESC
 	`, filterClause)
@@ -360,11 +360,11 @@ func GetLoperDetail(c *gin.Context) {
 	`, loperID).Scan(&header)
 
 	var details []map[string]interface{}
-	database.Raw(`
+	errDet := database.Raw(`
 		SELECT 
 			TRIM(d.loperd_bttid) AS no_btt,
 			COALESCE(e.bttt_nosuratjalan, '-') AS surat_jalan,
-			TO_CHAR(e.bttt_tanggal, 'MM/DD/YYYY') AS tgl_btt,
+			COALESCE(TO_CHAR(e.bttt_tanggal, 'MM/DD/YYYY'), '-') AS tgl_btt,
 			COALESCE(e.bttt_asalname, '-') AS pengirim,
 			COALESCE(e.bttt_tujuannama, '-') AS penerima,
 			COALESCE(e.bttt_up, '-') AS up_penerima,
@@ -377,26 +377,43 @@ func GetLoperDetail(c *gin.Context) {
 			COALESCE(e.bttt_ukuran, 0) AS ukuran,
 			COALESCE(e.bttt_harga, 0) AS harga,
 			COALESCE(e.bttt_tagihtujuan, 0) AS cod,
-			CASE 
-				WHEN bbl.bbl_terimayn = 'Y' THEN 'Diterima'
-				WHEN bbl.bbl_terimayn = 'N' THEN 'Gagal'
-				ELSE ''
-			END AS status_bbl,
-			COALESCE(TO_CHAR(bbl.bbl_tanggal, 'HH24:MI'), '') AS jam_bbl,
-			COALESCE(bbl.bbl_updateid, '') AS input_oleh
+			'' AS status_bbl,
+			'' AS jam_bbl,
+			'' AS input_oleh
 		FROM public.opr_t_eloperdetail d
 		LEFT JOIN public.mkt_t_econote e ON TRIM(d.loperd_bttid) = TRIM(e.bttt_id)
-		LEFT JOIN LATERAL (
-			SELECT bbl_terimayn, bbl_tanggal, bbl_updateid
+		WHERE TRIM(d.loperd_eloperid) = TRIM(?)
+		ORDER BY d.loperd_bttid DESC
+	`, loperID).Scan(&details).Error
+
+	if errDet != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal query detail BTT: " + errDet.Error()})
+		return
+	}
+
+	// Lengkapi status BBL secara terpisah agar tidak memblokir query utama jika tabel/kolom BBL berbeda
+	for idx, row := range details {
+		noBtt := fmt.Sprintf("%v", row["no_btt"])
+		var bblInfo struct {
+			StatusBBL string `gorm:"column:status_bbl"`
+			JamBBL    string `gorm:"column:jam_bbl"`
+			InputOleh string `gorm:"column:input_oleh"`
+		}
+		database.Raw(`
+			SELECT 
+				CASE WHEN bbl_terimayn = 'Y' THEN 'Diterima' WHEN bbl_terimayn = 'N' THEN 'Gagal' ELSE '' END AS status_bbl,
+				COALESCE(TO_CHAR(bbl_tanggal, 'HH24:MI'), '') AS jam_bbl,
+				COALESCE(bbl_updateid, '') AS input_oleh
 			FROM public.opr_t_ebbl
-			WHERE TRIM(bbl_bttid) = TRIM(d.loperd_bttid)
-			  AND TRIM(bbl_noloper) = TRIM(d.loperd_eloperid)
+			WHERE TRIM(bbl_bttid) = TRIM(?)
 			ORDER BY bbl_tanggal DESC
 			LIMIT 1
-		) bbl ON true
-		WHERE TRIM(d.loperd_eloperid) = TRIM(?)
-		ORDER BY d.loperd_updatetime DESC, e.bttt_tujuannama ASC, d.loperd_bttid ASC
-	`, loperID).Scan(&details)
+		`, noBtt).Scan(&bblInfo)
+
+		details[idx]["status_bbl"] = bblInfo.StatusBBL
+		details[idx]["jam_bbl"] = bblInfo.JamBBL
+		details[idx]["input_oleh"] = bblInfo.InputOleh
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
@@ -420,9 +437,15 @@ func DeleteLoper(c *gin.Context) {
 		return
 	}
 
-	database.Exec(`UPDATE public.opr_t_eloper SET loper_aktifyn = 'N', loper_updatetime = CURRENT_TIMESTAMP WHERE TRIM(loper_eid) = TRIM(?)`, loperID)
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": fmt.Sprintf("Manifes Loper %s berhasil dibatalkan.", loperID)})
+	database.Exec(`DELETE FROM public.opr_t_eloperdetail WHERE TRIM(loperd_eloperid) = TRIM(?)`, loperID)
+	if err := database.Exec(`DELETE FROM public.opr_t_eloper WHERE TRIM(loper_eid) = TRIM(?)`, loperID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus Manifes Loper: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": fmt.Sprintf("Manifes Loper %s berhasil dihapus permanen.", loperID)})
 }
+
 
 // 5. UpdateLoperHeader Menyimpan perubahan header Manifes Loper (Tanggal, Mobil, Sopir, Kerani)
 func UpdateLoperHeader(c *gin.Context) {
