@@ -160,6 +160,9 @@ func main() {
 			authorized.GET("/operasional/loper/history", handler.GetHistoryLoper)
 
 			authorized.GET("/operasional/loper/check-loading", handler.CheckLoadingForLoper)
+			authorized.POST("/operasional/loper/create-direct-btt", handler.CreateLoperDirectBTT)
+			authorized.GET("/operasional/loper/report-rekap", handler.GetLaporanRekapLoper)
+			authorized.GET("/operasional/loper/report-detail", handler.GetLaporanDetailLoper)
 
 			authorized.GET("/operasional/loper/approved-loading", handler.GetApprovedLoadingForLoper)
 			authorized.POST("/operasional/loper/create-from-loading", handler.CreateLoperFromLoading)

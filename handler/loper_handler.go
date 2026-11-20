@@ -826,3 +826,287 @@ func CheckLoadingForLoper(c *gin.Context) {
 		"jml_btt":     len(bttDetails),
 	})
 }
+
+// =========================================================================
+// 9. CreateLoperDirectBTT Membuat Manifes Loper Langsung dari BTT (opr_t_loper_a_BTT.asp)
+// =========================================================================
+func CreateLoperDirectBTT(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	var req struct {
+		LoperAgenID    string `json:"loper_agenid"`
+		LoperTanggal   string `json:"loper_tanggal" binding:"required"`
+		LoperNoMobil   string `json:"loper_nomobil" binding:"required"`
+		LoperNIPSopir  string `json:"loper_nipsopir" binding:"required"`
+		LoperKeraniYN  string `json:"loper_keraniyn"`
+		LoperNIPKerani string `json:"loper_nipkerani"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Data input tidak lengkap: " + err.Error()})
+		return
+	}
+
+	userLogin, _ := c.Get("username")
+	userNameStr := fmt.Sprintf("%v", userLogin)
+	if userNameStr == "" || userNameStr == "<nil>" {
+		userNameStr = "ADMIN"
+	}
+
+	now := time.Now()
+	tglLoper := strings.TrimSpace(req.LoperTanggal)
+	if len(tglLoper) == 10 {
+		tglLoper = tglLoper + " " + now.Format("15:04:05")
+	}
+
+	parsedTgl, errTgl := time.Parse("2006-01-02 15:04:05", tglLoper)
+	if errTgl != nil {
+		parsedTgl = now
+	}
+
+	// Format Nomor Loper Resmi: 001000001/MM/YYYY/LC
+	cleanAgen := strings.ToUpper(strings.TrimSpace(req.LoperAgenID))
+	if cleanAgen == "" || cleanAgen == "PST" || cleanAgen == "OTA" {
+		cleanAgen = "001"
+	}
+	if len(cleanAgen) < 3 {
+		cleanAgen = fmt.Sprintf("%03s", cleanAgen)
+	} else if len(cleanAgen) > 3 {
+		cleanAgen = cleanAgen[:3]
+	}
+
+	ptCode := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", ptID)))
+	if ptCode == "" || ptCode == "<NIL>" {
+		ptCode = "C"
+	}
+
+	suffix := fmt.Sprintf("/%s/L%s", parsedTgl.Format("01/2006"), ptCode)
+	likePattern := fmt.Sprintf("%s%%%s", cleanAgen, suffix)
+
+	var maxUrut int
+	database.Raw(`
+		SELECT COALESCE(MAX(CAST(SUBSTRING(TRIM(loper_eid), 4, 6) AS INTEGER)), 0)
+		FROM public.opr_t_eloper
+		WHERE TRIM(loper_eid) LIKE ?
+		  AND SUBSTRING(TRIM(loper_eid), 4, 6) ~ '^[0-9]{6}$'
+	`, likePattern).Scan(&maxUrut)
+
+	newLoperID := fmt.Sprintf("%s%06d%s", cleanAgen, maxUrut+1, suffix)
+	otpCode := fmt.Sprintf("%06d", now.UnixNano()%1000000)
+
+	keraniYN := "N"
+	nipKerani := ""
+	if strings.ToUpper(req.LoperKeraniYN) == "Y" || strings.ToUpper(req.LoperKeraniYN) == "YA" {
+		keraniYN = "Y"
+		nipKerani = strings.TrimSpace(req.LoperNIPKerani)
+	}
+
+	insertSQL := `
+		INSERT INTO public.opr_t_eloper (
+			loper_eid, loper_agenid, loper_tanggal, loper_nipsopir,
+			loper_keraniyn, loper_nipkerani, loper_nomobil, loper_aktifyn,
+			loper_updateid, loper_updatetime, loper_otp
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'Y', ?, CURRENT_TIMESTAMP, ?)
+	`
+	if err := database.Exec(
+		insertSQL,
+		newLoperID, cleanAgen, tglLoper, strings.TrimSpace(req.LoperNIPSopir),
+		keraniYN, nipKerani, strings.ToUpper(strings.TrimSpace(req.LoperNoMobil)),
+		userNameStr, otpCode,
+	).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membuat Manifes Loper: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "success",
+		"loper_eid": newLoperID,
+		"otp":       otpCode,
+		"message":   fmt.Sprintf("Header Loper %s berhasil dibuat! Silakan tambahkan rincian BTT.", newLoperID),
+	})
+}
+
+// =========================================================================
+// 10. GetLaporanRekapLoper Laporan Rekapitulasi Loper Barang (opr_t_laporan_loper.asp)
+// =========================================================================
+func GetLaporanRekapLoper(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	tgla := strings.TrimSpace(c.Query("tgla"))
+	tgle := strings.TrimSpace(c.Query("tgle"))
+	noLoper := strings.TrimSpace(c.Query("no_loper"))
+	noMobil := strings.TrimSpace(c.Query("no_mobil"))
+	sopir := strings.TrimSpace(c.Query("sopir"))
+	kerani := strings.TrimSpace(c.Query("kerani"))
+	noBTT := strings.TrimSpace(c.Query("no_btt"))
+
+	whereClause := " WHERE COALESCE(TRIM(l.loper_aktifyn), 'Y') = 'Y' "
+	var args []interface{}
+
+	if tgla != "" && tgle != "" {
+		whereClause += " AND CAST(l.loper_tanggal AS DATE) BETWEEN ? AND ? "
+		args = append(args, tgla, tgle)
+	}
+	if noLoper != "" {
+		whereClause += " AND UPPER(l.loper_eid) LIKE UPPER(?) "
+		args = append(args, "%"+noLoper+"%")
+	}
+	if noMobil != "" {
+		whereClause += " AND UPPER(l.loper_nomobil) LIKE UPPER(?) "
+		args = append(args, "%"+noMobil+"%")
+	}
+	if sopir != "" {
+		whereClause += " AND (UPPER(s.kry_nama) LIKE UPPER(?) OR UPPER(l.loper_nipsopir) LIKE UPPER(?)) "
+		args = append(args, "%"+sopir+"%", "%"+sopir+"%")
+	}
+	if kerani != "" {
+		whereClause += " AND (UPPER(k.kry_nama) LIKE UPPER(?) OR UPPER(l.loper_nipkerani) LIKE UPPER(?)) "
+		args = append(args, "%"+kerani+"%", "%"+kerani+"%")
+	}
+	if noBTT != "" {
+		whereClause += " AND EXISTS (SELECT 1 FROM public.opr_t_eloperdetail d2 WHERE TRIM(d2.loperd_eloperid) = TRIM(l.loper_eid) AND TRIM(d2.loperd_bttid) = TRIM(?)) "
+		args = append(args, noBTT)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			TRIM(l.loper_eid) AS loper_eid,
+			TO_CHAR(l.loper_tanggal, 'DD/MM/YYYY') AS loper_tanggal,
+			COALESCE(l.loper_nomobil, '-') AS loper_nomobil,
+			COALESCE(s.kry_nama, '-') AS nama_sopir,
+			COALESCE(l.loper_nipsopir, '-') AS nip_sopir,
+			COALESCE(k.kry_nama, '-') AS nama_kerani,
+			COALESCE(l.loper_nipkerani, '-') AS nip_kerani,
+			COUNT(DISTINCT d.loperd_bttid)::int AS jbtt,
+			SUM(CASE WHEN bbl.bbl_terimayn = 'Y' THEN 1 ELSE 0 END)::int AS jbtt_terloper,
+			SUM(CASE WHEN bbl.bbl_terimayn = 'N' THEN 1 ELSE 0 END)::int AS jbtt_gagal,
+			SUM(CASE WHEN bbl.bbl_terimayn IS NULL OR TRIM(bbl.bbl_terimayn) = '' THEN 1 ELSE 0 END)::int AS jbtt_blm_input,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'Y' THEN COALESCE(e.bttt_jmlunit, 0) ELSE 0 END), 0)::int AS koli_berhasil,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'Y' THEN COALESCE(e.bttt_berat, 0) ELSE 0 END), 0) AS berat_berhasil,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'Y' THEN COALESCE(e.bttt_beratvol, 0) ELSE 0 END), 0) AS vol_berhasil,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'Y' THEN CAST(NULLIF(REGEXP_REPLACE(COALESCE(e.bttt_ukuran, '0'), '[^0-9.]', '', 'g'), '') AS NUMERIC) ELSE 0 END), 0) AS ukuran_berhasil,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'Y' THEN COALESCE(e.bttt_tagihtujuan, 0) ELSE 0 END), 0) AS cod_berhasil,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'N' THEN COALESCE(e.bttt_jmlunit, 0) ELSE 0 END), 0)::int AS koli_gagal,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'N' THEN COALESCE(e.bttt_berat, 0) ELSE 0 END), 0) AS berat_gagal,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'N' THEN COALESCE(e.bttt_beratvol, 0) ELSE 0 END), 0) AS vol_gagal,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'N' THEN CAST(NULLIF(REGEXP_REPLACE(COALESCE(e.bttt_ukuran, '0'), '[^0-9.]', '', 'g'), '') AS NUMERIC) ELSE 0 END), 0) AS ukuran_gagal,
+			COALESCE(SUM(CASE WHEN bbl.bbl_terimayn = 'N' THEN COALESCE(e.bttt_tagihtujuan, 0) ELSE 0 END), 0) AS cod_gagal
+		FROM public.opr_t_eloper l
+		INNER JOIN public.opr_t_eloperdetail d ON TRIM(l.loper_eid) = TRIM(d.loperd_eloperid)
+		LEFT JOIN public.mkt_t_econote e ON TRIM(d.loperd_bttid) = TRIM(e.bttt_id)
+		LEFT JOIN public.hrd_m_karyawan s ON TRIM(l.loper_nipsopir) = TRIM(s.kry_nip)
+		LEFT JOIN public.hrd_m_karyawan k ON TRIM(l.loper_nipkerani) = TRIM(k.kry_nip)
+		LEFT JOIN LATERAL (
+			SELECT bbl_terimayn
+			FROM public.opr_t_ebbl
+			WHERE TRIM(bbl_bttid) = TRIM(d.loperd_bttid)
+			  AND COALESCE(TRIM(bbl_aktifyn), 'Y') = 'Y'
+			ORDER BY bbl_tanggal DESC
+			LIMIT 1
+		) bbl ON true
+		%s
+		GROUP BY l.loper_eid, l.loper_tanggal, l.loper_nomobil, s.kry_nama, l.loper_nipsopir, k.kry_nama, l.loper_nipkerani
+		HAVING COUNT(d.loperd_bttid) > 0
+		ORDER BY l.loper_eid ASC
+	`, whereClause)
+
+	var list []map[string]interface{}
+	if err := database.Raw(query, args...).Scan(&list).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat laporan rekap loper: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": list})
+}
+
+// =========================================================================
+// 11. GetLaporanDetailLoper Laporan Detail Loper Barang per BTT (opr_t_laporan_loper_detail.asp)
+// =========================================================================
+func GetLaporanDetailLoper(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
+		return
+	}
+
+	tgla := strings.TrimSpace(c.Query("tgla"))
+	tgle := strings.TrimSpace(c.Query("tgle"))
+	noLoper := strings.TrimSpace(c.Query("no_loper"))
+	noMobil := strings.TrimSpace(c.Query("no_mobil"))
+	sopir := strings.TrimSpace(c.Query("sopir"))
+	kerani := strings.TrimSpace(c.Query("kerani"))
+	noBTT := strings.TrimSpace(c.Query("no_btt"))
+
+	whereClause := " WHERE COALESCE(TRIM(l.loper_aktifyn), 'Y') = 'Y' "
+	var args []interface{}
+
+	if tgla != "" && tgle != "" {
+		whereClause += " AND CAST(l.loper_tanggal AS DATE) BETWEEN ? AND ? "
+		args = append(args, tgla, tgle)
+	}
+	if noLoper != "" {
+		whereClause += " AND UPPER(l.loper_eid) LIKE UPPER(?) "
+		args = append(args, "%"+noLoper+"%")
+	}
+	if noMobil != "" {
+		whereClause += " AND UPPER(l.loper_nomobil) LIKE UPPER(?) "
+		args = append(args, "%"+noMobil+"%")
+	}
+	if sopir != "" {
+		whereClause += " AND (UPPER(s.kry_nama) LIKE UPPER(?) OR UPPER(l.loper_nipsopir) LIKE UPPER(?)) "
+		args = append(args, "%"+sopir+"%", "%"+sopir+"%")
+	}
+	if kerani != "" {
+		whereClause += " AND (UPPER(k.kry_nama) LIKE UPPER(?) OR UPPER(l.loper_nipkerani) LIKE UPPER(?)) "
+		args = append(args, "%"+kerani+"%", "%"+kerani+"%")
+	}
+	if noBTT != "" {
+		whereClause += " AND TRIM(d.loperd_bttid) = TRIM(?) "
+		args = append(args, noBTT)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			TRIM(l.loper_eid) AS loper_eid,
+			TO_CHAR(l.loper_tanggal, 'MM/DD/YYYY') AS loper_tanggal,
+			COALESCE(l.loper_nomobil, '-') AS loper_nomobil,
+			COALESCE(s.kry_nama, '-') AS nama_sopir,
+			COALESCE(l.loper_nipsopir, '-') AS nip_sopir,
+			COALESCE(k.kry_nama, '-') AS nama_kerani,
+			COALESCE(l.loper_nipkerani, '-') AS nip_kerani,
+			TRIM(d.loperd_bttid) AS no_btt,
+			COALESCE(e.bttt_jmlunit, 1) AS colly,
+			GREATEST(COALESCE(e.bttt_berat, 0), COALESCE(e.bttt_beratvol, 0)) AS berat,
+			CASE 
+				WHEN TRIM(COALESCE(e.bttt_pembayaran, '')) = '1' THEN ROUND(COALESCE(e.bttt_harga, 0), -3)
+				ELSE COALESCE(e.bttt_harga, 0)
+			END AS harga,
+			COALESCE(e.bttt_biayapenerus, 0) AS biaya_penerus
+		FROM public.opr_t_eloperdetail d
+		INNER JOIN public.opr_t_eloper l ON TRIM(d.loperd_eloperid) = TRIM(l.loper_eid)
+		LEFT JOIN public.mkt_t_econote e ON TRIM(d.loperd_bttid) = TRIM(e.bttt_id)
+		LEFT JOIN public.hrd_m_karyawan s ON TRIM(l.loper_nipsopir) = TRIM(s.kry_nip)
+		LEFT JOIN public.hrd_m_karyawan k ON TRIM(l.loper_nipkerani) = TRIM(k.kry_nip)
+		%s
+		ORDER BY l.loper_tanggal ASC, l.loper_eid ASC, d.loperd_bttid ASC
+	`, whereClause)
+
+	var list []map[string]interface{}
+	if err := database.Raw(query, args...).Scan(&list).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat laporan detail loper: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": list})
+}
