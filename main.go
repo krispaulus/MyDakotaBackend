@@ -159,6 +159,18 @@ func main() {
 			authorized.POST("/operasional/loper-create", handler.CreateLoper)
 			authorized.GET("/operasional/loper/history", handler.GetHistoryLoper)
 
+			authorized.GET("/operasional/loper/check-loading", handler.CheckLoadingForLoper)
+
+			authorized.GET("/operasional/loper/approved-loading", handler.GetApprovedLoadingForLoper)
+			authorized.POST("/operasional/loper/create-from-loading", handler.CreateLoperFromLoading)
+			authorized.GET("/operasional/loper/detail", handler.GetLoperDetail)
+			authorized.DELETE("/operasional/loper/delete", handler.DeleteLoper)
+
+			authorized.PUT("/operasional/loper/update-header", handler.UpdateLoperHeader)
+			authorized.POST("/operasional/loper/add-btt", handler.AddBTTToLoper)
+			authorized.POST("/operasional/loper/remove-btt", handler.RemoveBTTFromLoper)
+			authorized.GET("/operasional/loper/available-btt", handler.GetAvailableBTTForLoper)
+
 			// 📄 OPERASIONAL: LOPER DEADLINE
 			authorized.GET("/operasional/loper-deadline-list", handler.GetLoperDeadlineList)
 			authorized.POST("/operasional/loper-deadline-action", handler.ProcessLoperDeadlineAction)

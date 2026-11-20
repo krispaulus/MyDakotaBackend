@@ -264,28 +264,28 @@ func UpdateAndApproveLoadingBarang(c *gin.Context) {
 		userNameStr = "ADMIN"
 	}
 
-	// err := database.Exec(`
-	// 	UPDATE public.opr_t_loadingh
-	// 	SET loadh_kendid = COALESCE(NULLIF(TRIM(?), ''), loadh_kendid),
-	// 	    loadh_approveyn = ?,
-	// 	    loadh_updateid = ?,
-	// 	    loadh_updatetime = CURRENT_TIMESTAMP
-	// 	WHERE TRIM(loadh_id) = TRIM(?)
-	// `, req.LoadHKendID, strings.ToUpper(req.LoadHApproveYN), userNameStr, req.LoadHID).Error
+	err := database.Exec(`
+		UPDATE public.opr_t_loadingh
+		SET loadh_kendid = COALESCE(NULLIF(TRIM(?), ''), loadh_kendid),
+		    loadh_approveyn = ?,
+		    loadh_updateid = ?,
+		    loadh_updatetime = CURRENT_TIMESTAMP
+		WHERE TRIM(loadh_id) = TRIM(?)
+	`, req.LoadHKendID, strings.ToUpper(req.LoadHApproveYN), userNameStr, req.LoadHID).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan perubahan: " + err.Error()})
+		return
+	}
 
 	// Ikut perbarui sjh_kendid pada Surat Tugas yang terhubung dengan loadh_id ini
 	database.Exec(`
-	UPDATE public.opr_t_esuratjalan
-	SET sjh_kendid = COALESCE(NULLIF(TRIM(?), ''), sjh_kendid),
-	    sjh_updateid = ?,
-	    sjh_updatetime = CURRENT_TIMESTAMP
-	WHERE TRIM(sjh_loadhid) = TRIM(?)
+		UPDATE public.opr_t_esuratjalan
+		SET sjh_kendid = COALESCE(NULLIF(TRIM(?), ''), sjh_kendid),
+		    sjh_updateid = ?,
+		    sjh_updatetime = CURRENT_TIMESTAMP
+		WHERE TRIM(sjh_loadhid) = TRIM(?)
 	`, req.LoadHKendID, userNameStr, req.LoadHID)
-
-	// if err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan perubahan: " + err.Error()})
-	// 	return
-	// }
 
 	msg := "Manifest Loading berhasil disimpan!"
 	if strings.ToUpper(req.LoadHApproveYN) == "Y" {
