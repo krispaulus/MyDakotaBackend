@@ -199,28 +199,52 @@ func CreateLoperFromLoading(c *gin.Context) {
 		userNameStr = "ADMIN"
 	}
 
-	agenID := strings.TrimSpace(req.LoperAgenID)
-	if agenID == "" {
-		agenID = "001"
-	}
-
 	now := time.Now()
 	tglLoper := strings.TrimSpace(req.LoperTanggal)
 	if tglLoper == "" {
 		tglLoper = now.Format("2006-01-02 15:04:05")
 	}
 
-	// Generate Nomor Loper (Format: LP/YYYY/MM/0001)
-	prefix := fmt.Sprintf("LP/%s/", now.Format("2006/01"))
-	var lastLoperID string
-	database.Raw(`SELECT loper_eid FROM public.opr_t_eloper WHERE loper_eid LIKE ? ORDER BY loper_eid DESC LIMIT 1`, prefix+"%").Scan(&lastLoperID)
-
-	urut := 1
-	if len(lastLoperID) > len(prefix) {
-		fmt.Sscanf(lastLoperID[len(prefix):], "%d", &urut)
-		urut++
+	// Parse tanggal loper untuk mendapatkan bulan (MM) dan tahun (YYYY)
+	parsedTgl, errTgl := time.Parse("2006-01-02 15:04:05", tglLoper)
+	if errTgl != nil {
+		parsedTgl, errTgl = time.Parse("2006-01-02", strings.Split(tglLoper, " ")[0])
+		if errTgl != nil {
+			parsedTgl = now
+		}
 	}
-	newLoperID := fmt.Sprintf("%s%04d", prefix, urut)
+
+	// 1. Normalisasi 3 digit Kode Agen (001)
+	cleanAgen := strings.ToUpper(strings.TrimSpace(req.LoperAgenID))
+	if cleanAgen == "" || cleanAgen == "PST" || cleanAgen == "OTA" {
+		cleanAgen = "001"
+	}
+	if len(cleanAgen) < 3 {
+		cleanAgen = fmt.Sprintf("%03s", cleanAgen)
+	} else if len(cleanAgen) > 3 {
+		cleanAgen = cleanAgen[:3]
+	}
+
+	// 2. Kode PT (C)
+	ptCode := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", ptID)))
+	if ptCode == "" || ptCode == "<NIL>" {
+		ptCode = "C"
+	}
+
+	// 3. Suffix: /MM/YYYY/LC -> contoh: /11/2026/LC
+	suffix := fmt.Sprintf("/%s/L%s", parsedTgl.Format("01/2006"), ptCode)
+	likePattern := fmt.Sprintf("%s%%%s", cleanAgen, suffix)
+
+	// 4. Cari nomor urut tertinggi (6 digit setelah 3 digit kode agen)
+	var maxUrut int
+	database.Raw(`
+		SELECT COALESCE(MAX(CAST(SUBSTRING(TRIM(loper_eid), 4, 6) AS INTEGER)), 0)
+		FROM public.opr_t_eloper
+		WHERE TRIM(loper_eid) LIKE ?
+		  AND SUBSTRING(TRIM(loper_eid), 4, 6) ~ '^[0-9]{6}$'
+	`, likePattern).Scan(&maxUrut)
+
+	newLoperID := fmt.Sprintf("%s%06d%s", cleanAgen, maxUrut+1, suffix)
 
 	// Generate 6 digit OTP Loper
 	otpCode := fmt.Sprintf("%06d", now.UnixNano()%1000000)
@@ -250,7 +274,7 @@ func CreateLoperFromLoading(c *gin.Context) {
 
 	tx := database.Begin()
 
-	// A. Insert Header ke opr_t_eloper
+	// A. Insert Header ke opr_t_eloper (gunakan cleanAgen)
 	insertHeaderSQL := `
 		INSERT INTO public.opr_t_eloper (
 			loper_eid, loper_agenid, loper_tanggal, loper_nipsopir,
@@ -260,7 +284,7 @@ func CreateLoperFromLoading(c *gin.Context) {
 	`
 	if err := tx.Exec(
 		insertHeaderSQL,
-		newLoperID, agenID, tglLoper, strings.TrimSpace(req.LoperNIPSopir),
+		newLoperID, cleanAgen, tglLoper, strings.TrimSpace(req.LoperNIPSopir),
 		keraniYN, nipKerani, strings.ToUpper(strings.TrimSpace(req.LoperNoMobil)),
 		userNameStr, otpCode, req.LoperLoadHID,
 	).Error; err != nil {
