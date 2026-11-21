@@ -26,7 +26,7 @@ func resolveSopirDB(c *gin.Context) *gorm.DB {
 	return database
 }
 
-// 📱 1. API GET: Ambil Daftar Sopir Lengkap (Gabungan hrd_m_karyawan, opr_m_supir, & hrd_device_karyawan)
+// 1. API GET: Ambil Daftar Sopir Lengkap (Gabungan hrd_m_karyawan & opr_m_supir)
 func GetSupirList(c *gin.Context) {
 	database := resolveSopirDB(c)
 
@@ -45,49 +45,37 @@ func GetSupirList(c *gin.Context) {
 		filterSQL += " AND COALESCE(NULLIF(TRIM(s.supir_aktifyn), ''), COALESCE(TRIM(k.kry_aktifyn), 'Y')) = ? "
 		args = append(args, strings.ToUpper(statusAktif))
 	} else {
-		// Default tampilkan yang aktif agar dropdown modul lain (Surat Tugas, Loper, Kendaraan) hanya menampilkan sopir aktif
 		filterSQL += " AND COALESCE(NULLIF(TRIM(s.supir_aktifyn), ''), COALESCE(TRIM(k.kry_aktifyn), 'Y')) = 'Y' "
 	}
 
 	query := fmt.Sprintf(`
-		SELECT DISTINCT ON (TRIM(k.kry_nip))
-			TRIM(k.kry_nip) AS supir_id,
-			TRIM(k.kry_nip) AS kry_nip,
-			COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama), '-') AS supir_nama,
-			COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama), '-') AS kry_nama,
-			COALESCE(k.kry_telp1, '-') AS kry_telp1,
-			COALESCE(k.kry_telp2, '-') AS kry_telp2,
-			COALESCE(k.kry_pin, '-') AS kry_pin,
-			COALESCE(NULLIF(TRIM(s.supir_boronganyn), ''), 'N') AS supir_borongan_yn,
-			COALESCE(NULLIF(TRIM(s.supir_aktifyn), ''), COALESCE(TRIM(k.kry_aktifyn), 'Y')) AS supir_aktif_yn,
-			COALESCE(TRIM(dev.imei1), '') AS supir_imei1,
-			COALESCE(TRIM(dev.imei2), '') AS supir_imei2,
-			COALESCE(TRIM(dev.simcard1), '') AS supir_simcard_id1,
-			COALESCE(TRIM(dev.simcard2), '') AS supir_simcard_id2
-		FROM public.hrd_m_karyawan k
-		LEFT JOIN public.opr_m_supir s ON TRIM(s.supir_id) = TRIM(k.kry_nip)
-		LEFT JOIN LATERAL (
-			SELECT 
-				MAX(CASE WHEN rn = 1 THEN imei END) AS imei1,
-				MAX(CASE WHEN rn = 2 THEN imei END) AS imei2,
-				MAX(CASE WHEN rn = 1 THEN simcard END) AS simcard1,
-				MAX(CASE WHEN rn = 2 THEN simcard END) AS simcard2
-			FROM (
-				SELECT 
-					COALESCE(dev_imei, '') AS imei,
-					COALESCE(dev_simcard, '') AS simcard,
-					ROW_NUMBER() OVER (ORDER BY dev_id ASC) AS rn
-				FROM public.hrd_device_karyawan
-				WHERE TRIM(dev_nip) = TRIM(k.kry_nip)
-			) d
-		) dev ON true
-		WHERE (TRIM(k.kry_jabcode) IN ('30', '31') OR s.supir_id IS NOT NULL)
-		  AND COALESCE(TRIM(k.kry_nama), '') <> ''
-		  %s
-		ORDER BY TRIM(k.kry_nip), supir_nama ASC
+		SELECT * FROM (
+			SELECT DISTINCT ON (TRIM(k.kry_nip))
+				TRIM(k.kry_nip) AS supir_id,
+				TRIM(k.kry_nip) AS kry_nip,
+				COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama), '-') AS supir_nama,
+				COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama), '-') AS kry_nama,
+				COALESCE(k.kry_telp1, '-') AS kry_telp1,
+				COALESCE(k.kry_telp2, '-') AS kry_telp2,
+				COALESCE(k.kry_pin, '-') AS kry_pin,
+				COALESCE(NULLIF(TRIM(s.supir_boronganyn), ''), 'N') AS supir_borongan_yn,
+				COALESCE(NULLIF(TRIM(s.supir_aktifyn), ''), COALESCE(TRIM(k.kry_aktifyn), 'Y')) AS supir_aktif_yn,
+				COALESCE(TRIM(k.kry_imei1), '') AS supir_imei1,
+				COALESCE(TRIM(k.kry_imei2), '') AS supir_imei2,
+				COALESCE(TRIM(k.kry_simcardid1), '') AS supir_simcard_id1,
+				COALESCE(TRIM(k.kry_simcardid2), '') AS supir_simcard_id2,
+				COALESCE(s.supir_updatetime, k.kry_updatetime) AS last_updated
+			FROM public.hrd_m_karyawan k
+			LEFT JOIN public.opr_m_supir s ON TRIM(s.supir_id) = TRIM(k.kry_nip)
+			WHERE (TRIM(k.kry_jabcode) IN ('30', '31') OR s.supir_id IS NOT NULL)
+			  AND COALESCE(TRIM(k.kry_nama), '') <> ''
+			  %s
+			ORDER BY TRIM(k.kry_nip), COALESCE(s.supir_updatetime, k.kry_updatetime) DESC NULLS LAST
+		) sub
+		ORDER BY last_updated DESC NULLS LAST, supir_nama ASC
 	`, filterSQL)
 
-	var listSopir []map[string]interface{}
+	listSopir := make([]map[string]interface{}, 0)
 	if err := database.Raw(query, args...).Scan(&listSopir).Error; err != nil {
 		log.Println("❌ ERROR GetSupirList:", err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat data sopir: " + err.Error()})
@@ -100,7 +88,7 @@ func GetSupirList(c *gin.Context) {
 	})
 }
 
-// ➕ 2. API POST: Pendaftaran Sopir Baru
+// 2. API POST: Pendaftaran Sopir & Pairing IMEI Baru
 func CreateSupir(c *gin.Context) {
 	database := resolveSopirDB(c)
 
@@ -149,21 +137,32 @@ func CreateSupir(c *gin.Context) {
 		return
 	}
 
-	// 2. Sinkronkan ke public.hrd_m_karyawan agar muncul di seluruh aplikasi
+	// 2. Sinkronkan ke public.hrd_m_karyawan beserta IMEI & Simcard
 	database.Exec(`
-		INSERT INTO public.hrd_m_karyawan (kry_nip, kry_nama, kry_jabcode, kry_aktifyn, kry_updateid, kry_updatetime)
-		VALUES (?, ?, '30', 'Y', ?, CURRENT_TIMESTAMP)
+		INSERT INTO public.hrd_m_karyawan (
+			kry_nip, kry_nama, kry_jabcode, kry_aktifyn,
+			kry_imei1, kry_imei2, kry_simcardid1, kry_simcardid2,
+			kry_updateid, kry_updatetime
+		) VALUES (
+			?, ?, '30', 'Y',
+			NULLIF(TRIM(?), ''), NULLIF(TRIM(?), ''), NULLIF(TRIM(?), ''), NULLIF(TRIM(?), ''),
+			?, CURRENT_TIMESTAMP
+		)
 		ON CONFLICT (kry_nip) DO UPDATE SET
 			kry_nama = EXCLUDED.kry_nama,
 			kry_aktifyn = 'Y',
+			kry_imei1 = COALESCE(EXCLUDED.kry_imei1, hrd_m_karyawan.kry_imei1),
+			kry_imei2 = COALESCE(EXCLUDED.kry_imei2, hrd_m_karyawan.kry_imei2),
+			kry_simcardid1 = COALESCE(EXCLUDED.kry_simcardid1, hrd_m_karyawan.kry_simcardid1),
+			kry_simcardid2 = COALESCE(EXCLUDED.kry_simcardid2, hrd_m_karyawan.kry_simcardid2),
 			kry_updateid = EXCLUDED.kry_updateid,
 			kry_updatetime = CURRENT_TIMESTAMP
-	`, supirID, supirNama, userStr)
+	`, supirID, supirNama, req.SupirImei1, req.SupirImei2, req.SupirSimcard1, req.SupirSimcard2, userStr)
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Supir baru berhasil didaftarkan!"})
 }
 
-// 📝 3. API PUT: Edit Data Sopir & Status Aktif/Resign
+// 3. API PUT: Edit Data Sopir, Device Tracker, & Status Aktif/Resign
 func UpdateSupir(c *gin.Context) {
 	database := resolveSopirDB(c)
 	id := strings.TrimSpace(c.Param("id"))
@@ -172,6 +171,10 @@ func UpdateSupir(c *gin.Context) {
 		SupirNama       string `json:"supir_nama" binding:"required"`
 		SupirBoronganYN string `json:"supir_borongan_yn"`
 		SupirAktifYN    string `json:"supir_aktif_yn"`
+		SupirImei1      string `json:"supir_imei1"`
+		SupirImei2      string `json:"supir_imei2"`
+		SupirSimcard1   string `json:"supir_simcard_id1"`
+		SupirSimcard2   string `json:"supir_simcard_id2"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -213,14 +216,21 @@ func UpdateSupir(c *gin.Context) {
 
 	database.Exec(`
 		UPDATE public.hrd_m_karyawan
-		SET kry_nama = ?, kry_aktifyn = ?, kry_updateid = ?, kry_updatetime = CURRENT_TIMESTAMP
+		SET kry_nama = ?,
+		    kry_aktifyn = ?,
+		    kry_imei1 = NULLIF(TRIM(?), ''),
+		    kry_imei2 = NULLIF(TRIM(?), ''),
+		    kry_simcardid1 = NULLIF(TRIM(?), ''),
+		    kry_simcardid2 = NULLIF(TRIM(?), ''),
+		    kry_updateid = ?,
+		    kry_updatetime = CURRENT_TIMESTAMP
 		WHERE TRIM(kry_nip) = TRIM(?)
-	`, supirNama, aktif, userStr, id)
+	`, supirNama, aktif, req.SupirImei1, req.SupirImei2, req.SupirSimcard1, req.SupirSimcard2, userStr, id)
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Data sopir berhasil diperbarui!"})
 }
 
-// 🗑️ 4. API DELETE: Non-Aktifkan Sopir (Resign)
+// 4. API DELETE: Non-Aktifkan Sopir (Resign)
 func DeleteSupir(c *gin.Context) {
 	database := resolveSopirDB(c)
 	id := strings.TrimSpace(c.Param("id"))

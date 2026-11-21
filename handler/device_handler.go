@@ -55,7 +55,7 @@ func GetDeviceKaryawanList(c *gin.Context) {
 		query = query.Where("SUBSTRING(TRIM(kry_nip), 4, 1) <> 'H'")
 	}
 
-	err := query.Order("kry_nip ASC, kry_nama ASC").Find(&results).Error
+	err := query.Order("kry_updatetime DESC NULLS LAST, kry_nama ASC").Find(&results).Error
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal muat device karyawan: " + err.Error()})
 		return
