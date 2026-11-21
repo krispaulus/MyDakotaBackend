@@ -59,7 +59,7 @@ func main() {
 		api.GET("/users/check/:username", handler.CheckUsername)
 		api.GET("/btt/generate-custid-umum", handler.GenerateCustIDUmumHandler)
 		api.GET("/sp/list", handler.GetSuratPengantarFetch)
-		api.POST("/sp/add", handler.CreateSuratPengantar)
+		// api.POST("/sp/add", handler.CreateSuratPengantar)
 
 		// Group ini butuh token JWT
 		authorized := api.Group("/")
@@ -72,7 +72,9 @@ func main() {
 			authorized.POST("/user-dli/create", handler.CreateUserDLI)
 			authorized.GET("/user-dli/list", handler.GetUserDLIList)
 
-			authorized.GET("/agens", handler.GetAgens)
+			//authorized.GET("/agens", handler.GetAgens)
+			authorized.GET("/agens", handler.GetAgenList)
+			authorized.GET("/agens/list", handler.GetAgenList)
 			authorized.GET("/agens/detail/:id", handler.GetAgenDetailByID)
 			authorized.POST("/agens", handler.CreateAgen)
 			authorized.PUT("/agens/:id", handler.UpdateAgen)
@@ -146,7 +148,6 @@ func main() {
 			// =========================================================================
 			authorized.GET("/operasional/fleet-drivers", handler.GetFleetAndDrivers)
 			authorized.GET("/operasional/pool-btt", handler.GetPoolBTT)
-			authorized.POST("/operasional/sp-naik", handler.CreateSPNaikHandler)
 
 			// =========================================================================
 			authorized.GET("/operasional/sp-turun/preview", handler.GetDetailSPNaik)
@@ -193,7 +194,14 @@ func main() {
 			authorized.PUT("/operasional/inventory-customer-update", handler.UpdateCustomerInventory)
 			authorized.DELETE("/operasional/inventory-customer-delete", handler.DeleteCustomerInventory)
 
-			authorized.GET("/operasional/sp-terima/print-detail/:id", handler.GetPrintSPDetail)
+			// Surat Pengantar - Pengiriman (OPR_T_eSP_Terima)
+			authorized.GET("/operasional/sp-terima", handler.GetSuratPengantarFetch)
+			authorized.POST("/operasional/sp-terima", handler.CreateSPNaikHandler)
+			authorized.POST("/operasional/sp-naik", handler.CreateSPNaikHandler)
+			authorized.GET("/operasional/sp-terima/detail", handler.GetDetailSPByID)
+			authorized.GET("/operasional/sp-terima/from-loading", handler.GetLoadingReadyForSP)
+			authorized.PUT("/operasional/sp-terima/update", handler.UpdateSPTerimaHandler)
+			authorized.DELETE("/operasional/sp-terima/delete", handler.DeleteSPTerimaHandler)
 
 			// 📄 OPERASIONAL: PENGEMBALIAN BTT (CLEANED ROUTE)
 			authorized.GET("/operasional/kembali-btt/history", handler.GetListKembaliBTT)

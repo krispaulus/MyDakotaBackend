@@ -138,7 +138,7 @@ func CreateSuratTugas(c *gin.Context) {
 	}
 
 	// 🌟 AUTO-GENERATE NOMOR SURAT TUGAS JIKA KOSONG DARI FORM TAMBAH
-if strings.TrimSpace(req.SJHID) == "" {
+	if strings.TrimSpace(req.SJHID) == "" {
 		cabangCode := strings.TrimSpace(req.SJHStartAgenID)
 		if cabangCode == "" || strings.ToUpper(cabangCode) == "PST" || strings.ToUpper(cabangCode) == "OTA" {
 			cabangCode = "001"
@@ -489,23 +489,31 @@ func GetAgenList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database tidak terhubung"})
 		return
 	}
-
 	query := `
-        SELECT 
-            RTRIM(LTRIM(agen_id)) AS agen_id, 
-            CASE 
-                -- Jika nama PUSAT DAKOTA atau kode PST001 / 001, ubah menjadi DLI PUSAT
-                WHEN UPPER(RTRIM(LTRIM(agen_nama))) = 'PUSAT DAKOTA' OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001') THEN 'DLI PUSAT'
-                ELSE RTRIM(LTRIM(agen_nama))
-            END AS agen_nama 
-        FROM public.glb_m_agen 
-        WHERE agen_aktifyn = 'Y' 
-          AND UPPER(agen_nama) NOT LIKE '%XXX%'
+        SELECT * FROM (
+            SELECT DISTINCT ON (
+                CASE 
+                    WHEN UPPER(RTRIM(LTRIM(agen_nama))) IN ('PUSAT DAKOTA', 'DLI PUSAT') OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001', '1') THEN 'DLI PUSAT'
+                    ELSE UPPER(RTRIM(LTRIM(agen_nama)))
+                END
+            )
+                RTRIM(LTRIM(agen_id)) AS agen_id, 
+                CASE 
+                    WHEN UPPER(RTRIM(LTRIM(agen_nama))) IN ('PUSAT DAKOTA', 'DLI PUSAT') OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001', '1') THEN 'DLI PUSAT'
+                    ELSE RTRIM(LTRIM(agen_nama))
+                END AS agen_nama 
+            FROM public.glb_m_agen 
+            WHERE agen_aktifyn = 'Y' 
+              AND UPPER(agen_nama) NOT LIKE '%XXX%'
+            ORDER BY 
+                CASE 
+                    WHEN UPPER(RTRIM(LTRIM(agen_nama))) IN ('PUSAT DAKOTA', 'DLI PUSAT') OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001', '1') THEN 'DLI PUSAT'
+                    ELSE UPPER(RTRIM(LTRIM(agen_nama)))
+                END,
+                CASE WHEN RTRIM(LTRIM(agen_id)) = '1' THEN 0 ELSE 1 END
+        ) sub
         ORDER BY 
-            CASE 
-                WHEN UPPER(RTRIM(LTRIM(agen_nama))) = 'PUSAT DAKOTA' OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001') THEN 0
-                ELSE 1
-            END,
+            CASE WHEN agen_nama = 'DLI PUSAT' THEN 0 ELSE 1 END,
             agen_nama ASC
     `
 
