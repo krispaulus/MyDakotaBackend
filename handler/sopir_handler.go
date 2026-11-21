@@ -4,68 +4,93 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"dakotagroup/business-insight-be/db"
-	"dakotagroup/business-insight-be/models"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
-
-// DTO khusus untuk mendistribusikan data sopir dari hrd_m_karyawan
-type SopirKaryawanDTO struct {
-	KryNIP   string `json:"kry_nip" gorm:"column:kry_nip"`
-	KryNama  string `json:"kry_nama" gorm:"column:kry_nama"`
-	KryTelp1 string `json:"kry_telp1" gorm:"column:kry_telp1"`
-	KryTelp2 string `json:"kry_telp2" gorm:"column:kry_telp2"`
-	KryPIN   string `json:"kry_pin" gorm:"column:kry_pin"`
-}
 
 type AssignmentDTO struct {
 	AssID   string `json:"ass_id" gorm:"column:ass_id"`
 	AssNama string `json:"ass_nama" gorm:"column:ass_nama"`
 }
 
-// 📱 1. API GET: Ambil Daftar Sopir dari HRD Master Karyawan (Sesuai ASP Lawas & pgAdmin)
-func GetSupirList(c *gin.Context) {
+func resolveSopirDB(c *gin.Context) *gorm.DB {
 	ptID, _ := c.Get("pt_id")
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Database resolver gagal"})
-		return
+		return db.DB
 	}
+	return database
+}
 
-	searchNama := c.Query("nama")
-	filterNamaSQL := ""
+// 📱 1. API GET: Ambil Daftar Sopir Lengkap (Gabungan hrd_m_karyawan, opr_m_supir, & hrd_device_karyawan)
+func GetSupirList(c *gin.Context) {
+	database := resolveSopirDB(c)
+
+	searchNama := strings.TrimSpace(c.Query("nama"))
+	statusAktif := strings.TrimSpace(c.Query("aktif"))
+
+	filterSQL := ""
+	var args []interface{}
+
 	if searchNama != "" {
-		filterNamaSQL = fmt.Sprintf(" AND LOWER(Karyawan.kry_nama) LIKE LOWER('%%%s%%') ", searchNama)
+		filterSQL += " AND (UPPER(k.kry_nama) LIKE UPPER(?) OR UPPER(k.kry_nip) LIKE UPPER(?)) "
+		args = append(args, "%"+searchNama+"%", "%"+searchNama+"%")
 	}
 
-	// Query Presisi dari pgAdmin Gambar 2
-	query := fmt.Sprintf(`
-		SELECT DISTINCT 
-			Karyawan.kry_nip, 
-			Karyawan.kry_nama, 
-			COALESCE(Karyawan.kry_telp1, '-') AS kry_telp1, 
-			COALESCE(Karyawan.kry_telp2, '-') AS kry_telp2, 
-			COALESCE(Karyawan.kry_pin, '-') AS kry_pin 
-		FROM public.hrd_m_karyawan Karyawan 
-		WHERE UPPER(Karyawan.kry_aktifyn) = 'Y' 
-		  AND (Karyawan.kry_jabcode = '30' OR Karyawan.kry_jabcode = '31')
-		  %s
-		GROUP BY 
-			Karyawan.kry_nip, 
-			Karyawan.kry_nama, 
-			Karyawan.kry_telp1, 
-			Karyawan.kry_telp2, 
-			Karyawan.kry_pin 
-		ORDER BY Karyawan.kry_nama ASC
-	`, filterNamaSQL)
+	if statusAktif != "" {
+		filterSQL += " AND COALESCE(NULLIF(TRIM(s.supir_aktifyn), ''), COALESCE(TRIM(k.kry_aktifyn), 'Y')) = ? "
+		args = append(args, strings.ToUpper(statusAktif))
+	} else {
+		// Default tampilkan yang aktif agar dropdown modul lain (Surat Tugas, Loper, Kendaraan) hanya menampilkan sopir aktif
+		filterSQL += " AND COALESCE(NULLIF(TRIM(s.supir_aktifyn), ''), COALESCE(TRIM(k.kry_aktifyn), 'Y')) = 'Y' "
+	}
 
-	var listSopir []SopirKaryawanDTO
-	err := database.Raw(query).Scan(&listSopir).Error
-	if err != nil {
+	query := fmt.Sprintf(`
+		SELECT DISTINCT ON (TRIM(k.kry_nip))
+			TRIM(k.kry_nip) AS supir_id,
+			TRIM(k.kry_nip) AS kry_nip,
+			COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama), '-') AS supir_nama,
+			COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama), '-') AS kry_nama,
+			COALESCE(k.kry_telp1, '-') AS kry_telp1,
+			COALESCE(k.kry_telp2, '-') AS kry_telp2,
+			COALESCE(k.kry_pin, '-') AS kry_pin,
+			COALESCE(NULLIF(TRIM(s.supir_boronganyn), ''), 'N') AS supir_borongan_yn,
+			COALESCE(NULLIF(TRIM(s.supir_aktifyn), ''), COALESCE(TRIM(k.kry_aktifyn), 'Y')) AS supir_aktif_yn,
+			COALESCE(TRIM(dev.imei1), '') AS supir_imei1,
+			COALESCE(TRIM(dev.imei2), '') AS supir_imei2,
+			COALESCE(TRIM(dev.simcard1), '') AS supir_simcard_id1,
+			COALESCE(TRIM(dev.simcard2), '') AS supir_simcard_id2
+		FROM public.hrd_m_karyawan k
+		LEFT JOIN public.opr_m_supir s ON TRIM(s.supir_id) = TRIM(k.kry_nip)
+		LEFT JOIN LATERAL (
+			SELECT 
+				MAX(CASE WHEN rn = 1 THEN imei END) AS imei1,
+				MAX(CASE WHEN rn = 2 THEN imei END) AS imei2,
+				MAX(CASE WHEN rn = 1 THEN simcard END) AS simcard1,
+				MAX(CASE WHEN rn = 2 THEN simcard END) AS simcard2
+			FROM (
+				SELECT 
+					COALESCE(dev_imei, '') AS imei,
+					COALESCE(dev_simcard, '') AS simcard,
+					ROW_NUMBER() OVER (ORDER BY dev_id ASC) AS rn
+				FROM public.hrd_device_karyawan
+				WHERE TRIM(dev_nip) = TRIM(k.kry_nip)
+			) d
+		) dev ON true
+		WHERE (TRIM(k.kry_jabcode) IN ('30', '31') OR s.supir_id IS NOT NULL)
+		  AND COALESCE(TRIM(k.kry_nama), '') <> ''
+		  %s
+		ORDER BY TRIM(k.kry_nip), supir_nama ASC
+	`, filterSQL)
+
+	var listSopir []map[string]interface{}
+	if err := database.Raw(query, args...).Scan(&listSopir).Error; err != nil {
 		log.Println("❌ ERROR GetSupirList:", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat data sopir dari master karyawan"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat data sopir: " + err.Error()})
 		return
 	}
 
@@ -75,97 +100,157 @@ func GetSupirList(c *gin.Context) {
 	})
 }
 
-// ➕ 2. API POST: Pendaftaran Sopir & Pairing IMEI Baru
+// ➕ 2. API POST: Pendaftaran Sopir Baru
 func CreateSupir(c *gin.Context) {
-	var input models.OprMSupir
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Payload input tidak valid"})
-		return
+	database := resolveSopirDB(c)
+
+	var req struct {
+		SupirID         string `json:"supir_id" binding:"required"`
+		SupirNama       string `json:"supir_nama" binding:"required"`
+		SupirBoronganYN string `json:"supir_borongan_yn"`
+		SupirImei1      string `json:"supir_imei1"`
+		SupirImei2      string `json:"supir_imei2"`
+		SupirSimcard1   string `json:"supir_simcard_id1"`
+		SupirSimcard2   string `json:"supir_simcard_id2"`
 	}
 
-	ptID, _ := c.Get("pt_id")
-	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "ID Sopir dan Nama wajib diisi!"})
+		return
+	}
 
 	username, _ := c.Get("username")
-	usernameStr := fmt.Sprintf("%v", username)
-	input.SupirUpdateID = &usernameStr
-	input.SupirAktifYN = "Y"
+	userStr := fmt.Sprintf("%v", username)
+	if userStr == "" || userStr == "<nil>" {
+		userStr = "ADMIN"
+	}
 
-	if err := database.Create(&input).Error; err != nil {
-		log.Println("❌ ERROR CreateSupir:", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal mendaftarkan sopir, ID kemungkinan duplikat!"})
+	supirID := strings.ToUpper(strings.TrimSpace(req.SupirID))
+	supirNama := strings.ToUpper(strings.TrimSpace(req.SupirNama))
+	borongan := "N"
+	if strings.ToUpper(req.SupirBoronganYN) == "Y" {
+		borongan = "Y"
+	}
+
+	// 1. Simpan ke public.opr_m_supir
+	err := database.Exec(`
+		INSERT INTO public.opr_m_supir (supir_id, supir_nama, supir_boronganyn, supir_aktifyn, supir_updateid, supir_updatetime)
+		VALUES (?, ?, ?, 'Y', ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (supir_id) DO UPDATE SET
+			supir_nama = EXCLUDED.supir_nama,
+			supir_boronganyn = EXCLUDED.supir_boronganyn,
+			supir_aktifyn = 'Y',
+			supir_updateid = EXCLUDED.supir_updateid,
+			supir_updatetime = CURRENT_TIMESTAMP
+	`, supirID, supirNama, borongan, userStr).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mendaftarkan sopir: " + err.Error()})
 		return
 	}
+
+	// 2. Sinkronkan ke public.hrd_m_karyawan agar muncul di seluruh aplikasi
+	database.Exec(`
+		INSERT INTO public.hrd_m_karyawan (kry_nip, kry_nama, kry_jabcode, kry_aktifyn, kry_updateid, kry_updatetime)
+		VALUES (?, ?, '30', 'Y', ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (kry_nip) DO UPDATE SET
+			kry_nama = EXCLUDED.kry_nama,
+			kry_aktifyn = 'Y',
+			kry_updateid = EXCLUDED.kry_updateid,
+			kry_updatetime = CURRENT_TIMESTAMP
+	`, supirID, supirNama, userStr)
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Supir baru berhasil didaftarkan!"})
 }
 
-// 📝 3. API PUT: Edit Data Sopir & Update Identitas Device Tracker
+// 📝 3. API PUT: Edit Data Sopir & Status Aktif/Resign
 func UpdateSupir(c *gin.Context) {
-	id := c.Param("id")
-	var input models.OprMSupir
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "Payload update tidak valid"})
-		return
+	database := resolveSopirDB(c)
+	id := strings.TrimSpace(c.Param("id"))
+
+	var req struct {
+		SupirNama       string `json:"supir_nama" binding:"required"`
+		SupirBoronganYN string `json:"supir_borongan_yn"`
+		SupirAktifYN    string `json:"supir_aktif_yn"`
 	}
 
-	ptID, _ := c.Get("pt_id")
-	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Payload update tidak valid"})
+		return
+	}
 
 	username, _ := c.Get("username")
-	usernameStr := fmt.Sprintf("%v", username)
+	userStr := fmt.Sprintf("%v", username)
+	if userStr == "" || userStr == "<nil>" {
+		userStr = "ADMIN"
+	}
 
-	err := database.Model(&models.OprMSupir{}).Where("supir_id = ?", id).Updates(map[string]interface{}{
-		"supir_nama":        input.SupirNama,
-		"supir_borongan_yn": input.SupirBoronganYN,
-		"supir_imei1":       input.SupirImei1,
-		"supir_imei2":       input.SupirImei2,
-		"supir_simcard_id1": input.SupirSimcardID1,
-		"supir_simcard_id2": input.SupirSimcardID2,
-		"supir_update_id":   usernameStr,
-	}).Error
+	supirNama := strings.ToUpper(strings.TrimSpace(req.SupirNama))
+	borongan := "N"
+	if strings.ToUpper(req.SupirBoronganYN) == "Y" {
+		borongan = "Y"
+	}
+	aktif := "Y"
+	if strings.ToUpper(req.SupirAktifYN) == "N" {
+		aktif = "N"
+	}
+
+	err := database.Exec(`
+		INSERT INTO public.opr_m_supir (supir_id, supir_nama, supir_boronganyn, supir_aktifyn, supir_updateid, supir_updatetime)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (supir_id) DO UPDATE SET
+			supir_nama = EXCLUDED.supir_nama,
+			supir_boronganyn = EXCLUDED.supir_boronganyn,
+			supir_aktifyn = EXCLUDED.supir_aktifyn,
+			supir_updateid = EXCLUDED.supir_updateid,
+			supir_updatetime = CURRENT_TIMESTAMP
+	`, id, supirNama, borongan, aktif, userStr).Error
 
 	if err != nil {
-		log.Println("❌ ERROR UpdateSupir:", err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal memperbarui data sopir"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memperbarui data sopir: " + err.Error()})
 		return
 	}
+
+	database.Exec(`
+		UPDATE public.hrd_m_karyawan
+		SET kry_nama = ?, kry_aktifyn = ?, kry_updateid = ?, kry_updatetime = CURRENT_TIMESTAMP
+		WHERE TRIM(kry_nip) = TRIM(?)
+	`, supirNama, aktif, userStr, id)
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Data sopir berhasil diperbarui!"})
 }
 
-// 🗑️ 4. API DELETE: Soft Delete / Non-Aktifkan Sopir
+// 🗑️ 4. API DELETE: Non-Aktifkan Sopir (Resign)
 func DeleteSupir(c *gin.Context) {
-	id := c.Param("id")
-
-	ptID, _ := c.Get("pt_id")
-	database, _ := db.ResolveDB(fmt.Sprintf("%v", ptID))
+	database := resolveSopirDB(c)
+	id := strings.TrimSpace(c.Param("id"))
 
 	username, _ := c.Get("username")
-	usernameStr := fmt.Sprintf("%v", username)
-
-	err := database.Model(&models.OprMSupir{}).Where("supir_id = ?", id).Updates(map[string]interface{}{
-		"supir_aktif_yn":  "N",
-		"supir_update_id": usernameStr,
-	}).Error
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal menonaktifkan sopir"})
-		return
+	userStr := fmt.Sprintf("%v", username)
+	if userStr == "" || userStr == "<nil>" {
+		userStr = "ADMIN"
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Status sopir resmi dinonaktifkan!"})
+	database.Exec(`
+		INSERT INTO public.opr_m_supir (supir_id, supir_nama, supir_boronganyn, supir_aktifyn, supir_updateid, supir_updatetime)
+		SELECT TRIM(kry_nip), COALESCE(TRIM(kry_nama), '-'), 'N', 'N', ?, CURRENT_TIMESTAMP
+		FROM public.hrd_m_karyawan WHERE TRIM(kry_nip) = TRIM(?)
+		ON CONFLICT (supir_id) DO UPDATE SET
+			supir_aktifyn = 'N', supir_updateid = EXCLUDED.supir_updateid, supir_updatetime = CURRENT_TIMESTAMP
+	`, userStr, id)
+
+	database.Exec(`
+		UPDATE public.hrd_m_karyawan
+		SET kry_aktifyn = 'N', kry_updateid = ?, kry_updatetime = CURRENT_TIMESTAMP
+		WHERE TRIM(kry_nip) = TRIM(?)
+	`, userStr, id)
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Status sopir resmi dinonaktifkan (Resign)!"})
 }
 
 func GetAssignmentList(c *gin.Context) {
-	ptID, _ := c.Get("pt_id")
-	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Database resolver gagal"})
-		return
-	}
+	database := resolveSopirDB(c)
 
-	// Query presisi ke tabel public.opr_m_assignment
 	query := `
 		SELECT 
 			COALESCE(ass_id, '') AS ass_id, 
@@ -177,7 +262,6 @@ func GetAssignmentList(c *gin.Context) {
 
 	var listAssignment []AssignmentDTO
 	if err := database.Raw(query).Scan(&listAssignment).Error; err != nil {
-		// Fallback default jika tabel belum terisi
 		c.JSON(http.StatusOK, gin.H{
 			"status": "success",
 			"data": []AssignmentDTO{

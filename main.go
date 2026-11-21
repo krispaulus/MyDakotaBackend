@@ -269,12 +269,16 @@ func main() {
 			authorized.POST("/hrd/device-karyawan/whatsapp-import", handler.ImportDeviceViaWhatsApp)
 			authorized.GET("/hrd/raw-absensi", handler.GetRawAbsensiList)
 
+			authorized.DELETE("/hrd/device-karyawan/:nip", handler.DeleteDeviceKaryawan)
+			authorized.POST("/hrd/device-karyawan/upload-csv", handler.UploadCSVDeviceKaryawan)
+
 			authorized.GET("/master/kendaraan", handler.GetMasterKendaraanList)
 			authorized.GET("/master/kendaraan/expired-service", handler.GetExpiredServiceKendaraan)
-
-			authorized.POST("/master/kendaraan", handler.CreateKendaraan)
-			authorized.PUT("/master/kendaraan/:id", handler.UpdateKendaraan)
+			authorized.POST("/master/kendaraan", handler.CreateKendaraanBaru)
+			authorized.PUT("/master/kendaraan/:id", handler.UpdateKendaraanBaru)
 			authorized.POST("/master/kendaraan/masuk-service", handler.RegisterTrukService)
+			authorized.GET("/master/kendaraan/jenis", handler.GetJenisKendaraanList)
+			authorized.GET("/master/kendaraan/export-excel", handler.ExportMasterKendaraanExcel)
 
 			authorized.GET("/master/sewa-kendaraan", handler.GetSewaKendaraanList)
 			authorized.POST("/master/sewa-kendaraan", handler.CreateSewaKendaraan)
