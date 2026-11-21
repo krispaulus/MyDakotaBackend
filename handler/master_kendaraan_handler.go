@@ -68,7 +68,7 @@ func GetMasterKendaraanList(c *gin.Context) {
 	nopol := strings.TrimSpace(c.Query("nopol"))
 	aktif := strings.TrimSpace(c.Query("aktif"))
 
-	query := database.Table("public.glb_m_kendaraan")
+	query := database.Table("public.glb_m_kendaraan").Where("COALESCE(TRIM(kend_id), '') <> ''")
 	if nopol != "" {
 		query = query.Where("UPPER(kend_id) LIKE UPPER(?)", "%"+nopol+"%")
 	}
