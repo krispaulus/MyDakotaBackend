@@ -32,17 +32,35 @@ func resolveDriverIdentity(c *gin.Context, database *gorm.DB) DriverProfileDTO {
 		UserType     string `gorm:"column:usertype"`
 		KodeCbg      string `gorm:"column:kode_cabang"`
 	}
-	database.Raw(`
-		SELECT 
-			TRIM(COALESCE(username, '')) AS username,
-			TRIM(COALESCE(realname, '')) AS realname,
-			TRIM(COALESCE(mobilenumber, '')) AS mobilenumber,
-			TRIM(COALESCE(usertype, '')) AS usertype,
-			TRIM(COALESCE(kode_cabang, '')) AS kode_cabang
-		FROM public.weblogin
-		WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
-		LIMIT 1
-	`, username).Scan(&webUser)
+
+	// 1. Cari user login di database utama (db.GetDB()) terlebih dahulu, lalu fallback ke database tenant
+	authDB := db.GetDB()
+	if authDB != nil {
+		authDB.Raw(`
+			SELECT 
+				TRIM(COALESCE(username, '')) AS username,
+				TRIM(COALESCE(realname, '')) AS realname,
+				TRIM(COALESCE(mobilenumber, '')) AS mobilenumber,
+				TRIM(COALESCE(usertype, '')) AS usertype,
+				TRIM(COALESCE(kode_cabang, '')) AS kode_cabang
+			FROM public.weblogin
+			WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
+			LIMIT 1
+		`, username).Scan(&webUser)
+	}
+	if webUser.Username == "" {
+		database.Raw(`
+			SELECT 
+				TRIM(COALESCE(username, '')) AS username,
+				TRIM(COALESCE(realname, '')) AS realname,
+				TRIM(COALESCE(mobilenumber, '')) AS mobilenumber,
+				TRIM(COALESCE(usertype, '')) AS usertype,
+				TRIM(COALESCE(kode_cabang, '')) AS kode_cabang
+			FROM public.weblogin
+			WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
+			LIMIT 1
+		`, username).Scan(&webUser)
+	}
 
 	isAdmin := strings.EqualFold(username, "superdli") ||
 		strings.Contains(strings.ToUpper(webUser.UserType), "ADMIN") ||
@@ -76,18 +94,23 @@ func resolveDriverIdentity(c *gin.Context, database *gorm.DB) DriverProfileDTO {
 		Nama string `gorm:"column:nama"`
 	}
 
-	// 1. Validasi Utama: Cocokkan NIP (username == kry_nip)
+	// 2. Validasi Lapis 1: Cocokkan NIP langsung (username == kry_nip atau NIP terselip di realname)
 	database.Raw(`
 		SELECT TRIM(k.kry_nip) AS nip, COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama)) AS nama
 		FROM public.hrd_m_karyawan k
 		LEFT JOIN public.opr_m_supir s ON TRIM(s.supir_id) = TRIM(k.kry_nip)
 		WHERE TRIM(k.kry_nip) = TRIM(?)
+		   OR (? <> '' AND POSITION(TRIM(k.kry_nip) IN ?) > 0)
 		LIMIT 1
-	`, username).Scan(&kry)
+	`, username, webUser.RealName, webUser.RealName).Scan(&kry)
 
-	// 2. Validasi Kedua: Cocokkan Nomor HP (weblogin.mobilenumber == kry_telp1 / kry_telp2)
-	if kry.NIP == "" && webUser.MobileNumber != "" {
-		cleanHP := strings.TrimLeft(strings.ReplaceAll(webUser.MobileNumber, " ", ""), "+620")
+	// 3. Validasi Lapis 2: Cocokkan Nomor HP (baik dari username maupun weblogin.mobilenumber ke kry_telp1 / kry_telp2)
+	if kry.NIP == "" {
+		hpCandidate := webUser.MobileNumber
+		if hpCandidate == "" {
+			hpCandidate = username
+		}
+		cleanHP := strings.TrimLeft(strings.ReplaceAll(hpCandidate, " ", ""), "+620")
 		if len(cleanHP) >= 8 {
 			database.Raw(`
 				SELECT TRIM(k.kry_nip) AS nip, COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama)) AS nama
@@ -100,22 +123,30 @@ func resolveDriverIdentity(c *gin.Context, database *gorm.DB) DriverProfileDTO {
 		}
 	}
 
-	// 3. Validasi Ketiga (Fallback): Cocokkan Nama Lengkap persis pada karyawan jabatan sopir
+	// 4. Validasi Lapis 3 (Fallback): Cocokkan Nama Lengkap pada karyawan jabatan sopir
 	if kry.NIP == "" && webUser.RealName != "" {
 		database.Raw(`
 			SELECT TRIM(k.kry_nip) AS nip, COALESCE(NULLIF(TRIM(s.supir_nama), ''), TRIM(k.kry_nama)) AS nama
 			FROM public.hrd_m_karyawan k
 			LEFT JOIN public.opr_m_supir s ON TRIM(s.supir_id) = TRIM(k.kry_nip)
 			WHERE (TRIM(k.kry_jabcode) IN ('30', '31') OR s.supir_id IS NOT NULL)
-			  AND UPPER(TRIM(k.kry_nama)) = UPPER(TRIM(?))
+			  AND (
+			      UPPER(TRIM(k.kry_nama)) = UPPER(TRIM(?))
+			      OR UPPER(TRIM(?)) LIKE UPPER(TRIM(k.kry_nama)) || '%'
+			  )
 			LIMIT 1
-		`, webUser.RealName).Scan(&kry)
+		`, webUser.RealName, webUser.RealName).Scan(&kry)
+	}
+
+	supirNama := kry.Nama
+	if supirNama == "" {
+		supirNama = webUser.RealName
 	}
 
 	return DriverProfileDTO{
 		Username:  username,
 		SupirNIP:  kry.NIP,
-		SupirNama: strings.ToUpper(kry.Nama),
+		SupirNama: strings.ToUpper(supirNama),
 		CabangID:  webUser.KodeCbg,
 		IsAdmin:   isAdmin,
 	}
