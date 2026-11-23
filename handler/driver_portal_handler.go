@@ -247,7 +247,7 @@ func GetDriverSuratTugasHandler(c *gin.Context) {
 }
 
 // =========================================================================
-// 📦 2. GET DAFTAR RESI LOPER & LOADING BARANG UNTUK TITIK PENGIRIMAN SOPIR
+// 📦 2. GET DAFTAR RESI LOPER HARI INI (HANYA YANG BELUM DIANTAR & TANPA DUPLIKAT KOLI)
 // GET /api/driver/loper-resi
 // =========================================================================
 func GetDriverLoperResiHandler(c *gin.Context) {
@@ -260,7 +260,6 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 	driver := resolveDriverIdentity(c, database)
 	noST := strings.TrimSpace(c.Query("no_st"))
 
-	// Penjaga di awal: jika NIP sopir kosong, langsung return kosong
 	if strings.TrimSpace(driver.SupirNIP) == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "success",
@@ -281,39 +280,42 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 
 	query := fmt.Sprintf(`
 		WITH driver_resi AS (
-			-- Sumber 1: Resmi masuk e-Loper (opr_t_eloper + opr_t_eloperdetail)
+			-- Sumber 1: e-Loper HARI INI saja
 			SELECT 
 				TRIM(l.loper_eid) AS no_loper,
 				COALESCE(TRIM(s.sjh_id), '-') AS no_surat_tugas,
 				COALESCE(TRIM(l.loper_nomobil), TRIM(s.sjh_kendid), '-') AS no_polisi,
 				TO_CHAR(l.loper_tanggal, 'YYYY-MM-DD HH24:MI') AS tgl_muat,
-				TRIM(ld.loperd_bttid) AS no_btt,
+				LEFT(SPLIT_PART(TRIM(ld.loperd_bttid), '-', 1), 16) AS no_btt,
 				COALESCE(TRIM(ld.loperd_histid), '') AS hist_id,
 				'LOPER' AS sumber_dokumen
 			FROM public.opr_t_eloper l
 			INNER JOIN public.opr_t_eloperdetail ld ON TRIM(l.loper_eid) = TRIM(ld.loperd_eloperid)
 			LEFT JOIN public.opr_t_esuratjalan s ON TRIM(s.sjh_loadhid) = TRIM(l.loper_loadhid) AND COALESCE(TRIM(l.loper_loadhid), '') <> ''
 			WHERE COALESCE(l.loper_aktifyn, 'Y') = 'Y'
+			  AND CAST(l.loper_tanggal AS DATE) = CURRENT_DATE
 			  AND TRIM(l.loper_nipsopir) = TRIM(?)
 
 			UNION
 
-			-- Sumber 2: Otomatis dari Loading Barang (opr_t_loadingd) pada Surat Tugas milik NIP sopir
+			-- Sumber 2: Loading Barang HARI INI saja (normalisasi 16 digit No. Resi agar nomor koli 0001 tidak tampil dobel)
 			SELECT 
 				COALESCE(TRIM(el.loper_eid), TRIM(s.sjh_loadhid)) AS no_loper,
 				TRIM(s.sjh_id) AS no_surat_tugas,
 				COALESCE(TRIM(s.sjh_kendid), '-') AS no_polisi,
 				TO_CHAR(COALESCE(lh.loadh_tanggal, s.sjh_tanggal), 'YYYY-MM-DD HH24:MI') AS tgl_muat,
-				SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1) AS no_btt,
+				LEFT(SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1), 16) AS no_btt,
 				COALESCE(TRIM(eld.loperd_histid), '') AS hist_id,
 				'LOADING' AS sumber_dokumen
 			FROM public.opr_t_esuratjalan s
 			INNER JOIN public.opr_t_loadingh lh ON TRIM(lh.loadh_id) = TRIM(s.sjh_loadhid)
 			INNER JOIN public.opr_t_loadingd d ON TRIM(d.loadd_loadhid) = TRIM(lh.loadh_id)
 			LEFT JOIN public.opr_t_eloper el ON TRIM(el.loper_loadhid) = TRIM(lh.loadh_id)
-			LEFT JOIN public.opr_t_eloperdetail eld ON TRIM(eld.loperd_eloperid) = TRIM(el.loper_eid) AND TRIM(eld.loperd_bttid) = SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1)
+			LEFT JOIN public.opr_t_eloperdetail eld ON TRIM(eld.loperd_eloperid) = TRIM(el.loper_eid)
+			                                       AND LEFT(TRIM(eld.loperd_bttid), 16) = LEFT(SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1), 16)
 			WHERE COALESCE(s.sjh_aktifyn, 'Y') = 'Y'
 			  AND COALESCE(TRIM(s.sjh_completeyn), 'N') <> 'Y'
+			  AND CAST(COALESCE(lh.loadh_tanggal, s.sjh_tanggal) AS DATE) = CURRENT_DATE
 			  AND COALESCE(TRIM(s.sjh_loadhid), '') <> ''
 			  AND (
 			      TRIM(s.sjh_sopir1_nip) = TRIM(?)
@@ -337,12 +339,14 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 			GREATEST(COALESCE(e.bttt_berat, 0), COALESCE(e.bttt_beratvol, 0)) AS berat,
 			COALESCE(e.bttt_tagihtujuan, 0) AS nominal_cod,
 			CASE 
-				WHEN x.hist_id <> '' THEN 'TERKIRIM'
+				WHEN UPPER(x.hist_id) IN ('TERKIRIM', '7') THEN 'TERKIRIM'
+				WHEN x.hist_id <> '' THEN UPPER(x.hist_id)
 				ELSE 'DALAM PENGANTARAN'
 			END AS status_antar
 		FROM driver_resi x
 		LEFT JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = TRIM(x.no_btt)
 		WHERE COALESCE(TRIM(x.no_btt), '') <> ''
+		  AND UPPER(COALESCE(x.hist_id, '')) NOT IN ('TERKIRIM', '7')
 		  %s
 		ORDER BY x.no_btt ASC, x.tgl_muat DESC
 	`, whereST)
@@ -361,7 +365,7 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 }
 
 // =========================================================================
-// ✅ 3. UPDATE STATUS PENGIRIMAN TITIK LOPER (POD / TERKIRIM)
+// ✅ 3. UPDATE STATUS PENGIRIMAN & SCAN BARANG TURUN (POD)
 // POST /api/driver/loper-resi/deliver
 // =========================================================================
 func DeliverLoperResiHandler(c *gin.Context) {
@@ -374,12 +378,12 @@ func DeliverLoperResiHandler(c *gin.Context) {
 	driver := resolveDriverIdentity(c, database)
 
 	var req struct {
-		NoBTT        string `json:"no_btt" binding:"required"`
-		NoLoper      string `json:"no_loper"`
-		NamaPenerima string `json:"nama_penerima" binding:"required"`
-		StatusAntar  string `json:"status_antar"` // TERKIRIM / KENDALA
-		Catatan      string `json:"catatan"`
-		KoordinatGPS string `json:"gps"`
+		NoBTT           string   `json:"no_btt" binding:"required"`
+		NoLoper         string   `json:"no_loper"`
+		NamaPenerima    string   `json:"nama_penerima" binding:"required"`
+		StatusAntar     string   `json:"status_antar"` // TERKIRIM / DITOLAK_PENERIMA / ALAMAT_TIDAK_SESUAI
+		ScannedKoliList []string `json:"scanned_koli"`
+		KoordinatGPS    string   `json:"gps"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -387,10 +391,10 @@ func DeliverLoperResiHandler(c *gin.Context) {
 		return
 	}
 
-	cleanBTT := strings.ToUpper(strings.TrimSpace(req.NoBTT))
-	statusKode := "TERKIRIM"
-	if strings.ToUpper(req.StatusAntar) == "KENDALA" {
-		statusKode = "KENDALA"
+	cleanBTT := LEFT16(strings.ToUpper(strings.TrimSpace(req.NoBTT)))
+	statusKode := strings.ToUpper(strings.TrimSpace(req.StatusAntar))
+	if statusKode == "" {
+		statusKode = "TERKIRIM"
 	}
 
 	if strings.TrimSpace(req.NoLoper) != "" {
@@ -399,7 +403,7 @@ func DeliverLoperResiHandler(c *gin.Context) {
 			SET loperd_histid = ?,
 			    loperd_gps = COALESCE(NULLIF(?, ''), loperd_gps),
 			    loperd_updatetime = CURRENT_TIMESTAMP
-			WHERE TRIM(loperd_eloperid) = TRIM(?) AND TRIM(loperd_bttid) = TRIM(?)
+			WHERE TRIM(loperd_eloperid) = TRIM(?) AND LEFT(TRIM(loperd_bttid), 16) = TRIM(?)
 		`, statusKode, req.KoordinatGPS, req.NoLoper, cleanBTT)
 
 		if res.RowsAffected == 0 {
@@ -410,10 +414,12 @@ func DeliverLoperResiHandler(c *gin.Context) {
 		}
 	}
 
-	ketLog := fmt.Sprintf("Diterima oleh: %s (Sopir: %s)", strings.ToUpper(req.NamaPenerima), driver.SupirNama)
-	if strings.TrimSpace(req.Catatan) != "" {
-		ketLog += " - " + req.Catatan
+	scanSummary := ""
+	if len(req.ScannedKoliList) > 0 {
+		scanSummary = fmt.Sprintf(" [Scan Turun: %d Koli (%s)]", len(req.ScannedKoliList), strings.Join(req.ScannedKoliList, ", "))
 	}
+
+	ketLog := fmt.Sprintf("[%s] Penerima: %s (Sopir: %s)%s", statusKode, strings.ToUpper(req.NamaPenerima), driver.SupirNama, scanSummary)
 	database.Exec(`
 		UPDATE public.mkt_t_econote
 		SET bttt_keterangan = COALESCE(NULLIF(TRIM(bttt_keterangan), ''), '') || ' | ' || ?
@@ -422,6 +428,13 @@ func DeliverLoperResiHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
-		"message": fmt.Sprintf("Status Resi %s berhasil diperbarui!", cleanBTT),
+		"message": fmt.Sprintf("Status Resi %s (%s) berhasil diperbarui!", cleanBTT, statusKode),
 	})
+}
+
+func LEFT16(s string) string {
+	if len(s) > 16 {
+		return s[:16]
+	}
+	return s
 }
