@@ -364,7 +364,7 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 }
 
 // =========================================================================
-// ✅ 3. UPDATE STATUS PENGIRIMAN & SCAN BARANG TURUN (POD)
+// ✅ 3. UPDATE STATUS PENGIRIMAN & SINKRONISASI KE OPR_T_EBBL (STATUS, JAM, INSENTIF)
 // POST /api/driver/loper-resi/deliver
 // =========================================================================
 func DeliverLoperResiHandler(c *gin.Context) {
@@ -380,7 +380,7 @@ func DeliverLoperResiHandler(c *gin.Context) {
 		NoBTT           string   `json:"no_btt" binding:"required"`
 		NoLoper         string   `json:"no_loper"`
 		NamaPenerima    string   `json:"nama_penerima" binding:"required"`
-		StatusAntar     string   `json:"status_antar"` // TERKIRIM / DITOLAK_PENERIMA / ALAMAT_TIDAK_SESUAI
+		StatusAntar     string   `json:"status_antar"` // TERKIRIM / DITOLAK_OLEH_PENERIMA / dll.
 		ScannedKoliList []string `json:"scanned_koli"`
 		KoordinatGPS    string   `json:"gps"`
 	}
@@ -396,28 +396,103 @@ func DeliverLoperResiHandler(c *gin.Context) {
 		statusKode = "TERKIRIM"
 	}
 
-	if strings.TrimSpace(req.NoLoper) != "" {
+	// Tentukan TerimaYN ('Y' jika TERKIRIM, 'N' jika kendala/gagal)
+	terimaYN := "N"
+	if statusKode == "TERKIRIM" {
+		terimaYN = "Y"
+	}
+
+	// Cari No. Loper asli (loper_eid) & AgenID Loper jika req.NoLoper masih berupa ID Loading
+	var loperInfo struct {
+		LoperID string `gorm:"column:loper_eid"`
+		AgenID  string `gorm:"column:loper_agenid"`
+	}
+	database.Raw(`
+		SELECT TRIM(l.loper_eid) AS loper_eid, TRIM(COALESCE(l.loper_agenid, '')) AS loper_agenid
+		FROM public.opr_t_eloper l
+		INNER JOIN public.opr_t_eloperdetail ld ON TRIM(l.loper_eid) = TRIM(ld.loperd_eloperid)
+		WHERE LEFT(TRIM(ld.loperd_bttid), 16) = TRIM(?)
+		  AND (TRIM(l.loper_eid) = TRIM(?) OR TRIM(l.loper_loadhid) = TRIM(?) OR TRIM(?) = '')
+		ORDER BY l.loper_tanggal DESC
+		LIMIT 1
+	`, cleanBTT, req.NoLoper, req.NoLoper, req.NoLoper).Scan(&loperInfo)
+
+	realNoLoper := loperInfo.LoperID
+	if realNoLoper == "" {
+		realNoLoper = strings.TrimSpace(req.NoLoper)
+	}
+	agenID := loperInfo.AgenID
+	if agenID == "" {
+		agenID = strings.TrimSpace(driver.CabangID)
+	}
+	if agenID == "" {
+		agenID = "1"
+	}
+
+	// Pastikan UpdateID berisi 10 digit angka NIP Sopir agar valid untuk kolom Diinput Oleh & Insentif
+	updateID10 := strings.TrimSpace(driver.SupirNIP)
+	if len(updateID10) != 10 {
+		updateID10 = strings.TrimSpace(driver.Username)
+	}
+
+	// 1. Update opr_t_eloperdetail
+	if realNoLoper != "" {
 		res := database.Exec(`
 			UPDATE public.opr_t_eloperdetail
 			SET loperd_histid = ?,
 			    loperd_gps = COALESCE(NULLIF(?, ''), loperd_gps),
 			    loperd_updatetime = CURRENT_TIMESTAMP
 			WHERE TRIM(loperd_eloperid) = TRIM(?) AND LEFT(TRIM(loperd_bttid), 16) = TRIM(?)
-		`, statusKode, req.KoordinatGPS, req.NoLoper, cleanBTT)
+		`, statusKode, req.KoordinatGPS, realNoLoper, cleanBTT)
 
 		if res.RowsAffected == 0 {
 			database.Exec(`
 				INSERT INTO public.opr_t_eloperdetail (loperd_eloperid, loperd_bttid, loperd_histid, loperd_gps, loperd_updatetime)
 				VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-			`, req.NoLoper, cleanBTT, statusKode, req.KoordinatGPS)
+			`, realNoLoper, cleanBTT, statusKode, req.KoordinatGPS)
+		}
+
+		// 2. INSERT / UPDATE ke public.opr_t_ebbl agar kolom STATUS, JAM, DIINPUT OLEH, dan INSENTIF terisi
+		resBBL := database.Exec(`
+			UPDATE public.opr_t_ebbl
+			SET bbl_terimayn = ?,
+			    bbl_tanggal = CURRENT_TIMESTAMP,
+			    bbl_jamditerima = TO_CHAR(CURRENT_TIMESTAMP, 'HH24'),
+			    bbl_menitditerima = TO_CHAR(CURRENT_TIMESTAMP, 'MI'),
+			    bbl_penerima = UPPER(?),
+			    bbl_keterangan = ?,
+			    bbl_updateid = ?,
+			    bbl_updatetime = CURRENT_TIMESTAMP,
+			    bbl_aktifyn = 'Y'
+			WHERE TRIM(bbl_noloper) = TRIM(?) AND LEFT(TRIM(bbl_bttid), 16) = TRIM(?)
+		`, terimaYN, req.NamaPenerima, statusKode, updateID10, realNoLoper, cleanBTT)
+
+		if resBBL.RowsAffected == 0 {
+			// Generate bbl_eid unik (misal: BBL + tanggal + 4 digit akhir BTT)
+			newBBLEID := fmt.Sprintf("BBL%s", cleanBTT)
+			if len(newBBLEID) > 20 {
+				newBBLEID = newBBLEID[:20]
+			}
+			database.Exec(`
+				INSERT INTO public.opr_t_ebbl (
+					bbl_eid, bbl_agenid, bbl_noloper, bbl_bttid, bbl_tanggal,
+					bbl_jamditerima, bbl_menitditerima, bbl_terimayn, bbl_penerima,
+					bbl_keterangan, bbl_updateid, bbl_updatetime, bbl_aktifyn
+				)
+				VALUES (
+					?, ?, ?, ?, CURRENT_TIMESTAMP,
+					TO_CHAR(CURRENT_TIMESTAMP, 'HH24'), TO_CHAR(CURRENT_TIMESTAMP, 'MI'), ?, UPPER(?),
+					?, ?, CURRENT_TIMESTAMP, 'Y'
+				)
+			`, newBBLEID, agenID, realNoLoper, cleanBTT, terimaYN, req.NamaPenerima, statusKode, updateID10)
 		}
 	}
 
+	// 3. Catat keterangan riwayat pada mkt_t_econote
 	scanSummary := ""
 	if len(req.ScannedKoliList) > 0 {
 		scanSummary = fmt.Sprintf(" [Scan Turun: %d Koli (%s)]", len(req.ScannedKoliList), strings.Join(req.ScannedKoliList, ", "))
 	}
-
 	ketLog := fmt.Sprintf("[%s] Penerima: %s (Sopir: %s)%s", statusKode, strings.ToUpper(req.NamaPenerima), driver.SupirNama, scanSummary)
 	database.Exec(`
 		UPDATE public.mkt_t_econote
