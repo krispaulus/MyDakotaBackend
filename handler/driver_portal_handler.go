@@ -164,7 +164,10 @@ func GetDriverSuratTugasHandler(c *gin.Context) {
 	}
 
 	driver := resolveDriverIdentity(c, database)
-	statusFilter := strings.ToUpper(strings.TrimSpace(c.Query("status"))) // BERJALAN / SELESAI / ALL
+	statusFilter := strings.ToUpper(strings.TrimSpace(c.Query("status")))
+	if statusFilter == "" {
+		statusFilter = "BERJALAN" // Default: tampilkan hanya yang AKTIF JALAN
+	}
 
 	// Penjaga di awal: jika NIP sopir kosong (misal admin belum memilih sopir), langsung return kosong
 	if strings.TrimSpace(driver.SupirNIP) == "" {
@@ -178,11 +181,10 @@ func GetDriverSuratTugasHandler(c *gin.Context) {
 
 	whereStatus := ""
 	if statusFilter == "BERJALAN" {
-		whereStatus = " AND COALESCE(s.sjh_completeyn, 'N') <> 'Y' "
+		whereStatus = " AND COALESCE(TRIM(s.sjh_completeyn), 'N') <> 'Y' "
 	} else if statusFilter == "SELESAI" {
-		whereStatus = " AND COALESCE(s.sjh_completeyn, 'N') = 'Y' "
+		whereStatus = " AND COALESCE(TRIM(s.sjh_completeyn), 'N') = 'Y' "
 	}
-
 	query := fmt.Sprintf(`
 		SELECT 
 			TRIM(s.sjh_id) AS no_surat_tugas,
@@ -311,6 +313,7 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 			LEFT JOIN public.opr_t_eloper el ON TRIM(el.loper_loadhid) = TRIM(lh.loadh_id)
 			LEFT JOIN public.opr_t_eloperdetail eld ON TRIM(eld.loperd_eloperid) = TRIM(el.loper_eid) AND TRIM(eld.loperd_bttid) = SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1)
 			WHERE COALESCE(s.sjh_aktifyn, 'Y') = 'Y'
+			  AND COALESCE(TRIM(s.sjh_completeyn), 'N') <> 'Y'
 			  AND COALESCE(TRIM(s.sjh_loadhid), '') <> ''
 			  AND (
 			      TRIM(s.sjh_sopir1_nip) = TRIM(?)
