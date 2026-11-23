@@ -28,7 +28,6 @@ func GetAllWebLogins(c *gin.Context) {
 
 	var users []models.WebLogin
 
-	// 🌟 KUNCI PENJINAK: Ganti "id ASC" jadi "username ASC" bray!
 	err := gormDB.Table("public.weblogin").
 		Where("username <> ?", "administrator").
 		Order("username ASC").
@@ -45,11 +44,13 @@ func GetAllWebLogins(c *gin.Context) {
 		} else {
 			var cabangList []string
 			gormDB.Table("public.weblogin_cabang").
-				Where("LOWER(username) = LOWER(?)", users[i].Username).
-				Pluck("kode_cabang", &cabangList)
+				Where("TRIM(LOWER(username)) = TRIM(LOWER(?))", users[i].Username).
+				Pluck("TRIM(kode_cabang)", &cabangList)
 
 			if len(cabangList) > 0 {
 				users[i].KodeCabang = strings.Join(cabangList, ", ")
+			} else {
+				users[i].KodeCabang = ""
 			}
 		}
 	}
@@ -65,8 +66,16 @@ func UpdateWebLogin(c *gin.Context) {
 		return
 	}
 
-	ctxPTID, _ := c.Get("pt_id")
+	// Tempelkan bagian ini di sini (di dalam UpdateWebLogin, setelah input dideklarasikan)
+	ctxPTID, exists := c.Get("pt_id")
 	ptid := fmt.Sprintf("%v", ctxPTID)
+	if !exists || ptid == "" || ptid == "<nil>" {
+		if bodyPT, ok := input["pt_id"].(string); ok && bodyPT != "" {
+			ptid = bodyPT
+		} else {
+			ptid = "C" // Fallback ke DLI jika token tidak membawa pt_id
+		}
+	}
 
 	username, _ := input["Username"].(string)
 	if username == "" {

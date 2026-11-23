@@ -306,22 +306,39 @@ func LoginHandler(c *gin.Context) {
 	}
 	user.Cabangs = userCabangs
 
-	// 🎯 6. FIX SUPERADMIN DEFAULT AGEN KE PUSAT DAKOTA (AGEN ID: 1)
-	activeAgenID := defaultKodeCabang
-	activeAgenNama := "PUSAT DAKOTA"
+	// 🎯 6. DEFAULT AGEN DINAMIS DARI DATABASE (TANPA HARDCODE)
+	var activeAgenID, activeAgenNama string
 
 	if strings.ToUpper(user.UserType) == "S" || strings.ToUpper(user.All_cabangYN) == "Y" {
-		activeAgenID = "1"
-		// Ambil Nama Agen Resmi dari DB untuk Agen ID '1'
-		errNama := conn.QueryRow("SELECT agen_nama FROM public.glb_m_agen WHERE CAST(agen_id AS VARCHAR) = '1' LIMIT 1").Scan(&activeAgenNama)
-		if errNama != nil || activeAgenNama == "" || activeAgenNama == "AGEN 1" {
-			activeAgenNama = "PUSAT DAKOTA" // Fallback nama resmi
+		// Prioritaskan mencari agen bawaan user (serverid) jika ada, jika tidak ambil agen pertama di master agen
+		errAgen := conn.QueryRow(`
+			SELECT COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
+			FROM public.glb_m_agen 
+			WHERE TRIM(agen_kode) = $1 OR CAST(agen_id AS VARCHAR) = $1 
+			LIMIT 1
+		`, strings.TrimSpace(defaultKodeCabang)).Scan(&activeAgenID, &activeAgenNama)
+
+		if errAgen != nil || activeAgenID == "" {
+			_ = conn.QueryRow(`
+				SELECT COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
+				FROM public.glb_m_agen 
+				ORDER BY agen_id ASC 
+				LIMIT 1
+			`).Scan(&activeAgenID, &activeAgenNama)
 		}
-	} else {
-		// Ambil Nama Agen sesuai ID Agen khusus user biasa
-		_ = conn.QueryRow("SELECT agen_nama FROM public.glb_m_agen WHERE CAST(agen_id AS VARCHAR) = $1 LIMIT 1", activeAgenID).Scan(&activeAgenNama)
-		if activeAgenNama == "" {
-			activeAgenNama = defaultKodeCabang
+	} else if len(userCabangs) > 0 {
+		// Ambil cabang pertama milik user dari tabel relasi weblogin_cabang
+		firstCabang := strings.TrimSpace(userCabangs[0])
+		errAgen := conn.QueryRow(`
+			SELECT COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
+			FROM public.glb_m_agen 
+			WHERE TRIM(agen_kode) = $1 OR CAST(agen_id AS VARCHAR) = $1 
+			LIMIT 1
+		`, firstCabang).Scan(&activeAgenID, &activeAgenNama)
+
+		if errAgen != nil || activeAgenID == "" {
+			activeAgenID = firstCabang
+			activeAgenNama = firstCabang
 		}
 	}
 
@@ -360,6 +377,8 @@ func LoginHandler(c *gin.Context) {
 			"email":         user.Email,
 			"user_type":     user.UserType,
 			"all_cabangyn":  user.All_cabangYN,
+			"cabangs":       userCabangs,                     // <-- TAMBAHKAN INI
+			"kode_cabang":   strings.Join(userCabangs, ", "), // <-- DAN INI
 			"profileimage":  user.ProfileImage,
 			"profile_image": user.ProfileImage,
 			"agent_code":    activeAgenID,
