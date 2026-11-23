@@ -177,18 +177,21 @@ func GetLoadingReadyForSP(c *gin.Context) {
 	database.Raw(`
 		SELECT 
 			TRIM(l.loadh_id) AS load_id,
-			TRIM(COALESCE(l.loadh_sjid, '')) AS surat_tugas,
-			TRIM(COALESCE(l.loadh_kendid, '')) AS no_mobil,
+			TRIM(COALESCE(s.sjh_id, '')) AS surat_tugas,
+			TRIM(COALESCE(NULLIF(l.loadh_kendid, ''), s.sjh_kendid, '')) AS no_mobil,
 			COALESCE(TRIM(sp1.kry_nama), TRIM(s.sjh_sopir1_nip), '') AS sopir1,
 			COALESCE(TRIM(sp2.kry_nama), TRIM(s.sjh_sopir2_nip), '') AS sopir2,
 			TRIM(COALESCE(s.sjh_endagenid::varchar, '')) AS tujuan_agen_id,
-			COALESCE(TRIM(a2.agen_nama), '') AS tujuan_agen_nama
+			CASE 
+				WHEN UPPER(TRIM(a2.agen_nama)) = 'PUSAT DAKOTA' OR TRIM(s.sjh_endagenid::varchar) IN ('1', '001', 'PST001') THEN 'DLI PUSAT'
+				ELSE COALESCE(TRIM(a2.agen_nama), '')
+			END AS tujuan_agen_nama
 		FROM public.opr_t_loadingh l
-		LEFT JOIN public.opr_t_esuratjalan s ON TRIM(l.loadh_sjid) = TRIM(s.sjh_id)
+		LEFT JOIN public.opr_t_esuratjalan s ON TRIM(l.loadh_id) = TRIM(s.sjh_loadhid)
 		LEFT JOIN public.hrd_m_karyawan sp1 ON TRIM(s.sjh_sopir1_nip) = TRIM(sp1.kry_nip)
 		LEFT JOIN public.hrd_m_karyawan sp2 ON TRIM(s.sjh_sopir2_nip) = TRIM(sp2.kry_nip)
 		LEFT JOIN public.glb_m_agen a2 ON TRIM(s.sjh_endagenid::varchar) = TRIM(a2.agen_id::varchar)
-		WHERE TRIM(l.loadh_id) = TRIM(?) OR TRIM(l.loadh_sjid) = TRIM(?)
+		WHERE TRIM(l.loadh_id) = TRIM(?) OR TRIM(s.sjh_id) = TRIM(?)
 		LIMIT 1
 	`, loadID, loadID).Scan(&loadHeader)
 

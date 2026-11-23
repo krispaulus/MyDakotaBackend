@@ -14,6 +14,7 @@ import (
 	"dakotagroup/business-insight-be/models"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // 🔍 1. GET LIST SURAT TUGAS / SURAT JALAN
@@ -139,14 +140,7 @@ func CreateSuratTugas(c *gin.Context) {
 
 	// 🌟 AUTO-GENERATE NOMOR SURAT TUGAS JIKA KOSONG DARI FORM TAMBAH
 	if strings.TrimSpace(req.SJHID) == "" {
-		cabangCode := strings.TrimSpace(req.SJHStartAgenID)
-		if cabangCode == "" || strings.ToUpper(cabangCode) == "PST" || strings.ToUpper(cabangCode) == "OTA" {
-			cabangCode = "001"
-		} else if len(cabangCode) >= 3 {
-			cabangCode = cabangCode[:3]
-		} else {
-			cabangCode = fmt.Sprintf("%03s", cabangCode)
-		}
+		cabangCode := resolveCabangCode3(database, req.SJHStartAgenID)
 
 		datePrefix := nowTime.Format("20060102") // YYYYMMDD
 		prefix := fmt.Sprintf("%sJC%s", cabangCode, datePrefix)
@@ -490,31 +484,16 @@ func GetAgenList(c *gin.Context) {
 		return
 	}
 	query := `
-        SELECT * FROM (
-            SELECT DISTINCT ON (
-                CASE 
-                    WHEN UPPER(RTRIM(LTRIM(agen_nama))) IN ('PUSAT DAKOTA', 'DLI PUSAT') OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001', '1') THEN 'DLI PUSAT'
-                    ELSE UPPER(RTRIM(LTRIM(agen_nama)))
-                END
-            )
-                RTRIM(LTRIM(agen_id)) AS agen_id, 
-                CASE 
-                    WHEN UPPER(RTRIM(LTRIM(agen_nama))) IN ('PUSAT DAKOTA', 'DLI PUSAT') OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001', '1') THEN 'DLI PUSAT'
-                    ELSE RTRIM(LTRIM(agen_nama))
-                END AS agen_nama 
-            FROM public.glb_m_agen 
-            WHERE agen_aktifyn = 'Y' 
-              AND UPPER(agen_nama) NOT LIKE '%XXX%'
-            ORDER BY 
-                CASE 
-                    WHEN UPPER(RTRIM(LTRIM(agen_nama))) IN ('PUSAT DAKOTA', 'DLI PUSAT') OR RTRIM(LTRIM(agen_id)) IN ('PST001', '001', '1') THEN 'DLI PUSAT'
-                    ELSE UPPER(RTRIM(LTRIM(agen_nama)))
-                END,
-                CASE WHEN RTRIM(LTRIM(agen_id)) = '1' THEN 0 ELSE 1 END
-        ) sub
+        SELECT DISTINCT ON (UPPER(RTRIM(LTRIM(agen_nama))))
+            RTRIM(LTRIM(agen_id)) AS agen_id, 
+            RTRIM(LTRIM(agen_nama)) AS agen_nama 
+        FROM public.glb_m_agen 
+        WHERE agen_aktifyn = 'Y' 
+          AND UPPER(agen_nama) NOT LIKE '%XXX%'
         ORDER BY 
-            CASE WHEN agen_nama = 'DLI PUSAT' THEN 0 ELSE 1 END,
-            agen_nama ASC
+            UPPER(RTRIM(LTRIM(agen_nama))) ASC,
+            LENGTH(RTRIM(LTRIM(agen_id))) ASC,
+            RTRIM(LTRIM(agen_id)) ASC
     `
 
 	type AgenRow struct {
@@ -534,19 +513,11 @@ func GetAgenList(c *gin.Context) {
 	})
 }
 
-func FormatNoSuratTugasResmi(rawNo string, agenID string, tgl time.Time) string {
+func FormatNoSuratTugasResmi(database *gorm.DB, rawNo string, agenID string, tgl time.Time) string {
 	raw := strings.TrimSpace(rawNo)
 
-	// 1. Normalisasi Cabang (PST / OTA / kosong -> 001)
-	cleanAgen := strings.TrimSpace(agenID)
-	if cleanAgen == "" || strings.ToUpper(cleanAgen) == "PST" || strings.ToUpper(cleanAgen) == "OTA" {
-		cleanAgen = "001"
-	}
-	if len(cleanAgen) < 3 {
-		cleanAgen = fmt.Sprintf("%03s", cleanAgen)
-	} else if len(cleanAgen) > 3 {
-		cleanAgen = cleanAgen[:3]
-	}
+	// 1. Ambil kode cabang 3 digit murni dari database
+	cleanAgen := resolveCabangCode3(database, agenID)
 
 	// 2. Ambil 4 digit urut terakhir
 	digits := regexp.MustCompile(`\D`).ReplaceAllString(raw, "")
@@ -559,7 +530,6 @@ func FormatNoSuratTugasResmi(rawNo string, agenID string, tgl time.Time) string 
 		tgl = time.Now()
 	}
 
-	// 3. Tanpa tanggal hari (hanya Tahun & Bulan) -> 001JC2026119422
 	return fmt.Sprintf("%sJC%s%s%s", cleanAgen, tgl.Format("2006"), tgl.Format("01"), urut)
 }
 
@@ -653,7 +623,7 @@ func GetPublicSuratTugasDetailHandler(c *gin.Context) {
 	}
 
 	// 🌟 Ubah nomor menjadi standar resmi: 001JC2026119422
-	officialNo := FormatNoSuratTugasResmi(detail.RawSJHID, detail.StartAgenID, detail.SJHTanggal)
+	officialNo := FormatNoSuratTugasResmi(database, detail.RawSJHID, detail.StartAgenID, detail.SJHTanggal)
 
 	// Ambil rincian BTT
 	type BTTItem struct {
@@ -1198,7 +1168,9 @@ func StartLoadingSuratTugasHandler(c *gin.Context) {
 		if ptCode == "" || ptCode == "<NIL>" {
 			ptCode = "C"
 		}
-		cabangCode := strings.TrimSpace(sjhInfo.StartAgenID)
+
+		cabangCode := resolveCabangCode3(database, sjhInfo.StartAgenID)
+
 		if cabangCode == "" || strings.ToUpper(cabangCode) == "PST" || strings.ToUpper(cabangCode) == "OTA" {
 			cabangCode = "001"
 		}
@@ -1393,4 +1365,41 @@ func RemoveBTTFromSuratTugasHandler(c *gin.Context) {
 	database.Exec(`UPDATE public.mkt_t_econote SET bttt_nosuratjalan = NULL WHERE TRIM(bttt_id) = TRIM(?)`, noBTT)
 
 	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "BTT berhasil dikeluarkan dari surat tugas"})
+}
+
+// Helper dinamis: Ambil kode cabang 3 digit murni dari master database (tanpa hardcode PST/OTA/001)
+func resolveCabangCode3(database *gorm.DB, rawAgenID string) string {
+	clean := strings.TrimSpace(rawAgenID)
+	if clean == "" {
+		return ""
+	}
+
+	var dbCode string
+	database.Raw(`
+		SELECT COALESCE(
+			NULLIF(RIGHT(REGEXP_REPLACE(TRIM(COALESCE(agen_kode, '')), '\D', '', 'g'), 3), ''),
+			NULLIF(RIGHT(REGEXP_REPLACE(TRIM(COALESCE(agen_id::varchar, '')), '\D', '', 'g'), 3), ''),
+			LEFT(UPPER(TRIM(agen_id::varchar)), 3)
+		)
+		FROM public.glb_m_agen
+		WHERE TRIM(agen_id::varchar) = TRIM(?)
+		   OR UPPER(TRIM(agen_nama)) = UPPER(TRIM(?))
+		LIMIT 1
+	`, clean, clean).Scan(&dbCode)
+
+	if dbCode == "" {
+		digitsOnly := regexp.MustCompile(`\D`).ReplaceAllString(clean, "")
+		if digitsOnly != "" {
+			dbCode = digitsOnly
+		} else {
+			dbCode = strings.ToUpper(clean)
+		}
+	}
+
+	if len(dbCode) > 3 {
+		dbCode = dbCode[len(dbCode)-3:]
+	} else if len(dbCode) < 3 {
+		dbCode = fmt.Sprintf("%03s", dbCode)
+	}
+	return dbCode
 }
