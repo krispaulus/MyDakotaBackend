@@ -69,14 +69,20 @@ func GetSuratPengantarFetch(c *gin.Context) {
 		SELECT 
 			TRIM(COALESCE(s.spt_eid, '-')) AS no_sp,
 			TO_CHAR(s.spt_tanggal, 'YYYY-MM-DD HH24:MI:SS') AS tanggal,
-			COALESCE(TRIM(a1.agen_nama), TRIM(CAST(s.spt_asalagenid AS VARCHAR)), '-') AS asal,
-			COALESCE(TRIM(a2.agen_nama), TRIM(CAST(s.spt_tujuanagenid AS VARCHAR)), '-') AS tujuan,
+			CASE 
+				WHEN UPPER(TRIM(a1.agen_nama)) = 'PUSAT DAKOTA' OR TRIM(CAST(s.spt_asalagenid AS VARCHAR)) IN ('1', '001', 'PST001') THEN 'DLI PUSAT'
+				ELSE COALESCE(TRIM(a1.agen_nama), TRIM(CAST(s.spt_asalagenid AS VARCHAR)), '-')
+			END AS asal,
+			CASE 
+				WHEN UPPER(TRIM(a2.agen_nama)) = 'PUSAT DAKOTA' OR TRIM(CAST(s.spt_tujuanagenid AS VARCHAR)) IN ('1', '001', 'PST001') THEN 'DLI PUSAT'
+				ELSE COALESCE(TRIM(a2.agen_nama), TRIM(CAST(s.spt_tujuanagenid AS VARCHAR)), '-')
+			END AS tujuan,
 			COALESCE(TRIM(s.spt_transityn), 'N') AS spt_transityn,
 			COALESCE(TRIM(s.spt_nomobil), '-') AS no_mobil,
 			COALESCE(TRIM(s.spt_namasopir), '-') AS sopir,
 			COALESCE(TRIM(s.spt_surattugas), '-') AS surat_tugas,
 			COALESCE(TRIM(s.spt_boronganyn), 'N') AS borongan_yn,
-			COALESCE(s.spt_service, 1) AS service,
+			COALESCE(NULLIF(TRIM(CAST(s.spt_service AS VARCHAR)), ''), '1') AS service,
 			COALESCE(TRIM(s.spt_aktifyn), 'Y') AS aktif,
 			COUNT(d.sptd_bttid)::int AS jmlbtt,
 			COALESCE(SUM(c.bttt_tagihtujuan), 0) AS jmlcod
@@ -122,7 +128,7 @@ func GetDetailSPByID(c *gin.Context) {
 			COALESCE(TRIM(s.spt_namasopir), '') AS nama_sopir,
 			COALESCE(TRIM(s.spt_surattugas), '') AS surat_tugas,
 			COALESCE(TRIM(s.spt_boronganyn), 'N') AS borongan_yn,
-			COALESCE(s.spt_service, 1) AS service,
+			COALESCE(NULLIF(TRIM(CAST(s.spt_service AS VARCHAR)), ''), '1') AS service,
 			COALESCE(TRIM(s.spt_aktifyn), 'Y') AS aktif_yn
 		FROM public.opr_t_esp_terima s
 		LEFT JOIN public.glb_m_agen a1 ON TRIM(s.spt_asalagenid::varchar) = TRIM(a1.agen_id::varchar)

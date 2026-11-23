@@ -852,6 +852,11 @@ func main() {
 			authorized.POST("/btt/update", handler.UpdateBTT)
 			authorized.POST("/master/tarif/import-csv", handler.ImportMasterTarifCSVHandler)
 
+			// Portal Khusus Sopir / Driver
+			authorized.GET("/driver/surat-tugas", handler.GetDriverSuratTugasHandler)
+			authorized.GET("/driver/loper-resi", handler.GetDriverLoperResiHandler)
+			authorized.POST("/driver/loper-resi/deliver", handler.DeliverLoperResiHandler)
+
 		}
 	}
 
