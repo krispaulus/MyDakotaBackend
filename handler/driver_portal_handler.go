@@ -280,7 +280,7 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 
 	query := fmt.Sprintf(`
 		WITH driver_resi AS (
-			-- Sumber 1: e-Loper HARI INI saja
+			-- Sumber 1: e-Loper pada Surat Tugas aktif (atau tanpa ST yang masih aktif)
 			SELECT 
 				TRIM(l.loper_eid) AS no_loper,
 				COALESCE(TRIM(s.sjh_id), '-') AS no_surat_tugas,
@@ -293,12 +293,12 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 			INNER JOIN public.opr_t_eloperdetail ld ON TRIM(l.loper_eid) = TRIM(ld.loperd_eloperid)
 			LEFT JOIN public.opr_t_esuratjalan s ON TRIM(s.sjh_loadhid) = TRIM(l.loper_loadhid) AND COALESCE(TRIM(l.loper_loadhid), '') <> ''
 			WHERE COALESCE(l.loper_aktifyn, 'Y') = 'Y'
-			  AND CAST(l.loper_tanggal AS DATE) = CURRENT_DATE
+			  AND COALESCE(TRIM(s.sjh_completeyn), 'N') <> 'Y'
 			  AND TRIM(l.loper_nipsopir) = TRIM(?)
 
 			UNION
 
-			-- Sumber 2: Loading Barang HARI INI saja (normalisasi 16 digit No. Resi agar nomor koli 0001 tidak tampil dobel)
+			-- Sumber 2: Loading Barang pada Surat Tugas AKTIF JALAN milik NIP sopir (16 digit No. Resi)
 			SELECT 
 				COALESCE(TRIM(el.loper_eid), TRIM(s.sjh_loadhid)) AS no_loper,
 				TRIM(s.sjh_id) AS no_surat_tugas,
@@ -315,7 +315,6 @@ func GetDriverLoperResiHandler(c *gin.Context) {
 			                                       AND LEFT(TRIM(eld.loperd_bttid), 16) = LEFT(SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1), 16)
 			WHERE COALESCE(s.sjh_aktifyn, 'Y') = 'Y'
 			  AND COALESCE(TRIM(s.sjh_completeyn), 'N') <> 'Y'
-			  AND CAST(COALESCE(lh.loadh_tanggal, s.sjh_tanggal) AS DATE) = CURRENT_DATE
 			  AND COALESCE(TRIM(s.sjh_loadhid), '') <> ''
 			  AND (
 			      TRIM(s.sjh_sopir1_nip) = TRIM(?)
