@@ -166,25 +166,20 @@ func UpdateWebLogin(c *gin.Context) {
 		return
 	}
 
+	// Tambahkan di dalam UpdateWebLogin (user.go) sebelum tx.Table("weblogin").Updates(updateData)
 	if allCabangYN == "N" {
-		if rawCabang, ok := input["kode_cabang"].([]interface{}); ok {
-			seenCabang := make(map[string]bool)
-			for _, v := range rawCabang {
-				if kdBranche, ok := v.(string); ok && strings.TrimSpace(kdBranche) != "" {
-					cleanBranch := strings.TrimSpace(kdBranche)
-					if !seenCabang[cleanBranch] {
-						seenCabang[cleanBranch] = true
-						relasi := map[string]interface{}{
-							"username":    strings.ToUpper(strings.TrimSpace(username)),
-							"kode_cabang": cleanBranch,
-						}
-						if err := tx.Table("weblogin_cabang").Create(relasi).Error; err != nil {
-							tx.Rollback()
-							c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal simpan detail cabang: " + err.Error()})
-							return
-						}
-					}
-				}
+		if rawCabang, ok := input["kode_cabang"].([]interface{}); ok && len(rawCabang) > 0 {
+			firstBranch := strings.TrimSpace(fmt.Sprintf("%v", rawCabang[0]))
+			var resolvedServerID string
+			gormDB.Table("public.glb_m_agen").
+				Select("CAST(agen_id AS VARCHAR)").
+				Where("UPPER(TRIM(agen_kode)) = UPPER(?) OR CAST(agen_id AS VARCHAR) = ? OR UPPER(TRIM(agen_nama)) = UPPER(?)",
+					firstBranch, firstBranch, firstBranch).
+				Limit(1).
+				Scan(&resolvedServerID)
+
+			if resolvedServerID != "" {
+				updateData["serverid"] = resolvedServerID
 			}
 		}
 	}

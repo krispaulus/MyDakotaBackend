@@ -198,8 +198,8 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	// 2. QUERY DATABASE WITH PRECISE SNAKE_CASE MAPPING
-	var dbPassword, aktif, defaultKodeCabang string
+	// 2. QUERY DATABASE WITH PRECISE SNAKE_CASE MAPPING (Sertakan kode_cabang & serverid)
+	var dbPassword, aktif, serverID, kolomKodeCabang string
 	var user UserInfo
 
 	user.PTID = req.PTID
@@ -212,9 +212,10 @@ func LoginHandler(c *gin.Context) {
                     COALESCE(email, '') as email, 
                     COALESCE(usertype, 'U') as usertype, 
                     COALESCE(all_cabangyn, 'N') as all_cabangyn,
-                    COALESCE(serverid, '1') as kode_cabang
+                    COALESCE(serverid, '') as serverid,
+                    COALESCE(kode_cabang, '') as kode_cabang
                   FROM public.weblogin 
-                  WHERE UPPER(username) = UPPER($1) OR UPPER(email) = UPPER($2)`
+                  WHERE UPPER(TRIM(username)) = UPPER(TRIM($1)) OR UPPER(TRIM(email)) = UPPER(TRIM($2))`
 
 	err := conn.QueryRow(queryUser, req.Email, req.Email).Scan(
 		&user.Username,
@@ -224,7 +225,8 @@ func LoginHandler(c *gin.Context) {
 		&user.Email,
 		&user.UserType,
 		&user.All_cabangYN,
-		&defaultKodeCabang,
+		&serverID,
+		&kolomKodeCabang,
 	)
 
 	if err != nil {
@@ -279,65 +281,86 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	// 5. LOGIKA OPTIMASI HAK AKSES CABANG (ANTI-LEAK)
+	// 5. LOGIKA OPTIMASI HAK AKSES CABANG (CASE-INSENSITIVE + FALLBACK)
 	var userCabangs []string
 	if strings.ToUpper(user.All_cabangYN) == "Y" || strings.ToUpper(user.UserType) == "S" {
-		rows, err := conn.Query("SELECT agen_kode FROM glb_m_agen")
+		rows, err := conn.Query("SELECT COALESCE(NULLIF(TRIM(agen_kode), ''), CAST(agen_id AS VARCHAR)) FROM public.glb_m_agen")
 		if err == nil && rows != nil {
 			for rows.Next() {
 				var code string
-				if errScan := rows.Scan(&code); errScan == nil {
-					userCabangs = append(userCabangs, code)
+				if errScan := rows.Scan(&code); errScan == nil && strings.TrimSpace(code) != "" {
+					userCabangs = append(userCabangs, strings.TrimSpace(code))
 				}
 			}
 			rows.Close()
 		}
 	} else {
-		rows, err := conn.Query("SELECT kode_cabang FROM weblogin_cabang WHERE username = $1", user.Username)
+		// 🔧 FIX: Gunakan LOWER(TRIM(username)) agar cocok dengan data yang disimpan huruf besar oleh UpdateWebLogin!
+		rows, err := conn.Query(`
+			SELECT TRIM(kode_cabang) 
+			FROM public.weblogin_cabang 
+			WHERE LOWER(TRIM(username)) = LOWER(TRIM($1))
+		`, user.Username)
 		if err == nil && rows != nil {
 			for rows.Next() {
 				var code string
-				if errScan := rows.Scan(&code); errScan == nil {
-					userCabangs = append(userCabangs, code)
+				if errScan := rows.Scan(&code); errScan == nil && strings.TrimSpace(code) != "" {
+					userCabangs = append(userCabangs, strings.TrimSpace(code))
 				}
 			}
 			rows.Close()
 		}
+
+		// 🛡️ FALLBACK 1: Jika di weblogin_cabang belum ada, baca dari kolom weblogin.kode_cabang
+		if len(userCabangs) == 0 && strings.TrimSpace(kolomKodeCabang) != "" && strings.ToUpper(strings.TrimSpace(kolomKodeCabang)) != "ALL CABANG" {
+			for _, part := range strings.Split(kolomKodeCabang, ",") {
+				cleanPart := strings.TrimSpace(part)
+				if cleanPart != "" {
+					userCabangs = append(userCabangs, cleanPart)
+				}
+			}
+		}
+
+		// 🛡️ FALLBACK 2: Jika masih kosong, gunakan serverid dari weblogin
+		if len(userCabangs) == 0 && strings.TrimSpace(serverID) != "" && strings.TrimSpace(serverID) != "1" {
+			userCabangs = append(userCabangs, strings.TrimSpace(serverID))
+		}
 	}
 	user.Cabangs = userCabangs
 
-	// 🎯 6. DEFAULT AGEN DINAMIS DARI DATABASE (TANPA HARDCODE)
-	var activeAgenID, activeAgenNama string
+	// 🎯 6. RESOLVE AGEN AKTIF (ID, KODE, & NAMA LENGKAP DARI glb_m_agen)
+	var activeAgenID, activeAgenKode, activeAgenNama string
 
 	if strings.ToUpper(user.UserType) == "S" || strings.ToUpper(user.All_cabangYN) == "Y" {
-		// Prioritaskan mencari agen bawaan user (serverid) jika ada, jika tidak ambil agen pertama di master agen
 		errAgen := conn.QueryRow(`
-			SELECT COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
+			SELECT CAST(agen_id AS VARCHAR), COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
 			FROM public.glb_m_agen 
 			WHERE TRIM(agen_kode) = $1 OR CAST(agen_id AS VARCHAR) = $1 
 			LIMIT 1
-		`, strings.TrimSpace(defaultKodeCabang)).Scan(&activeAgenID, &activeAgenNama)
+		`, strings.TrimSpace(serverID)).Scan(&activeAgenID, &activeAgenKode, &activeAgenNama)
 
 		if errAgen != nil || activeAgenID == "" {
 			_ = conn.QueryRow(`
-				SELECT COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
+				SELECT CAST(agen_id AS VARCHAR), COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
 				FROM public.glb_m_agen 
 				ORDER BY agen_id ASC 
 				LIMIT 1
-			`).Scan(&activeAgenID, &activeAgenNama)
+			`).Scan(&activeAgenID, &activeAgenKode, &activeAgenNama)
 		}
 	} else if len(userCabangs) > 0 {
-		// Ambil cabang pertama milik user dari tabel relasi weblogin_cabang
 		firstCabang := strings.TrimSpace(userCabangs[0])
 		errAgen := conn.QueryRow(`
-			SELECT COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
+			SELECT CAST(agen_id AS VARCHAR), COALESCE(TRIM(agen_kode), ''), COALESCE(TRIM(agen_nama), '') 
 			FROM public.glb_m_agen 
-			WHERE TRIM(agen_kode) = $1 OR CAST(agen_id AS VARCHAR) = $1 
+			WHERE UPPER(TRIM(agen_kode)) = UPPER($1) 
+			   OR CAST(agen_id AS VARCHAR) = $1 
+			   OR UPPER(TRIM(agen_nama)) = UPPER($1)
 			LIMIT 1
-		`, firstCabang).Scan(&activeAgenID, &activeAgenNama)
+		`, firstCabang).Scan(&activeAgenID, &activeAgenKode, &activeAgenNama)
 
 		if errAgen != nil || activeAgenID == "" {
 			activeAgenID = firstCabang
+			activeAgenKode = firstCabang
 			activeAgenNama = firstCabang
 		}
 	}
@@ -369,6 +392,7 @@ func LoginHandler(c *gin.Context) {
 		"token":            tokenString,
 		"pt_id":            req.PTID,
 		"active_agen_id":   activeAgenID,
+		"active_agen_kode": activeAgenKode,
 		"active_agen_nama": activeAgenNama,
 		"user": gin.H{
 			"username":      user.Username,
@@ -377,8 +401,11 @@ func LoginHandler(c *gin.Context) {
 			"email":         user.Email,
 			"user_type":     user.UserType,
 			"all_cabangyn":  user.All_cabangYN,
-			"cabangs":       userCabangs,                     // <-- TAMBAHKAN INI
-			"kode_cabang":   strings.Join(userCabangs, ", "), // <-- DAN INI
+			"agen_id":       activeAgenID,
+			"agen_kode":     activeAgenKode,
+			"agen_nama":     activeAgenNama,
+			"cabangs":       userCabangs,
+			"kode_cabang":   strings.Join(userCabangs, ", "),
 			"profileimage":  user.ProfileImage,
 			"profile_image": user.ProfileImage,
 			"agent_code":    activeAgenID,
