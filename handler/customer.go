@@ -4,12 +4,67 @@ import (
 	"dakotagroup/business-insight-be/db"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"gorm.io/gorm"
 )
+
+// Helper internal untuk resolve exact 3-digit kode agen (misal "2" -> "002", "294" -> "294", "1" -> "001")
+func resolveExactAgenPrefix(database *gorm.DB, rawAgenParam string) (exactPrefix string, exactAgenID string, isPusat bool) {
+	clean := strings.TrimSpace(rawAgenParam)
+	upper := strings.ToUpper(clean)
+
+	if clean == "" || upper == "ALL" || upper == "UND" || upper == "DEF" ||
+		clean == "1" || clean == "001" || clean == "000" || upper == "PST001" ||
+		strings.Contains(upper, "PUSAT") || strings.Contains(upper, "HOLDING") {
+		return "001", "001", true
+	}
+
+	var agenRow struct {
+		AgenID   string `gorm:"column:agen_id"`
+		AgenKode string `gorm:"column:agen_kode"`
+	}
+
+	// Cari exact match dulu berdasarkan agen_id, agen_kode, atau agen_nama
+	err := database.Table("public.glb_m_agen").
+		Select("TRIM(agen_id) AS agen_id, TRIM(agen_kode) AS agen_kode").
+		Where("TRIM(agen_id) = ? OR UPPER(TRIM(agen_kode)) = ? OR UPPER(TRIM(agen_nama)) = ?", clean, upper, upper).
+		Limit(1).
+		Scan(&agenRow).Error
+
+	// Fallback ILIKE jika nama agen dikirim sebagian
+	if err != nil || agenRow.AgenID == "" {
+		database.Table("public.glb_m_agen").
+			Select("TRIM(agen_id) AS agen_id, TRIM(agen_kode) AS agen_kode").
+			Where("agen_nama ILIKE ?", "%"+clean+"%").
+			Order("LENGTH(agen_nama) ASC").
+			Limit(1).
+			Scan(&agenRow)
+	}
+
+	targetID := strings.TrimSpace(agenRow.AgenID)
+	if targetID == "" {
+		targetID = clean
+	}
+
+	if targetID == "1" || targetID == "001" {
+		return "001", "001", true
+	}
+
+	// Pastikan prefix tepat 3 digit (misal "2" -> "002", "294" -> "294") agar tidak bocor ke agen lain!
+	prefix := targetID
+	if len(prefix) < 3 {
+		prefix = fmt.Sprintf("%03s", prefix)
+	} else if len(prefix) > 3 {
+		prefix = prefix[:3]
+	}
+
+	return prefix, targetID, false
+}
 
 func GetMasterCustomerList(c *gin.Context) {
 	ptID, _ := c.Get("pt_id")
@@ -17,7 +72,7 @@ func GetMasterCustomerList(c *gin.Context) {
 		if altID, ok := c.Get("selected_pt"); ok {
 			ptID = altID
 		} else {
-			ptID = "A"
+			ptID = "C"
 		}
 	}
 
@@ -27,7 +82,6 @@ func GetMasterCustomerList(c *gin.Context) {
 		return
 	}
 
-	// 🧠 AMBIL DATA ROLE AKSES DARI JWT TOKEN (SESSION CONTEXT)
 	roleUser := ""
 	tokenAgenID := ""
 	if claimsVal, exists := c.Get("user_data"); exists {
@@ -40,25 +94,18 @@ func GetMasterCustomerList(c *gin.Context) {
 			}
 		}
 	}
-
 	if roleUser == "" {
 		roleUser = c.Query("role_akses")
 	}
 
 	cleanRole := strings.ToUpper(strings.TrimSpace(roleUser))
-
-	// 🛡️ TENTUKAN APAKAH USER ADALAH ADMIN/SUPERADMIN/HOLDING/PUSAT
 	isAdmin := cleanRole == "SUPERADMIN" || cleanRole == "SUPERDBS" || cleanRole == "HOLDING" || cleanRole == "S" || strings.Contains(cleanRole, "PUSAT")
 
-	// 🚀 TANGKAP PARAMETER AGEN ID YANG DIKIRIM FRONTEND ATAU TOKEN
-	agenID := c.Query("agen_id")
-	if !isAdmin {
-		if tokenAgenID != "" {
-			agenID = tokenAgenID
-		}
+	agenID := strings.TrimSpace(c.Query("agen_id"))
+	if !isAdmin && tokenAgenID != "" {
+		agenID = tokenAgenID
 	}
 
-	// 🌟 JOIN LENGKAP KE TABEL KOTA & NO PO
 	query := database.Table("public.mkt_m_customer c").
 		Select(`
 			c.*,
@@ -72,52 +119,39 @@ func GetMasterCustomerList(c *gin.Context) {
 		Joins("LEFT JOIN public.mkt_m_customer_nopo p ON TRIM(p.cust_id) = TRIM(c.cust_id)").
 		Joins("LEFT JOIN public.hrd_m_karyawan h ON TRIM(h.kry_nip) = TRIM(c.cust_pic)")
 
-	cleanAgen := strings.ToUpper(strings.TrimSpace(agenID))
+	// 🔒 RESOLVE MAPPING AGEN SECARA TEGAS (3 DIGIT EXACT)
+	prefix3, exactAgenID, isPusat := resolveExactAgenPrefix(database, agenID)
 
-	// =========================================================================
-	// 🟢 AUTOMATIC ENTERPRISE COMPASS: Deteksi Saringan Lintas Nusantara Murni
-	// =========================================================================
-	isPusatOrAll := cleanAgen == "ALL" || cleanAgen == "UND" || cleanAgen == "DEF" || cleanAgen == "" ||
-		strings.Contains(cleanAgen, "PUSAT") || cleanAgen == "000" || cleanAgen == "PUS" || cleanAgen == "PST001"
-
-	if isAdmin && isPusatOrAll {
-		// 👑 JIKA DROP DOWN PUSAT/ALL -> TAMPILKAN SELURUH DATA NASIONAL
-		fmt.Println("👑 [Access Granted] Akun Eksekutif memuat seluruh data Master Customer berskala Nasional.")
+	if isPusat {
+		// Jika Pusat (001) dipilih, hanya tampilkan customer milik Pusat (001)
+		query = query.Where("(TRIM(c.cust_id) LIKE '001%' OR TRIM(c.cust_agenid) IN ('001', '1'))")
 	} else {
-		// 🔒 JIKA USER (AGEN / ADMIN) MEMILIH WILAYAH OPERASIONAL SPESIFIK TERTENTU
-		var realPrefix string
-
-		searchKeyword := cleanAgen
-		if strings.Contains(searchKeyword, " ") {
-			searchKeyword = strings.Split(searchKeyword, " ")[0]
-		}
-		wildcardParam := "%" + searchKeyword + "%"
-
-		// 🎯 Relasi agen_id / agen_cabangid
-		errFind := database.Table("public.glb_m_agen").
-			Select("LEFT(agen_id, 3)").
-			Where("agen_id LIKE ? OR agen_kode LIKE ? OR agen_nama ILIKE ? OR agen_cabangid LIKE ?", cleanAgen+"%", cleanAgen+"%", wildcardParam, cleanAgen+"%").
-			Limit(1).
-			Row().Scan(&realPrefix)
-
-		if errFind == nil && realPrefix != "" {
-			realPrefix = strings.ToUpper(strings.TrimSpace(realPrefix))
-			cleanAgen = realPrefix
-			query = query.Where("c.cust_id LIKE ?", cleanAgen+"%")
-		} else {
-			query = query.Where("c.cust_id = 'DATA_TIDAK_DITEMUKAN_SISTEM'")
-			cleanAgen = "DATA_TIDAK_DITEMUKAN_SISTEM"
-		}
+		// Jika Agen dipilih (misal DLI SURABAYA / 294), KUNCI hanya milik agen tsb & BLOKIR '001%'
+		query = query.Where("(TRIM(c.cust_id) LIKE ? OR TRIM(c.cust_agenid) = ? OR TRIM(c.cust_kotaid) = ?)",
+			prefix3+"%", exactAgenID, exactAgenID).
+			Where("TRIM(c.cust_id) NOT LIKE '001%'")
 	}
 
-	// Filter keyword search
+	// Filter pencarian keyword & tambahan filter frontend
 	searchKeyword := strings.TrimSpace(c.Query("search"))
 	if searchKeyword != "" {
-		query = query.Where("c.cust_name ILIKE ? OR c.cust_id LIKE ?", "%"+searchKeyword+"%", "%"+searchKeyword+"%")
+		query = query.Where("(c.cust_name ILIKE ? OR c.cust_id ILIKE ? OR COALESCE(c.cust_npwp, '') ILIKE ?)",
+			"%"+searchKeyword+"%", "%"+searchKeyword+"%", "%"+searchKeyword+"%")
+	}
+	if kota := strings.TrimSpace(c.Query("kota")); kota != "" {
+		query = query.Where("c.cust_kotaid ILIKE ?", "%"+kota+"%")
+	}
+	if telp := strings.TrimSpace(c.Query("telp")); telp != "" {
+		query = query.Where("(c.cust_telp1 ILIKE ? OR c.cust_telp2 ILIKE ?)", "%"+telp+"%", "%"+telp+"%")
+	}
+	if hasCredit := strings.TrimSpace(c.Query("has_credit_limit")); hasCredit == "Y" {
+		query = query.Where("COALESCE(c.cust_kreditlimit, 0) > 0")
+	} else if hasCredit == "N" {
+		query = query.Where("COALESCE(c.cust_kreditlimit, 0) = 0")
 	}
 
 	var results []map[string]interface{}
-	if err := query.Order("c.cust_id DESC").Find(&results).Error; err != nil {
+	if err := query.Order("c.cust_id DESC").Limit(500).Find(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memuat data master customer: " + err.Error()})
 		return
 	}
@@ -146,7 +180,6 @@ func CreateCustomerHandler(c *gin.Context) {
 		ctxAgenID, agenExists = c.Get("kode_cabang")
 	}
 
-	// 1. Struct input diselaraskan dengan kelengkapan form sistem lawas
 	type CustomerInput struct {
 		CustNama          string  `json:"cust_name"`
 		Nama              string  `json:"nama"`
@@ -156,6 +189,7 @@ func CreateCustomerHandler(c *gin.Context) {
 		Alamat2           string  `json:"alamat2"`
 		CustKotaID        string  `json:"cust_kotaid"`
 		KotaID            string  `json:"kotaid"`
+		CustAgenID        string  `json:"cust_agenid"`
 		CustTelp1         string  `json:"cust_telp1"`
 		Telp1             string  `json:"telp1"`
 		CustTelp2         string  `json:"cust_telp2"`
@@ -180,6 +214,8 @@ func CreateCustomerHandler(c *gin.Context) {
 		PIC               string  `json:"pic"`
 		CustTOP           int     `json:"cust_top"`
 		TOP               int     `json:"top"`
+		CustKreditLimit   float64 `json:"cust_kreditlimit"`
+		CustKreditHari    int     `json:"cust_kredithari"`
 		NoPO              string  `json:"nopo"`
 	}
 
@@ -189,70 +225,48 @@ func CreateCustomerHandler(c *gin.Context) {
 		return
 	}
 
-	// Normalisasi parameter fallback
-	valNama := input.CustNama
+	valNama := strings.TrimSpace(input.CustNama)
 	if valNama == "" {
-		valNama = input.Nama
+		valNama = strings.TrimSpace(input.Nama)
 	}
-	valAlamat1 := input.CustAlamat1
+	valAlamat1 := strings.TrimSpace(input.CustAlamat1)
 	if valAlamat1 == "" {
-		valAlamat1 = input.Alamat1
+		valAlamat1 = strings.TrimSpace(input.Alamat1)
 	}
-	valAlamat2 := input.CustAlamat2
+	valAlamat2 := strings.TrimSpace(input.CustAlamat2)
 	if valAlamat2 == "" {
-		valAlamat2 = input.Alamat2
+		valAlamat2 = strings.TrimSpace(input.Alamat2)
 	}
-	valKotaID := input.CustKotaID
+	valKotaID := strings.TrimSpace(input.CustKotaID)
 	if valKotaID == "" {
-		valKotaID = input.KotaID
+		valKotaID = strings.TrimSpace(input.KotaID)
 	}
-	valTelp1 := input.CustTelp1
+	valTelp1 := strings.TrimSpace(input.CustTelp1)
 	if valTelp1 == "" {
-		valTelp1 = input.Telp1
+		valTelp1 = strings.TrimSpace(input.Telp1)
 	}
-	valTelp2 := input.CustTelp2
+	valTelp2 := strings.TrimSpace(input.CustTelp2)
 	if valTelp2 == "" {
-		valTelp2 = input.Telp2
+		valTelp2 = strings.TrimSpace(input.Telp2)
 	}
-	valFax1 := input.CustFax1
-	if valFax1 == "" {
-		valFax1 = input.Fax1
-	}
-	valFax2 := input.CustFax2
-	if valFax2 == "" {
-		valFax2 = input.Fax2
-	}
-	valKontak := input.CustContactPerson
+	valKontak := strings.TrimSpace(input.CustContactPerson)
 	if valKontak == "" {
-		valKontak = input.Kontak
+		valKontak = strings.TrimSpace(input.Kontak)
 	}
-	valMemo := input.CustMemo
-	if valMemo == "" {
-		valMemo = input.Keterangan
-	}
-	valKgMin := input.CustKgMin
-	if valKgMin == 0 {
-		valKgMin = input.MinKg
-	}
-	valEmail := input.CustEmail
+	valEmail := strings.TrimSpace(input.CustEmail)
 	if valEmail == "" {
-		valEmail = input.Email
+		valEmail = strings.TrimSpace(input.Email)
 	}
-	valNPWP := input.CustNPWP
+	valNPWP := strings.TrimSpace(input.CustNPWP)
 	if valNPWP == "" {
-		valNPWP = input.NPWP
-	}
-	valNamaNPWP := input.CustNamaNPWP
-	if valNamaNPWP == "" {
-		valNamaNPWP = input.NamaNPWP
-	}
-	valPIC := input.CustPIC
-	if valPIC == "" {
-		valPIC = input.PIC
+		valNPWP = strings.TrimSpace(input.NPWP)
 	}
 	valTOP := input.CustTOP
 	if valTOP == 0 {
 		valTOP = input.TOP
+	}
+	if valTOP == 0 {
+		valTOP = input.CustKreditHari
 	}
 
 	if valNama == "" || valAlamat1 == "" {
@@ -260,73 +274,79 @@ func CreateCustomerHandler(c *gin.Context) {
 		return
 	}
 
-	// 2. Generate ID Customer Baru
-	var agenCabangID string
-	if agenExists && fmt.Sprintf("%v", ctxAgenID) != "" && fmt.Sprintf("%v", ctxAgenID) != "PUSAT DAKOTA" {
-		_ = database.Table("public.glb_m_agen").
-			Select("agen_cabangid").
-			Where("agen_id = ? OR agen_kode = ? OR agen_cabangid = ?", ctxAgenID, ctxAgenID, ctxAgenID).
-			Limit(1).
-			Row().Scan(&agenCabangID)
+	// 🎯 RESOLVE AGEN AKTIF (Prioritaskan cust_agenid / cust_kotaid dari frontend dropdown)
+	rawAgenSource := strings.TrimSpace(input.CustAgenID)
+	if rawAgenSource == "" {
+		rawAgenSource = valKotaID
+	}
+	if rawAgenSource == "" && agenExists {
+		rawAgenSource = fmt.Sprintf("%v", ctxAgenID)
 	}
 
-	if agenCabangID == "" || agenCabangID == "PUSAT DAKOTA" || agenCabangID == "000" {
-		if len(valKotaID) >= 3 {
-			agenCabangID = strings.ToUpper(valKotaID[:3]) + "001"
-		} else {
-			agenCabangID = "JKS001"
-		}
+	prefix3, exactAgenID, isPusat := resolveExactAgenPrefix(database, rawAgenSource)
+	if isPusat {
+		c.JSON(http.StatusForbidden, gin.H{
+			"status":  "error",
+			"message": "Cabang PUSAT (001) tidak diperbolehkan membuat customer cabang. Pilih Agen operasional terlebih dahulu!",
+		})
+		return
 	}
-	agenCabangID = strings.ToUpper(strings.TrimSpace(agenCabangID))
 
-	now := time.Now()
-	bulanStr := fmt.Sprintf("%02d", int(now.Month()))
-	tahunStr := now.Format("06")
-	idPrefixPattern := fmt.Sprintf("%s%s%s", agenCabangID, bulanStr, tahunStr)
-	prefixLength := len(idPrefixPattern)
-
+	// 🎯 GENERATE CUST ID STANDAR 10 DIGIT: [PREFIX_AGEN_3DIGIT][7_DIGIT_URUT] -> Contoh: 2940000003
 	var lastCustID string
 	database.Table("public.mkt_m_customer").
-		Select("cust_id").
-		Where("cust_id LIKE ?", idPrefixPattern+"%").
+		Select("TRIM(cust_id)").
+		Where("TRIM(cust_id) LIKE ? AND LENGTH(TRIM(cust_id)) = 10", prefix3+"%").
 		Order("cust_id DESC").
 		Limit(1).
-		Row().Scan(&lastCustID)
+		Scan(&lastCustID)
 
 	nextUrutan := 1
-	if lastCustID != "" && len(lastCustID) > prefixLength {
-		suffixUrutan := lastCustID[prefixLength:]
-		var currentNo int
-		fmt.Sscanf(suffixUrutan, "%d", &currentNo)
-		nextUrutan = currentNo + 1
+	if len(lastCustID) == 10 {
+		suffixUrutan := lastCustID[3:]
+		if n, errN := strconv.Atoi(suffixUrutan); errN == nil {
+			nextUrutan = n + 1
+		}
 	}
-	finalCustID := fmt.Sprintf("%s%05d", idPrefixPattern, nextUrutan)
+	finalCustID := fmt.Sprintf("%s%07d", prefix3, nextUrutan)
 
-	// 3. Mapping data ke tabel public.mkt_m_customer (HANYA KOLOM RESMI YANG ADA DI DB)
-	agenIDStr := "1"
-	if agenExists && fmt.Sprintf("%v", ctxAgenID) != "" {
-		agenIDStr = fmt.Sprintf("%v", ctxAgenID)
+	// Pastikan juga customer default "UMUM" dengan ID prefix3 + "0000001" sudah ada untuk agen ini
+	defaultUmumID := fmt.Sprintf("%s0000001", prefix3)
+	var countUmum int64
+	database.Table("public.mkt_m_customer").Where("TRIM(cust_id) = ?", defaultUmumID).Count(&countUmum)
+	if countUmum == 0 && finalCustID != defaultUmumID {
+		_ = database.Table("public.mkt_m_customer").Create(map[string]interface{}{
+			"cust_id":         defaultUmumID,
+			"cust_agenid":     exactAgenID,
+			"cust_name":       "UMUM",
+			"cust_alamat1":    "-",
+			"cust_kotaid":     strings.ToUpper(valKotaID),
+			"cust_aktifyn":    "Y",
+			"cust_approveyn":  "Y",
+			"cust_updatetime": time.Now(),
+		})
 	}
 
 	newCustomer := map[string]interface{}{
 		"cust_id":            finalCustID,
-		"cust_agenid":        agenIDStr,
+		"cust_agenid":        exactAgenID,
 		"cust_name":          strings.ToUpper(valNama),
 		"cust_alamat1":       strings.ToUpper(valAlamat1),
 		"cust_alamat2":       strings.ToUpper(valAlamat2),
 		"cust_kotaid":        strings.ToUpper(valKotaID),
 		"cust_telp1":         valTelp1,
 		"cust_telp2":         valTelp2,
-		"cust_fax1":          valFax1,
-		"cust_fax2":          valFax2,
+		"cust_fax1":          input.CustFax1,
+		"cust_fax2":          input.CustFax2,
 		"cust_contactperson": strings.ToUpper(valKontak),
-		"cust_memo":          valMemo,
-		"cust_kgmin":         valKgMin,
+		"cust_memo":          input.CustMemo,
+		"cust_kgmin":         input.CustKgMin,
 		"cust_email":         valEmail,
 		"cust_npwp":          valNPWP,
-		"cust_namanpwp":      strings.ToUpper(valNamaNPWP),
-		"cust_pic":           valPIC,
+		"cust_namanpwp":      strings.ToUpper(input.CustNamaNPWP),
+		"cust_pic":           input.CustPIC,
 		"cust_top":           valTOP,
+		"cust_kreditlimit":   input.CustKreditLimit,
 		"cust_aktifyn":       "Y",
 		"cust_approveyn":     "Y",
 		"cust_updatetime":    time.Now(),
@@ -337,7 +357,6 @@ func CreateCustomerHandler(c *gin.Context) {
 		return
 	}
 
-	// 4. Simpan / Sinkronkan Nomor PO Customer (jika diisi)
 	if strings.TrimSpace(input.NoPO) != "" {
 		_ = database.Exec("DELETE FROM public.mkt_m_customer_nopo WHERE cust_id = ?", finalCustID)
 		_ = database.Exec("INSERT INTO public.mkt_m_customer_nopo (cust_id, nopo) VALUES (?, ?)", finalCustID, strings.TrimSpace(input.NoPO))
@@ -350,33 +369,13 @@ func CreateCustomerHandler(c *gin.Context) {
 	})
 }
 
-type CustomerModel struct {
-	CustID      string `json:"cust_id" gorm:"column:cust_id"`
-	CustName    string `json:"cust_name" gorm:"column:cust_name"`
-	CustAlamat1 string `json:"cust_alamat1" gorm:"column:cust_alamat1"`
-	CustTelp1   string `json:"cust_telp1" gorm:"column:cust_telp1"`
-	CustKotaID  string `json:"cust_kotaid" gorm:"column:cust_kotaid"`
-}
-
 func SearchCustomerHandler(c *gin.Context) {
-	// 1. Ambil PT ID dari context token JWT lu
 	ptID, exists := c.Get("pt_id")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "PT ID tidak ditemukan di token"})
-		return
+	if !exists || fmt.Sprintf("%v", ptID) == "" {
+		ptID = "C"
 	}
 
-	// 🧠 KUNCI SAKTI: Tangkap role akses & agen_id dari query parameter atau context token JWT
-	// (Pastikan di middleware login lu sudah menyuntikkan data role ke context, atau bisa ambil param query)
-	roleUser := c.Query("role_akses")
-	if roleUser == "" {
-		// Fallback jika tidak dikirim via parameter, coba intip dari context session token
-		if r, ok := c.Get("role_akses"); ok {
-			roleUser = fmt.Sprintf("%v", r)
-		}
-	}
-
-	agenID := c.Query("agen_id")
+	agenID := strings.TrimSpace(c.Query("agen_id"))
 	searchKeyword := strings.TrimSpace(c.Query("search"))
 
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
@@ -385,31 +384,23 @@ func SearchCustomerHandler(c *gin.Context) {
 		return
 	}
 
-	// Buat query builder dasar ke tabel mkt_m_customer
-	query := database.Table("public.mkt_m_customer")
+	query := database.Table("public.mkt_m_customer").
+		Where("COALESCE(cust_aktifyn, 'Y') = 'Y'")
 
-	// =========================================================================
-	// 🛡️ ALGORITMA FILTER MULTI-TENANT ROLES (ANTI-BOCORET DATA)
-	// =========================================================================
-	// Ubah teks role ke uppercase untuk menghindari miss match case sensitive
-	cleanRole := strings.ToUpper(strings.TrimSpace(roleUser))
+	// 🔒 SELALU FILTER BERDASARKAN AGEN YANG DIPILIH DI HEADER (TERMASUK JIKA LOGIN SUPERADMIN)
+	prefix3, exactAgenID, isPusat := resolveExactAgenPrefix(database, agenID)
 
-	if cleanRole == "SUPERADMIN" || cleanRole == "SUPERDBS" || cleanRole == "HOLDING" {
-		// 🟢 KASTA SUPERADMIN: Jangan potong query, biarkan lolos melihat data nasional se-Indonesia!
-		fmt.Println("👑 [Access Granted] Akun Superadmin mendeteksi penarikan data customer berskala Nasional.")
+	if isPusat {
+		query = query.Where("(TRIM(cust_id) LIKE '001%' OR TRIM(cust_agenid) IN ('001', '1'))")
 	} else {
-		// 🔴 KASTA AGEN LOKET OPERASIONAL: Kunci mati query murni berdasarkan 3 digit awalan CUST ID mereka!
-		if agenID != "" {
-			// Sesuai rumus ID lu (Contoh: GOR01062600001), 3 huruf awal adalah kode agen (GOR)
-			// Kita filter menggunakan Operator LIKE 'GOR%'
-			query = query.Where("cust_id LIKE ?", agenID+"%")
-			fmt.Printf("🔒 [Tenant Locked] Membatasi master customer murni untuk hak Agen ID: '%s'\n", agenID)
-		}
+		// Hanya tampilkan customer milik agen aktif, JANGAN PERNAH campur dengan '001%'
+		query = query.Where("(TRIM(cust_id) LIKE ? OR TRIM(cust_agenid) = ? OR TRIM(cust_kotaid) = ?)",
+			prefix3+"%", exactAgenID, exactAgenID).
+			Where("TRIM(cust_id) NOT LIKE '001%'")
 	}
 
-	// Filter pencarian teks jika user mengetik di kotak pencarian keyword
 	if searchKeyword != "" {
-		query = query.Where("cust_name ILIKE ? OR cust_id LIKE ?", "%"+searchKeyword+"%", "%"+searchKeyword+"%")
+		query = query.Where("(cust_name ILIKE ? OR cust_id ILIKE ?)", "%"+searchKeyword+"%", "%"+searchKeyword+"%")
 	}
 
 	type CustomerRes struct {
@@ -417,28 +408,29 @@ func SearchCustomerHandler(c *gin.Context) {
 		CustName    string `json:"cust_name" gorm:"column:cust_name"`
 		CustAlamat1 string `json:"cust_alamat1" gorm:"column:cust_alamat1"`
 		CustTelp1   string `json:"cust_telp1" gorm:"column:cust_telp1"`
+		CustTelp2   string `json:"cust_telp2" gorm:"column:cust_telp2"`
+		CustEmail   string `json:"cust_email" gorm:"column:cust_email"`
 		CustKotaID  string `json:"cust_kotaid" gorm:"column:cust_kotaid"`
-		CustNama    string `gorm:"column:cust_nama"` // Fallback alias database lamamu
 	}
 	var results []CustomerRes
 
-	err := query.Limit(100).Find(&results).Error
-	if err != nil {
+	if err := query.Order("cust_name ASC").Limit(50).Find(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
-	}
-
-	// Sinkronisasi penamaan properti alias objek map DB lama lu
-	for i := 0; i < len(results); i++ {
-		if results[i].CustName == "" && results[i].CustNama != "" {
-			results[i].CustName = results[i].CustNama
-		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"data":   results,
 	})
+}
+
+type CustomerModel struct {
+	CustID      string `json:"cust_id" gorm:"column:cust_id"`
+	CustName    string `json:"cust_name" gorm:"column:cust_name"`
+	CustAlamat1 string `json:"cust_alamat1" gorm:"column:cust_alamat1"`
+	CustTelp1   string `json:"cust_telp1" gorm:"column:cust_telp1"`
+	CustKotaID  string `json:"cust_kotaid" gorm:"column:cust_kotaid"`
 }
 
 // =========================================================================

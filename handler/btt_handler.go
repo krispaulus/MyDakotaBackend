@@ -1250,10 +1250,11 @@ func GenerateCustIDUmumHandler(c *gin.Context) {
 }
 
 // GET /api/btt/generate-custid?kode_agen=DENPASAR%20DLI%20AGEN
+// GET /api/btt/generate-custid?kode_agen=...
 func GenerateCustIDHandler(c *gin.Context) {
 	ptID, exists := c.Get("pt_id")
 	if !exists || fmt.Sprintf("%v", ptID) == "" {
-		ptID = "C" // Default DLI
+		ptID = "C"
 	}
 
 	database, ok := db.ResolveDB(fmt.Sprintf("%v", ptID))
@@ -1263,39 +1264,37 @@ func GenerateCustIDHandler(c *gin.Context) {
 	}
 
 	inputAgenParam := strings.TrimSpace(c.Query("kode_agen"))
+	prefix3, exactAgenID, _ := resolveExactAgenPrefix(database, inputAgenParam)
 
-	var realCustID string
+	// 1. Cari CUST ID 'UMUM' yang sudah terdaftar di mkt_m_customer untuk agen ini (misal: 2940000001)
+	var mappedCustID string
+	database.Table("public.mkt_m_customer").
+		Select("TRIM(cust_id)").
+		Where("(TRIM(cust_id) LIKE ? OR TRIM(cust_agenid) = ? OR TRIM(cust_kotaid) = ?)", prefix3+"%", exactAgenID, exactAgenID).
+		Where("UPPER(TRIM(cust_name)) = 'UMUM'").
+		Order("cust_id ASC").
+		Limit(1).
+		Scan(&mappedCustID)
 
-	// 🎯 1. CUST ID MURNI: Ambil agen_id langsung dari tabel public.glb_m_agen
-	if inputAgenParam != "" && inputAgenParam != "null" && inputAgenParam != "undefined" {
-		database.Table("public.glb_m_agen").
-			Select("agen_id").
-			Where("UPPER(TRIM(agen_nama)) = UPPER(TRIM(?)) OR UPPER(TRIM(agen_kode)) = UPPER(TRIM(?)) OR UPPER(TRIM(agen_id)) = UPPER(TRIM(?))",
-				inputAgenParam, inputAgenParam, inputAgenParam).
-			Order("agen_id ASC").
+	// 2. Fallback: ambil customer pertama milik agen tersebut jika 'UMUM' belum ada
+	if mappedCustID == "" {
+		database.Table("public.mkt_m_customer").
+			Select("TRIM(cust_id)").
+			Where("(TRIM(cust_id) LIKE ? OR TRIM(cust_agenid) = ? OR TRIM(cust_kotaid) = ?)", prefix3+"%", exactAgenID, exactAgenID).
+			Order("cust_id ASC").
 			Limit(1).
-			Row().Scan(&realCustID)
-
-		if realCustID == "" {
-			cleanSearch := strings.Split(inputAgenParam, " ")[0]
-			database.Table("public.glb_m_agen").
-				Select("agen_id").
-				Where("agen_nama ILIKE ? OR agen_kode ILIKE ?", "%"+cleanSearch+"%", "%"+cleanSearch+"%").
-				Order("agen_id ASC").
-				Limit(1).
-				Row().Scan(&realCustID)
-		}
+			Scan(&mappedCustID)
 	}
 
-	realCustID = strings.TrimSpace(realCustID)
-	if realCustID == "" || strings.Contains(strings.ToUpper(realCustID), "PUSAT") {
-		realCustID = "DPS001" // Fallback safety
+	// 3. Fallback default format 10 digit jika agen masih kosong melompong
+	if mappedCustID == "" {
+		mappedCustID = fmt.Sprintf("%s0000001", prefix3)
 	}
 
-	// 🎯 2. Kirimkan CUST ID MURNI (Contoh: "DPS001") tanpa embel-ember tanggal/counter
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"cust_id": realCustID, // Nilai ini yang masuk ke input field "CUST ID"
+		"status":       "success",
+		"cust_id":      mappedCustID,
+		"generated_id": mappedCustID,
 	})
 }
 
