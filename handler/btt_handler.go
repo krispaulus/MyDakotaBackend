@@ -175,6 +175,61 @@ func UpdateBTT(c *gin.Context) {
 		updates["bttt_jenisharga"] = v
 		updates["bttt_pembayaran"] = v
 	}
+
+	if v := cleanStringVal(payload["bttt_jenisharga"]); v != "" {
+		updates["bttt_jenisharga"] = v
+		updates["bttt_pembayaran"] = v
+	}
+
+	// ✅ SIMPAN PERUBAHAN LAYANAN SECARA DINAMIS DARI MASTER public.mkt_m_service
+	layananInput := cleanStringVal(payload["bttt_layanan_nama"])
+	servIDInput := cleanStringVal(payload["bttt_servid"])
+	if servIDInput == "" {
+		servIDInput = cleanStringVal(payload["bttt_kodelayanan"])
+	}
+
+	if layananInput != "" || servIDInput != "" {
+		var svc struct {
+			ServID   string `gorm:"column:serv_id"`
+			ServName string `gorm:"column:serv_name"`
+		}
+
+		// Cari di master mkt_m_service berdasarkan serv_name atau serv_id (prioritaskan kecocokan nama jika user mengubah dropdown nama layanan)
+		qSvc := database.Table("public.mkt_m_service").
+			Select("TRIM(serv_id::varchar) AS serv_id, UPPER(TRIM(serv_name)) AS serv_name")
+
+		if layananInput != "" && servIDInput != "" {
+			qSvc = qSvc.Where("UPPER(TRIM(serv_name)) = UPPER(TRIM(?)) OR TRIM(serv_id::varchar) = TRIM(?)", layananInput, servIDInput).
+				Order(gorm.Expr("CASE WHEN UPPER(TRIM(serv_name)) = UPPER(TRIM(?)) THEN 1 ELSE 2 END", layananInput))
+		} else if layananInput != "" {
+			qSvc = qSvc.Where("UPPER(TRIM(serv_name)) = UPPER(TRIM(?))", layananInput)
+		} else {
+			qSvc = qSvc.Where("TRIM(serv_id::varchar) = TRIM(?)", servIDInput)
+		}
+
+		if errSvc := qSvc.Limit(1).Scan(&svc).Error; errSvc == nil && svc.ServID != "" {
+			updates["bttt_servid"] = svc.ServID
+			updates["bttt_service"] = svc.ServName
+		} else {
+			// Fallback jika master belum terisi
+			if servIDInput != "" {
+				updates["bttt_servid"] = servIDInput
+			}
+			if layananInput != "" {
+				updates["bttt_service"] = strings.ToUpper(layananInput)
+			}
+		}
+	}
+
+	if v := cleanStringVal(payload["bttt_paketyn"]); v != "" {
+		updates["bttt_paketyn"] = v
+		if v == "Y" {
+			updates["bttt_charterjnskend"] = ""
+		} else if kc := cleanStringVal(payload["bttt_pilihcarter"]); kc != "" {
+			updates["bttt_charterjnskend"] = kc
+		}
+	}
+
 	if payload["bttt_jmlkoli"] != nil {
 		if koli := toInt(payload["bttt_jmlkoli"]); koli > 0 {
 			updates["bttt_jmlunit"] = koli
