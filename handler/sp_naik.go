@@ -122,15 +122,16 @@ func CreateSPNaikHandler(c *gin.Context) {
 	}
 
 	type SPInput struct {
-		AsalAgenNama   string   `json:"spt_asal_agen_nama" binding:"required"`
-		TujuanAgenNama string   `json:"spt_tujuan_agen_nama" binding:"required"`
-		TransitYN      string   `json:"spt_transityn" binding:"required"`
-		NamaSopir      string   `json:"spt_namasopir" binding:"required"`
-		NoMobil        string   `json:"spt_nomobil" binding:"required"`
-		SuratTugas     string   `json:"spt_surattugas"`
-		BoronganYN     string   `json:"spt_boronganyn"`
-		Service        int      `json:"spt_service" binding:"required"`
-		DaftarBTT      []string `json:"daftar_btt" binding:"required"`
+		AsalAgenNama   string      `json:"spt_asal_agen_nama" binding:"required"`
+		TujuanAgenNama string      `json:"spt_tujuan_agen_nama" binding:"required"`
+		TransitYN      string      `json:"spt_transityn" binding:"required"`
+		NamaSopir      string      `json:"spt_namasopir" binding:"required"`
+		NamaSopir2     string      `json:"spt_namasopir2"`
+		NoMobil        string      `json:"spt_nomobil" binding:"required"`
+		SuratTugas     string      `json:"spt_surattugas"`
+		BoronganYN     string      `json:"spt_boronganyn"`
+		Service        interface{} `json:"spt_service"`
+		DaftarBTT      []string    `json:"daftar_btt" binding:"required"`
 	}
 
 	var input SPInput
@@ -144,39 +145,41 @@ func CreateSPNaikHandler(c *gin.Context) {
 		return
 	}
 
-	// A. RESOLUSI KODE ASAL AGEN & KODE CABANG DB MURNI
-	var asalAgenID, tujuanAgenID string
-	var asalCabangID string
+	// A. RESOLUSI KODE ASAL AGEN & TUJUAN AGEN (Pencocokan Nama Utuh agar DLI PUSAT tidak tertukar cabang lain)
+	var asalAgenID, tujuanAgenID, asalCabangID string
 
-	cleanAsal := input.AsalAgenNama
-	if strings.Contains(cleanAsal, " ") {
-		cleanAsal = strings.Split(cleanAsal, " ")[0]
-	}
+	rawAsal := strings.TrimSpace(input.AsalAgenNama)
+	rawTujuan := strings.TrimSpace(input.TujuanAgenNama)
 
-	cleanTujuan := input.TujuanAgenNama
-	if strings.Contains(cleanTujuan, " ") {
-		cleanTujuan = strings.Split(cleanTujuan, " ")[0]
-	}
+	database.Raw(`
+		SELECT 
+			TRIM(agen_id::varchar),
+			COALESCE(
+				NULLIF(RIGHT(REGEXP_REPLACE(TRIM(COALESCE(agen_kode, '')), '\D', '', 'g'), 3), ''),
+				NULLIF(RIGHT(REGEXP_REPLACE(TRIM(COALESCE(agen_id::varchar, '')), '\D', '', 'g'), 3), ''),
+				LEFT(UPPER(TRIM(agen_id::varchar)), 3)
+			)
+		FROM public.glb_m_agen
+		WHERE UPPER(TRIM(agen_nama)) = UPPER(TRIM(?))
+		   OR TRIM(agen_id::varchar) = TRIM(?)
+		ORDER BY LENGTH(TRIM(agen_id::varchar)) ASC
+		LIMIT 1
+	`, rawAsal, rawAsal).Row().Scan(&asalAgenID, &asalCabangID)
 
-	// Cari ID dan kode cabang asal
-	database.Table("public.glb_m_agen").
-		Select("agen_id, LEFT(agen_id, 3)").
-		Where("agen_nama ILIKE ? OR agen_id LIKE ?", "%"+cleanAsal+"%", cleanAsal+"%").
-		Row().Scan(&asalAgenID, &asalCabangID)
+	database.Raw(`
+		SELECT TRIM(agen_id::varchar)
+		FROM public.glb_m_agen
+		WHERE UPPER(TRIM(agen_nama)) = UPPER(TRIM(?))
+		   OR TRIM(agen_id::varchar) = TRIM(?)
+		ORDER BY LENGTH(TRIM(agen_id::varchar)) ASC
+		LIMIT 1
+	`, rawTujuan, rawTujuan).Row().Scan(&tujuanAgenID)
 
-	// Cari ID cabang tujuan
-	database.Table("public.glb_m_agen").
-		Select("agen_id").
-		Where("agen_nama ILIKE ? OR agen_id LIKE ?", "%"+cleanTujuan+"%", cleanTujuan+"%").
-		Row().Scan(&tujuanAgenID)
-
-	// Safety fallback jika tidak terelasi
 	asalCabangID = strings.ToUpper(strings.TrimSpace(asalCabangID))
 	if len(asalCabangID) > 3 {
-		asalCabangID = asalCabangID[:3]
-	}
-	if asalCabangID == "" {
-		asalCabangID = "DBS"
+		asalCabangID = asalCabangID[len(asalCabangID)-3:]
+	} else if len(asalCabangID) < 3 && asalCabangID != "" {
+		asalCabangID = fmt.Sprintf("%03s", asalCabangID)
 	}
 
 	// B. FORMULA NOMOR SP GENERATOR OTOMATIS BERDASARKAN SOP RESMI
@@ -208,17 +211,27 @@ func CreateSPNaikHandler(c *gin.Context) {
 		Limit(1).
 		Row().Scan(&lastSPID)
 
-	nextCounter := 1
-	prefixLen := len(spPrefixPattern)
+	// Hitung urutan counter nomor terakhir dari opr_t_esp_terima maupun opr_t_esp_terimadetil agar tidak bentrok PKEY
+	var maxTerima, maxDetil int
+	database.Raw(`
+		SELECT COALESCE(MAX(CAST(RIGHT(TRIM(spt_eid), 4) AS INTEGER)), 0)
+		FROM public.opr_t_esp_terima
+		WHERE TRIM(spt_eid) LIKE ?
+		  AND RIGHT(TRIM(spt_eid), 4) ~ '^[0-9]{4}$'
+	`, spPrefixPattern+"%").Scan(&maxTerima)
 
-	if lastSPID != "" && len(lastSPID) > prefixLen {
-		suffixStr := lastSPID[prefixLen:]
-		var currentNo int
-		fmt.Sscanf(suffixStr, "%d", &currentNo)
-		nextCounter = currentNo + 1
+	database.Raw(`
+		SELECT COALESCE(MAX(CAST(RIGHT(TRIM(sptd_esptid), 4) AS INTEGER)), 0)
+		FROM public.opr_t_esp_terimadetil
+		WHERE TRIM(sptd_esptid) LIKE ?
+		  AND RIGHT(TRIM(sptd_esptid), 4) ~ '^[0-9]{4}$'
+	`, spPrefixPattern+"%").Scan(&maxDetil)
+
+	nextCounter := maxTerima + 1
+	if maxDetil >= nextCounter {
+		nextCounter = maxDetil + 1
 	}
 
-	// Hasil Akhir Nomor SP Komplit Sesuai Dokumen (Contoh: SDBSURW0620260001)
 	finalSPID := fmt.Sprintf("%s%04d", spPrefixPattern, nextCounter)
 
 	// C. EKSEKUSI DATABASE TRANSACTION (INSERT HEADER & DETAIL RESI)
@@ -233,13 +246,23 @@ func CreateSPNaikHandler(c *gin.Context) {
 		}
 	}
 
+	serviceStr := strings.TrimSpace(fmt.Sprintf("%v", input.Service))
+	if serviceStr == "" || serviceStr == "<nil>" || serviceStr == "0" {
+		serviceStr = "1"
+	}
+
+	sopirGabung := strings.ToUpper(strings.TrimSpace(input.NamaSopir))
+	if strings.TrimSpace(input.NamaSopir2) != "" {
+		sopirGabung += " / " + strings.ToUpper(strings.TrimSpace(input.NamaSopir2))
+	}
+
 	headerSP := map[string]interface{}{
 		"spt_eid":          finalSPID,
 		"spt_asalagenid":   asalAgenID,
 		"spt_tujuanagenid": tujuanAgenID,
 		"spt_transityn":    strings.ToUpper(input.TransitYN),
 		"spt_tanggal":      time.Now(),
-		"spt_namasopir":    strings.ToUpper(input.NamaSopir),
+		"spt_namasopir":    sopirGabung,
 		"spt_nomobil":      strings.ToUpper(input.NoMobil),
 		"spt_surattugas":   strings.ToUpper(input.SuratTugas),
 		"spt_postingyn":    "N",
@@ -247,7 +270,7 @@ func CreateSPNaikHandler(c *gin.Context) {
 		"spt_updateid":     username,
 		"spt_updatetime":   time.Now(),
 		"spt_boronganyn":   strings.ToUpper(input.BoronganYN),
-		"spt_service":      input.Service,
+		"spt_service":      serviceStr, // String "1" agar sesuai dengan tipe kolom varchar di PostgreSQL
 	}
 
 	if err := tx.Table("public.opr_t_esp_terima").Create(&headerSP).Error; err != nil {
@@ -256,13 +279,23 @@ func CreateSPNaikHandler(c *gin.Context) {
 		return
 	}
 
-	// Looping insert detail manifest BTT pengiriman barang
-	for _, bttID := range input.DaftarBTT {
-		detailSP := map[string]interface{}{
-			"sptd_esptid": finalSPID,
-			"sptd_bttid":  strings.ToUpper(strings.TrimSpace(bttID)),
+	// Looping insert detail manifest BTT (dengan deduplikasi & ON CONFLICT DO NOTHING)
+	seenBTT := make(map[string]bool)
+	for _, rawBTT := range input.DaftarBTT {
+		cleanBTT := strings.ToUpper(strings.TrimSpace(rawBTT))
+		if len(cleanBTT) > 16 {
+			cleanBTT = cleanBTT[:16]
 		}
-		if err := tx.Table("public.opr_t_esp_terimadetil").Create(&detailSP).Error; err != nil {
+		if cleanBTT == "" || seenBTT[cleanBTT] {
+			continue
+		}
+		seenBTT[cleanBTT] = true
+
+		if err := tx.Exec(`
+			INSERT INTO public.opr_t_esp_terimadetil (sptd_esptid, sptd_bttid)
+			VALUES (?, ?)
+			ON CONFLICT DO NOTHING
+		`, finalSPID, cleanBTT).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan rincian manifes BTT: " + err.Error()})
 			return

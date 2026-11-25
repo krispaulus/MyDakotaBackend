@@ -164,7 +164,7 @@ func GetDetailSPByID(c *gin.Context) {
 	})
 }
 
-// 3. AMBIL DATA DARI PROSES LOADING BARANG (opr_t_sp_terima_f.asp)
+// 3. AMBIL DATA DARI PROSES LOADING BARANG (opr_t_sp_terima_f.asp / opr_t_sp_terima_a.asp)
 func GetLoadingReadyForSP(c *gin.Context) {
 	database := resolveSPDB(c)
 	loadID := strings.TrimSpace(c.Query("load_id"))
@@ -173,47 +173,89 @@ func GetLoadingReadyForSP(c *gin.Context) {
 		return
 	}
 
-	var loadHeader map[string]interface{}
-	database.Raw(`
+	type LoadHeaderDTO struct {
+		LoadID         string `gorm:"column:load_id" json:"load_id"`
+		SuratTugas     string `gorm:"column:surat_tugas" json:"surat_tugas"`
+		NoMobil        string `gorm:"column:no_mobil" json:"no_mobil"`
+		Sopir1         string `gorm:"column:sopir1" json:"sopir1"`
+		Sopir2         string `gorm:"column:sopir2" json:"sopir2"`
+		TujuanAgenID   string `gorm:"column:tujuan_agen_id" json:"tujuan_agen_id"`
+		TujuanAgenNama string `gorm:"column:tujuan_agen_nama" json:"tujuan_agen_nama"`
+	}
+
+	var loadHeader LoadHeaderDTO
+	err := database.Raw(`
 		SELECT 
 			TRIM(l.loadh_id) AS load_id,
 			TRIM(COALESCE(s.sjh_id, '')) AS surat_tugas,
-			TRIM(COALESCE(NULLIF(l.loadh_kendid, ''), s.sjh_kendid, '')) AS no_mobil,
+			TRIM(COALESCE(NULLIF(TRIM(l.loadh_kendid), ''), TRIM(s.sjh_kendid), '')) AS no_mobil,
 			COALESCE(TRIM(sp1.kry_nama), TRIM(s.sjh_sopir1_nip), '') AS sopir1,
 			COALESCE(TRIM(sp2.kry_nama), TRIM(s.sjh_sopir2_nip), '') AS sopir2,
 			TRIM(COALESCE(s.sjh_endagenid::varchar, '')) AS tujuan_agen_id,
-			CASE 
-				WHEN UPPER(TRIM(a2.agen_nama)) = 'PUSAT DAKOTA' OR TRIM(s.sjh_endagenid::varchar) IN ('1', '001', 'PST001') THEN 'DLI PUSAT'
-				ELSE COALESCE(TRIM(a2.agen_nama), '')
-			END AS tujuan_agen_nama
+			COALESCE(TRIM(a2.agen_nama), '') AS tujuan_agen_nama
 		FROM public.opr_t_loadingh l
 		LEFT JOIN public.opr_t_esuratjalan s ON TRIM(l.loadh_id) = TRIM(s.sjh_loadhid)
 		LEFT JOIN public.hrd_m_karyawan sp1 ON TRIM(s.sjh_sopir1_nip) = TRIM(sp1.kry_nip)
 		LEFT JOIN public.hrd_m_karyawan sp2 ON TRIM(s.sjh_sopir2_nip) = TRIM(sp2.kry_nip)
 		LEFT JOIN public.glb_m_agen a2 ON TRIM(s.sjh_endagenid::varchar) = TRIM(a2.agen_id::varchar)
-		WHERE TRIM(l.loadh_id) = TRIM(?) OR TRIM(s.sjh_id) = TRIM(?)
+		WHERE UPPER(TRIM(l.loadh_id)) = UPPER(TRIM(?))
+		   OR UPPER(TRIM(s.sjh_id)) = UPPER(TRIM(?))
 		LIMIT 1
-	`, loadID, loadID).Scan(&loadHeader)
+	`, loadID, loadID).Scan(&loadHeader).Error
 
-	if len(loadHeader) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "Nomor Loading / Surat Tugas tidak ditemukan"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal query loading: " + err.Error()})
 		return
 	}
 
-	realLoadID := fmt.Sprintf("%v", loadHeader["load_id"])
-	bttRows := make([]map[string]interface{}, 0)
+	if loadHeader.LoadID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": fmt.Sprintf("Nomor Loading / Surat Tugas [%s] tidak ditemukan!", loadID)})
+		return
+	}
+
+	type LoadBTTDTO struct {
+		BttID    string  `gorm:"column:btt_id" json:"btt_id"`
+		NoSJ     string  `gorm:"column:no_sj" json:"no_sj"`
+		TglBTT   string  `gorm:"column:tgl_btt" json:"tgl_btt"`
+		Pengirim string  `gorm:"column:pengirim" json:"pengirim"`
+		Penerima string  `gorm:"column:penerima" json:"penerima"`
+		Alamat   string  `gorm:"column:alamat" json:"alamat"`
+		Kota     string  `gorm:"column:kota" json:"kota"`
+		Telp     string  `gorm:"column:telp" json:"telp"`
+		Koli     int     `gorm:"column:koli" json:"koli"`
+		Berat    float64 `gorm:"column:berat" json:"berat"`
+	}
+
+	bttRows := make([]LoadBTTDTO, 0)
 	database.Raw(`
-		SELECT DISTINCT
-			TRIM(e.bttt_id) AS btt_id,
-			COALESCE(TRIM(e.bttt_tujuannama), '-') AS penerima,
-			COALESCE(TRIM(e.bttt_tujuankota), '-') AS kota,
-			COALESCE(e.bttt_jmlunit, 1) AS koli
-		FROM public.opr_t_loadingd d
-		INNER JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1)
-		                                  OR LEFT(TRIM(d.loadd_bttkoliid), LENGTH(TRIM(e.bttt_id))) = TRIM(e.bttt_id)
-		WHERE TRIM(d.loadd_loadhid) = TRIM(?)
-		ORDER BY btt_id ASC
-	`, realLoadID).Scan(&bttRows)
+    SELECT DISTINCT
+        TRIM(e.bttt_id) AS btt_id,
+        COALESCE(TRIM(e.bttt_nosuratjalan), '-') AS no_sj,
+        COALESCE(TO_CHAR(e.bttt_tanggal, 'DD/MM/YYYY'), '-') AS tgl_btt,
+        COALESCE(TRIM(e.bttt_asalname), '-') AS pengirim,
+        COALESCE(TRIM(e.bttt_tujuannama), '-') AS penerima,
+        COALESCE(TRIM(e.bttt_tujuanalamat), '-') AS alamat,
+        COALESCE(TRIM(e.bttt_tujuankota), '-') AS kota,
+        COALESCE(TRIM(e.bttt_tujuantelp), '-') AS telp,
+        COALESCE(NULLIF(e.bttt_jmlunit, 0), 1)::int AS koli,
+        GREATEST(COALESCE(e.bttt_berat, 0), COALESCE(e.bttt_beratvol, 0)) AS berat
+    FROM public.opr_t_loadingd d
+    INNER JOIN public.mkt_t_econote e ON TRIM(e.bttt_id) = SPLIT_PART(TRIM(d.loadd_bttkoliid), '-', 1)
+                                      OR LEFT(TRIM(d.loadd_bttkoliid), LENGTH(TRIM(e.bttt_id))) = TRIM(e.bttt_id)
+    WHERE TRIM(d.loadd_loadhid) = TRIM(?)
+    ORDER BY btt_id ASC
+	`, loadHeader.LoadID).Scan(&bttRows)
+
+	// Jika tujuan_agen_nama kosong (karena loading dibuat langsung tanpa ST), ambil dari tujuan resi pertama
+	if loadHeader.TujuanAgenNama == "" && len(bttRows) > 0 {
+		database.Raw(`
+			SELECT COALESCE(TRIM(a.agen_nama), '')
+			FROM public.mkt_t_econote e
+			LEFT JOIN public.glb_m_agen a ON TRIM(a.agen_id::varchar) = TRIM(e.bttt_tujuanagenid::varchar)
+			WHERE TRIM(e.bttt_id) = TRIM(?)
+			LIMIT 1
+		`, bttRows[0].BttID).Scan(&loadHeader.TujuanAgenNama)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
