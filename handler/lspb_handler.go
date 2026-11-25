@@ -186,7 +186,7 @@ func GetLSPBReportList(c *gin.Context) {
 				ON TRIM(t.dn_od_sj::text) = TRIM(c.nodo::text)
 			WHERE t.dn_od_sj IS NOT NULL AND TRIM(t.dn_od_sj) <> ''
 			%s
-			LIMIT 1000
+			
 		),
 		calc_lspb AS (
 			SELECT
@@ -307,7 +307,7 @@ func GetLSPBReportList(c *gin.Context) {
 		queryStr += " AND " + strings.Join(postConditions, " AND ")
 	}
 
-	queryStr += ` ORDER BY dt_handover DESC NULLS LAST, dn_od_sj ASC LIMIT 500`
+	queryStr += ` ORDER BY dt_handover DESC NULLS LAST, dn_od_sj ASC `
 
 	var results []map[string]interface{}
 	if err := database.Raw(queryStr, args...).Scan(&results).Error; err != nil {

@@ -295,10 +295,35 @@ func GetBTT(c *gin.Context) {
 		return
 	}
 
-	// 🟢 Tangkap seluruh parameter filter dari React
+	// Tangkap seluruh parameter filter dari React
 	agenID := strings.TrimSpace(c.Query("agen_id"))
-	if strings.EqualFold(agenID, "PUSAT DAKOTA") || strings.EqualFold(agenID, "HOLDING") || strings.EqualFold(agenID, "ALL") {
+	if strings.EqualFold(agenID, "ALL") {
 		agenID = ""
+	}
+
+	isHoldingUser := agenID == ""
+	if !isHoldingUser {
+		var agenInfo struct {
+			IsPusat string `gorm:"column:is_pusat"`
+		}
+		database.Raw(`
+			SELECT 
+				CASE 
+					WHEN UPPER(TRIM(COALESCE(to_jsonb(a)->>'agen_pusatyn', ''))) = 'Y' THEN 'Y'
+					WHEN UPPER(TRIM(COALESCE(a.agen_nama, ''))) LIKE '%PUSAT%' 
+					     OR UPPER(TRIM(COALESCE(a.agen_nama, ''))) LIKE '%HOLDING%' THEN 'Y'
+					ELSE 'N'
+				END AS is_pusat
+			FROM public.glb_m_agen a
+			WHERE TRIM(a.agen_id::varchar) = TRIM(?)
+			   OR TRIM(a.agen_kode::varchar) = TRIM(?)
+			   OR UPPER(TRIM(a.agen_nama)) = UPPER(TRIM(?))
+			LIMIT 1
+		`, agenID, agenID, agenID).Scan(&agenInfo)
+
+		if agenInfo.IsPusat == "Y" {
+			isHoldingUser = true
+		}
 	}
 
 	cabang := strings.TrimSpace(c.Query("cabang"))
@@ -310,19 +335,13 @@ func GetBTT(c *gin.Context) {
 	noBTT := strings.TrimSpace(c.Query("no_btt"))
 	kota := strings.TrimSpace(c.Query("kota"))
 
-	// 🌟 CEK APAKAH USER ADALAH PUSAT / HOLDING
-	upperAgen := strings.ToUpper(agenID)
-	isHoldingUser := upperAgen == "1" || upperAgen == "839" || upperAgen == "001" ||
-		strings.Contains(upperAgen, "PUSAT") || strings.Contains(upperAgen, "HOLDING") ||
-		agenID == ""
-
 	type BTTGridRow struct {
 		ID          string    `json:"id" gorm:"column:id"`
 		BtttID      string    `json:"bttt_id" gorm:"column:id"`
 		Tanggal     time.Time `json:"tanggal" gorm:"column:tanggal"`
 		BtttTanggal string    `json:"bttt_tanggal" gorm:"column:bttt_tanggal_str"`
 
-		// Pengirim (Dua format tag agar tabel & form modal sama-sama terbaca)
+		// Pengirim
 		CustomerNama  string `json:"customer_nama" gorm:"column:customer_nama"`
 		PengirimCetak string `json:"pengirim_cetak" gorm:"column:pengirim_cetak"`
 
@@ -400,26 +419,25 @@ func GetBTT(c *gin.Context) {
 		KetDOKembali       string  `json:"ket_do_kembali" gorm:"column:ket_do_kembali"`
 	}
 
-	// 🌟 QUERY DETAIL BTT DENGAN AUTO-JOIN MASTER CUSTOMER PENGIRIM
 	query := database.Table("public.mkt_t_econote e").
 		Select(`
 			TRIM(BOTH FROM e.bttt_id::varchar) AS id,
 			e.bttt_tanggal AS tanggal,
 			TO_CHAR(e.bttt_tanggal, 'YYYY-MM-DD') AS bttt_tanggal_str,
 			
-			-- 🌟 IDENTITAS CUSTOMER & PENGIRIM (Sama dengan logika aplikasi lawas)
+			-- IDENTITAS CUSTOMER & PENGIRIM (Murni dari DB tanpa hardcode)
 			COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(c.cust_id), '') AS asal_custid,
-			COALESCE(NULLIF(TRIM(c.cust_name), ''), NULLIF(TRIM(e.bttt_asalname), ''), 'UMUM') AS customer_nama,
-			COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), TRIM(c.cust_name), 'UMUM') AS asal_name,
+			COALESCE(NULLIF(TRIM(c.cust_name), ''), NULLIF(TRIM(e.bttt_asalname), ''), '') AS customer_nama,
+			COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), TRIM(c.cust_name), '') AS asal_name,
 			CASE 
 				WHEN TRIM(COALESCE(c.cust_name, '')) <> '' 
 				     AND UPPER(TRIM(COALESCE(e.bttt_asalname, ''))) <> UPPER(TRIM(c.cust_name))
 				     AND TRIM(COALESCE(e.bttt_asalname, '')) <> ''
 				THEN TRIM(e.bttt_asalname) || ' (' || TRIM(c.cust_name) || ')'
-				ELSE COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), TRIM(c.cust_name), 'UMUM')
+				ELSE COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), TRIM(c.cust_name), '')
 			END AS pengirim_cetak,
 			COALESCE(NULLIF(e.bttt_asalalamat, ''), c.cust_alamat1, '') AS asal_alamat,
-			COALESCE(NULLIF(e.bttt_asalkota, ''), c.cust_kotaid, 'BEKASI KAB.') AS asal_kota,
+			COALESCE(NULLIF(e.bttt_asalkota, ''), c.cust_kotaid, '') AS asal_kota,
 			COALESCE(NULLIF(e.bttt_asaltelp, ''), c.cust_telp1, '') AS asal_telp,
 			COALESCE(to_jsonb(e)->>'bttt_storagecode', to_jsonb(e)->>'storagecode', '') AS storagecode,
 			COALESCE(to_jsonb(e)->>'ket_do_kembali', '') AS ket_do_kembali,
@@ -440,13 +458,13 @@ func GetBTT(c *gin.Context) {
 			COALESCE(e.bttt_paketyn, 'Y') AS bttt_paketyn,
 			COALESCE(e.bttt_charterjnskend, '') AS bttt_charterjnskend,
 
-			-- BARANG & TARIF
+			-- BARANG & TARIF (Murni dari kolom DB)
 			COALESCE(e.bttt_namabarang, '') AS nama_barang,
 			COALESCE(e.bttt_harga, 0) AS harga,
 			CASE 
 				WHEN e.bttt_updateid IS NOT NULL AND e.bttt_updateid <> '' AND e.bttt_updateid !~ '^[0-9]+$' THEN e.bttt_updateid
 				WHEN e.bttt_up IS NOT NULL AND e.bttt_up <> '' THEN e.bttt_up
-				ELSE 'STAFF'
+				ELSE ''
 			END AS create_by,
 			COALESCE(e.bttt_nosuratjalan, '') AS no_surat_jalan,
 			COALESCE(e.bttt_ket, '') AS keterangan,
@@ -462,43 +480,28 @@ func GetBTT(c *gin.Context) {
 				(SELECT COALESCE(SUM(p2.pck_biaya), 0) FROM public.pck_t_packing p2 WHERE TRIM(to_jsonb(p2)->>'pck_bttid') = TRIM(e.bttt_id::varchar)),
 				0
 			) AS biaya_packing,
-			TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text, '0')) AS bttt_pembayaran,
+
+			-- METODE PEMBAYARAN (Murni baca nilai dari DB tanpa hardcode customer tertentu)
+			CASE 
+				WHEN UPPER(TRIM(COALESCE(e.bttt_pembayaran::text, ''))) IN ('0', 'TUNAI') THEN '0'
+				WHEN UPPER(TRIM(COALESCE(e.bttt_pembayaran::text, ''))) IN ('2', 'KREDIT') THEN '2'
+				WHEN UPPER(TRIM(COALESCE(e.bttt_pembayaran::text, ''))) IN ('1', 'TAGIH TUJUAN') THEN '1'
+				ELSE TRIM(COALESCE(NULLIF(e.bttt_jenisharga::text, ''), '0'))
+			END AS bttt_pembayaran,
 			TRIM(COALESCE(e.bttt_jenisharga::text, '0')) AS bttt_jenisharga,
 			CASE 
-				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '0' THEN 'TUNAI'
-				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '2' THEN 'KREDIT'
+				WHEN UPPER(TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text))) IN ('0', 'TUNAI') THEN 'TUNAI'
+				WHEN UPPER(TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text))) IN ('2', 'KREDIT') THEN 'KREDIT'
 				ELSE 'TAGIH TUJUAN'
 			END AS metode_pembayaran,
+
 			CASE 
 				WHEN COALESCE(TRIM(e.bttt_charterjnskend), '') <> '' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CARTER%' OR UPPER(COALESCE(e.bttt_ket, '')) LIKE '%CHARTER%' THEN 'CHARTER'
 				WHEN e.bttt_paketyn = 'Y' THEN 'REGULER'
 				ELSE 'CHARTER'
 			END AS jenis_layanan,
 
-			CASE 
-				WHEN UPPER(TRIM(COALESCE(c.cust_name, e.bttt_asalname, ''))) LIKE '%MERCK%' 
-				     OR TRIM(COALESCE(e.bttt_asalcustid, '')) = '0010000073' 
-				THEN '2'
-				ELSE TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text, '0'))
-			END AS bttt_pembayaran,
-
-			CASE 
-				WHEN UPPER(TRIM(COALESCE(c.cust_name, e.bttt_asalname, ''))) LIKE '%MERCK%' 
-				     OR TRIM(COALESCE(e.bttt_asalcustid, '')) = '0010000073' 
-				THEN '2'
-				ELSE TRIM(COALESCE(e.bttt_jenisharga::text, '0'))
-			END AS bttt_jenisharga,
-
-			CASE 
-				WHEN UPPER(TRIM(COALESCE(c.cust_name, e.bttt_asalname, ''))) LIKE '%MERCK%' 
-				     OR TRIM(COALESCE(e.bttt_asalcustid, '')) = '0010000073' 
-				THEN 'KREDIT'
-				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '0' THEN 'TUNAI'
-				WHEN TRIM(COALESCE(NULLIF(e.bttt_pembayaran::text, ''), e.bttt_jenisharga::text)) = '2' THEN 'KREDIT'
-				ELSE 'TAGIH TUJUAN'
-			END AS metode_pembayaran,
-
-			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama,
+			COALESCE(a.agen_nama, '') AS agen_nama,
 			COALESCE(e.bttt_asalagenid, '') AS asal_agen_id,
 			TRIM(COALESCE(e.bttt_servid::varchar, '')) AS bttt_servid,
 			UPPER(TRIM(COALESCE(s.serv_name, ''))) AS bttt_via,
@@ -516,7 +519,7 @@ func GetBTT(c *gin.Context) {
 		query = query.Where("e.bttt_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
 	}
 
-	// 2. Filter Cabang (Cocokkan format '2' maupun 3 digit '002')
+	// 2. Filter Cabang
 	if cabang != "" && cabang != "-- SEMUA CABANG --" && cabang != "ALL" {
 		cabang3 := resolveAgenKode3Digit(database, cabang)
 		cabangNoZero := strings.TrimLeft(cabang3, "0")
@@ -533,9 +536,8 @@ func GetBTT(c *gin.Context) {
 			OR a.agen_kode = ?
 		)`, agen3, agenNoZero, agenID, agenID)
 	}
-	// Catatan: Jika isHoldingUser dan memilih "-- SEMUA CABANG --", filter cabang dilewati agar ke-168 data BTT muncul semua!
 
-	// 3. Filter Jenis Pembayaran (0=Tunai, 1=Tagih Turun, 2=Kredit)
+	// 3. Filter Jenis Pembayaran
 	if jenisBTT != "" {
 		query = query.Where("e.bttt_jenisharga = ?", jenisBTT)
 	}
@@ -555,8 +557,9 @@ func GetBTT(c *gin.Context) {
 		query = query.Where("(e.bttt_tujuankota ILIKE ? OR e.bttt_tujuankecamatan ILIKE ?)", "%"+kota+"%", "%"+kota+"%")
 	}
 
+	// UNLIMITED (Tanpa .Limit)
 	var list []BTTGridRow
-	err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Limit(500).Scan(&list).Error
+	err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Scan(&list).Error
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
 		return
@@ -1916,18 +1919,14 @@ func GetBTTBarcodeKoli(c *gin.Context) {
 func resolveAgenKode3Digit(database *gorm.DB, rawAgen string) string {
 	clean := strings.TrimSpace(rawAgen)
 	if clean == "" || clean == "<nil>" || strings.EqualFold(clean, "null") || clean == "0" {
-		return "001"
-	}
-	upper := strings.ToUpper(clean)
-	if strings.Contains(upper, "PUSAT") || strings.Contains(upper, "HOLDING") {
-		return "001"
+		return ""
 	}
 
 	var agenID string
 	database.Table("public.glb_m_agen").
 		Select("TRIM(agen_id::varchar)").
-		Where("TRIM(agen_id::varchar) = ? OR UPPER(TRIM(agen_kode)) = ? OR UPPER(TRIM(agen_nama)) = ? OR UPPER(TRIM(agen_nama)) LIKE ?",
-			clean, upper, upper, "%"+upper+"%").
+		Where("TRIM(agen_id::varchar) = ? OR UPPER(TRIM(agen_kode)) = UPPER(?) OR UPPER(TRIM(agen_nama)) = UPPER(?) OR UPPER(TRIM(agen_nama)) ILIKE ?",
+			clean, clean, clean, "%"+clean+"%").
 		Order("agen_id ASC").
 		Limit(1).
 		Scan(&agenID)
