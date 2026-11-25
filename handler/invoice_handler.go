@@ -698,6 +698,8 @@ func SaveInvoiceHandler(c *gin.Context) {
 		}
 	}
 
+	fktPajakFinal := generateNextFakturPajakNo(tx, req.ARTIHFktPajak)
+
 	// 3. Insert Header Invoice
 	headerMap := map[string]interface{}{
 		"artih_id":         newInvoiceID,
@@ -710,7 +712,7 @@ func SaveInvoiceHandler(c *gin.Context) {
 		"artih_dpp":        dppNilai,
 		"artih_ppn":        ppnNilai,
 		"artih_total":      grandTotalInvoice,
-		"artih_fktpajak":   strings.TrimSpace(req.ARTIHFktPajak),
+		"artih_fktpajak":   fktPajakFinal,
 		"artih_jenis":      strings.TrimSpace(req.ARTIHJenis),
 		"artih_terbayar":   "N",
 		"artih_postingyn":  "N",
@@ -1012,13 +1014,15 @@ func UpdateInvoiceFullHandler(c *gin.Context) {
 	dpp := nilaiJual
 	ppn := dpp * 0.011 // Tarif PPN logistik 1.1%
 	totalTagihan := nilaiJual + ppn
+	fktPajakFinal := generateNextFakturPajakNo(tx, req.ARTIHFktPajak)
 
 	// 4. Update Header Invoice
 	updateHeader := map[string]interface{}{
-		"artih_dpp":        dpp,
-		"artih_ppn":        ppn,
-		"artih_total":      totalTagihan,
-		"artih_fktpajak":   strings.TrimSpace(req.ARTIHFktPajak),
+		"artih_dpp":   dpp,
+		"artih_ppn":   ppn,
+		"artih_total": totalTagihan,
+		// "artih_fktpajak":   strings.TrimSpace(req.ARTIHFktPajak),
+		"artih_fktpajak":   fktPajakFinal,
 		"artih_keterangan": strings.TrimSpace(req.ARTIHKeterangan),
 		"artih_updateid":   fmt.Sprintf("%v", userID),
 		"artih_updatetime": time.Now(),
@@ -1432,12 +1436,15 @@ func PostingInvoiceHandler(c *gin.Context) {
 		}
 	}
 
+	fktPajakFinal := generateNextFakturPajakNo(tx, invHeader.ArtihFktPajak)
+
 	// 7. Update Status Invoice di art_t_invoiceh
 	if err := tx.Table("public.art_t_invoiceh").
 		Where("TRIM(LOWER(artih_id)) = TRIM(LOWER(?))", realInvoiceID).
 		Updates(map[string]interface{}{
 			"artih_postingyn":  "Y",
 			"artih_journalid":  noJurnalResmi,
+			"artih_fktpajak":   fktPajakFinal,
 			"artih_dpp":        dppNominal,
 			"artih_ppn":        ppnNominal,
 			"artih_total":      totalDebetPiutang,
@@ -1501,4 +1508,61 @@ func generateNoJurnalGL(database *gorm.DB, tglTrans time.Time, agenID string, ti
 	}
 
 	return fmt.Sprintf("%s%05d", prefix, nextUrut)
+}
+
+func generateNextFakturPajakNo(tx *gorm.DB, currentInput string) string {
+	cleanInput := strings.TrimSpace(currentInput)
+	// Jika user sudah mengisi nomor seri faktur pajak lengkap (misal 050.026.00.231061754), pakai langsung
+	if len(cleanInput) >= 12 && cleanInput != "010." && cleanInput != "010" {
+		return cleanInput
+	}
+
+	var master struct {
+		Head  string `gorm:"column:fakturno_head"`
+		Start string `gorm:"column:fakturno_start"`
+		End   string `gorm:"column:fakturno_end"`
+	}
+	err := tx.Table("public.art_m_fakturno").
+		Select("TRIM(fakturno_head) AS fakturno_head, TRIM(fakturno_start) AS fakturno_start, TRIM(fakturno_end) AS fakturno_end").
+		Order("fakturno_updatetime DESC NULLS LAST").
+		Limit(1).
+		Scan(&master).Error
+
+	if err != nil || master.Head == "" {
+		return cleanInput
+	}
+
+	// Cari nomor urut tertinggi yang sudah dipakai dengan prefix master.Head
+	var maxUsed int
+	tx.Raw(`
+		SELECT COALESCE(MAX(RIGHT(TRIM(artih_fktpajak), ?)::int), 0)
+		FROM public.art_t_invoiceh
+		WHERE TRIM(artih_fktpajak) LIKE ?
+		  AND RIGHT(TRIM(artih_fktpajak), ?) ~ '^[0-9]+$'
+	`, len(master.Start), master.Head+"%", len(master.Start)).Scan(&maxUsed)
+
+	startNum, _ := strconv.Atoi(master.Start)
+	endNum, _ := strconv.Atoi(master.End)
+	if startNum < 1 {
+		startNum = 1
+	}
+
+	nextNum := startNum
+	if maxUsed >= startNum {
+		nextNum = maxUsed + 1
+	}
+	if endNum > 0 && nextNum > endNum {
+		return cleanInput // Jatah nomor seri habis
+	}
+
+	padLen := len(master.Start)
+	if padLen < 8 {
+		padLen = 8
+	}
+	// Format gabungan: 010.1111.00000001 (atau sesuai panjang fakturno_start)
+	sep := "."
+	if strings.HasSuffix(master.Head, ".") {
+		sep = ""
+	}
+	return fmt.Sprintf("%s%s%0*d", master.Head, sep, padLen, nextNum)
 }

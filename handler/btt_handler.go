@@ -721,9 +721,14 @@ func CalculateTarif(c *gin.Context) {
 		return
 	}
 
-	cleanAgenID := strings.TrimSpace(req.AgenID)
-	if cleanAgenID == "" {
-		cleanAgenID = strings.TrimSpace(req.AsalKota)
+	// cleanAgenID := strings.TrimSpace(req.AgenID)
+	// if cleanAgenID == "" {
+	// 	cleanAgenID = strings.TrimSpace(req.AsalKota)
+	// }
+
+	cleanAgenID := resolveAgenKode3Digit(database, req.AgenID)
+	if req.AgenID == "" {
+		cleanAgenID = resolveAgenKode3Digit(database, req.AsalKota)
 	}
 
 	cleanKecTujuan := strings.ToUpper(strings.TrimSpace(req.TujuanKec))
@@ -895,24 +900,20 @@ func CreateBTT(c *gin.Context) {
 	// =========================================================================
 	// 🎯 1. RESOLVE ASAL AGEN ID DINAMIS (STRING / VARCHAR)
 	// =========================================================================
-	var asalAgenIDFinal string = ""
+	rawAgenCreate := ""
 	if rawPayload["bttt_asalagenid"] != nil {
 		valStr := strings.TrimSpace(fmt.Sprintf("%v", rawPayload["bttt_asalagenid"]))
-		if valStr != "" && valStr != "<nil>" && valStr != "null" && valStr != "0" {
-			asalAgenIDFinal = valStr
+		if valStr != "" && valStr != "<nil>" && !strings.EqualFold(valStr, "null") && valStr != "0" {
+			rawAgenCreate = valStr
 		}
 	}
-	if asalAgenIDFinal == "" {
-		if userAgenID, exists := c.Get("agen_id"); exists {
-			asalAgenIDFinal = strings.TrimSpace(fmt.Sprintf("%v", userAgenID))
+	if rawAgenCreate == "" && userAgenID != nil {
+		valStr := strings.TrimSpace(fmt.Sprintf("%v", userAgenID))
+		if valStr != "" && valStr != "<nil>" && !strings.EqualFold(valStr, "null") && valStr != "0" {
+			rawAgenCreate = valStr
 		}
 	}
-	upperAsalFinal := strings.ToUpper(asalAgenIDFinal)
-	if asalAgenIDFinal == "" || asalAgenIDFinal == "0" || strings.Contains(upperAsalFinal, "PUSAT") || strings.Contains(upperAsalFinal, "HOLDING") {
-		asalAgenIDFinal = "001"
-	} else if len(asalAgenIDFinal) < 3 {
-		asalAgenIDFinal = fmt.Sprintf("%03s", asalAgenIDFinal)
-	}
+	asalAgenIDFinal := resolveAgenKode3Digit(database, rawAgenCreate)
 
 	// =========================================================================
 	// 🎯 2. RESOLVE TUJUAN AGEN ID DINAMIS (STRING / VARCHAR)
@@ -1424,26 +1425,21 @@ func getUniqueBttID(database *gorm.DB, rawPayload map[string]interface{}, ptCont
 		corpCode = "C"
 	}
 
-	agenID := ""
+	rawAgen := ""
 	if asal, ok := rawPayload["bttt_asalagenid"]; ok {
-		clean := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", asal)))
-		if clean != "" && clean != "<nil>" && clean != "NULL" && clean != "0" {
-			agenID = clean
+		clean := strings.TrimSpace(fmt.Sprintf("%v", asal))
+		if clean != "" && clean != "<nil>" && !strings.EqualFold(clean, "NULL") && clean != "0" {
+			rawAgen = clean
 		}
 	}
-	if agenID == "" && agenContext != nil {
-		clean := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", agenContext)))
-		if clean != "" && clean != "<nil>" && clean != "NULL" && clean != "0" {
-			agenID = clean
+	if rawAgen == "" && agenContext != nil {
+		clean := strings.TrimSpace(fmt.Sprintf("%v", agenContext))
+		if clean != "" && clean != "<nil>" && !strings.EqualFold(clean, "NULL") && clean != "0" {
+			rawAgen = clean
 		}
 	}
 
-	if agenID == "" || strings.Contains(agenID, "PUSAT") || strings.Contains(agenID, "HOLDING") {
-		agenID = "001"
-	} else if len(agenID) < 3 {
-		agenID = fmt.Sprintf("%03s", agenID)
-	}
-
+	agenID := resolveAgenKode3Digit(database, rawAgen)
 	return GenerateNomorResiBTTStandard(database, corpCode, agenID, now), nil
 }
 
@@ -1912,4 +1908,33 @@ func GetBTTBarcodeKoli(c *gin.Context) {
 		"btt":    bttInfo,
 		"items":  items,
 	})
+}
+
+func resolveAgenKode3Digit(database *gorm.DB, rawAgen string) string {
+	clean := strings.TrimSpace(rawAgen)
+	if clean == "" || clean == "<nil>" || strings.EqualFold(clean, "null") || clean == "0" {
+		return "001"
+	}
+	upper := strings.ToUpper(clean)
+	if strings.Contains(upper, "PUSAT") || strings.Contains(upper, "HOLDING") {
+		return "001"
+	}
+
+	var agenID string
+	database.Table("public.glb_m_agen").
+		Select("TRIM(agen_id::varchar)").
+		Where("TRIM(agen_id::varchar) = ? OR UPPER(TRIM(agen_kode)) = ? OR UPPER(TRIM(agen_nama)) = ? OR UPPER(TRIM(agen_nama)) LIKE ?",
+			clean, upper, upper, "%"+upper+"%").
+		Order("agen_id ASC").
+		Limit(1).
+		Scan(&agenID)
+
+	agenID = strings.TrimSpace(agenID)
+	if agenID == "" {
+		agenID = clean
+	}
+	if len(agenID) < 3 {
+		return fmt.Sprintf("%03s", agenID)
+	}
+	return agenID
 }
