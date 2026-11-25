@@ -516,19 +516,22 @@ func GetBTT(c *gin.Context) {
 		query = query.Where("e.bttt_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
 	}
 
-	// 2. Filter Cabang (Jika memilih cabang tertentu di dropdown)
+	// 2. Filter Cabang (Cocokkan format '2' maupun 3 digit '002')
 	if cabang != "" && cabang != "-- SEMUA CABANG --" && cabang != "ALL" {
+		cabang3 := resolveAgenKode3Digit(database, cabang)
+		cabangNoZero := strings.TrimLeft(cabang3, "0")
 		query = query.Where(`(
-			TRIM(BOTH FROM e.bttt_asalagenid::varchar) = TRIM(?) 
+			TRIM(BOTH FROM e.bttt_asalagenid::varchar) IN (?, ?, TRIM(?))
 			OR a.agen_kode = ? 
 			OR a.agen_nama ILIKE ?
-		)`, cabang, cabang, "%"+cabang+"%")
+		)`, cabang3, cabangNoZero, cabang, cabang, "%"+cabang+"%")
 	} else if !isHoldingUser && agenID != "" {
-		// Jika BUKAN pusat (misal agen cabang login), batasi ke cabangnya sendiri
+		agen3 := resolveAgenKode3Digit(database, agenID)
+		agenNoZero := strings.TrimLeft(agen3, "0")
 		query = query.Where(`(
-			TRIM(BOTH FROM e.bttt_asalagenid::varchar) = TRIM(?) 
+			TRIM(BOTH FROM e.bttt_asalagenid::varchar) IN (?, ?, TRIM(?))
 			OR a.agen_kode = ?
-		)`, agenID, agenID)
+		)`, agen3, agenNoZero, agenID, agenID)
 	}
 	// Catatan: Jika isHoldingUser dan memilih "-- SEMUA CABANG --", filter cabang dilewati agar ke-168 data BTT muncul semua!
 
