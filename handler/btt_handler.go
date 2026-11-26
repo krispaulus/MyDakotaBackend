@@ -104,7 +104,7 @@ func UpdateBTT(c *gin.Context) {
 		return int(toFloat(v))
 	}
 
-	database.Exec(`ALTER TABLE public.mkt_t_econote ADD COLUMN IF NOT EXISTS bttt_biayapacking NUMERIC(18,2)`)
+	// database.Exec(`ALTER TABLE public.mkt_t_econote ADD COLUMN IF NOT EXISTS bttt_biayapacking NUMERIC(18,2)`)
 
 	hargaBaru := toFloat(payload["bttt_harga"])
 	biayaPenerus := toFloat(payload["bttt_biayapenerus"])
@@ -477,7 +477,6 @@ func GetBTT(c *gin.Context) {
 			COALESCE(
 				NULLIF(e.bttt_biayapacking, 0),
 				p.pck_biaya,
-				(SELECT COALESCE(SUM(p2.pck_biaya), 0) FROM public.pck_t_packing p2 WHERE TRIM(to_jsonb(p2)->>'pck_bttid') = TRIM(e.bttt_id::varchar)),
 				0
 			) AS biaya_packing,
 
