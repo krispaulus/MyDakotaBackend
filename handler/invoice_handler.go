@@ -452,7 +452,7 @@ func GetUnbilledBTTHandler(c *gin.Context) {
 	}
 
 	var list []InvoiceBTTDetailRow
-	if err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Limit(450).Scan(&list).Error; err != nil {
+	if err := query.Order("e.bttt_tanggal DESC, e.bttt_id DESC").Limit(3000).Scan(&list).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal mengambil daftar unbilled BTT: " + err.Error()})
 		return
 	}
