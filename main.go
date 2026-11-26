@@ -448,6 +448,12 @@ func main() {
 
 			authorized.GET("/operasional/sp-terima-print", handler.GetPrintSuratPengiriman)
 			authorized.GET("/operasional/sp-pad", handler.GetListSPPAD)
+			authorized.GET("/operasional/sp-pad/from-loading", handler.GetLoadingForSPPAD)
+			authorized.GET("/operasional/sp-pad/detail", handler.GetDetailSPPAD)
+			authorized.POST("/operasional/sp-pad", handler.CreateSPPADHandler)
+			authorized.PUT("/operasional/sp-pad/update", handler.UpdateSPPADHandler)
+			authorized.DELETE("/operasional/sp-pad/delete", handler.DeleteSPPADHandler)
+
 			authorized.GET("/master/vendor", handler.GetVendorList)
 
 			// 📄 OPERASIONAL: STOK BARANG GUDANG
