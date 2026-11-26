@@ -105,7 +105,7 @@ func GetSuratPengantarFetch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": results})
 }
 
-// 2. GET DETAIL SP & RINCIAN BTT UNTUK MODAL EDIT / SCAN BARCODE (opr_t_sp_terima_e.asp)
+// 2. GET DETAIL SP & RINCIAN BTT UNTUK MODAL EDIT / SCAN BARCODE / CETAK SP
 func GetDetailSPByID(c *gin.Context) {
 	database := resolveSPDB(c)
 	spID := strings.TrimSpace(c.Query("sp_id"))
@@ -114,8 +114,24 @@ func GetDetailSPByID(c *gin.Context) {
 		return
 	}
 
-	var header map[string]interface{}
-	database.Raw(`
+	type SPHeaderDetailDTO struct {
+		NoSP       string `gorm:"column:no_sp" json:"no_sp"`
+		Tanggal    string `gorm:"column:tanggal" json:"tanggal"`
+		AsalID     string `gorm:"column:asal_id" json:"asal_id"`
+		AsalNama   string `gorm:"column:asal_nama" json:"asal_nama"`
+		TujuanID   string `gorm:"column:tujuan_id" json:"tujuan_id"`
+		TujuanNama string `gorm:"column:tujuan_nama" json:"tujuan_nama"`
+		TransitYN  string `gorm:"column:transit_yn" json:"transit_yn"`
+		NoMobil    string `gorm:"column:no_mobil" json:"no_mobil"`
+		NamaSopir  string `gorm:"column:nama_sopir" json:"nama_sopir"`
+		SuratTugas string `gorm:"column:surat_tugas" json:"surat_tugas"`
+		BoronganYN string `gorm:"column:borongan_yn" json:"borongan_yn"`
+		Service    string `gorm:"column:service" json:"service"`
+		AktifYN    string `gorm:"column:aktif_yn" json:"aktif_yn"`
+	}
+
+	var header SPHeaderDetailDTO
+	if err := database.Raw(`
 		SELECT 
 			TRIM(s.spt_eid) AS no_sp,
 			TO_CHAR(s.spt_tanggal, 'YYYY-MM-DD HH24:MI:SS') AS tanggal,
@@ -135,27 +151,72 @@ func GetDetailSPByID(c *gin.Context) {
 		LEFT JOIN public.glb_m_agen a2 ON TRIM(s.spt_tujuanagenid::varchar) = TRIM(a2.agen_id::varchar)
 		WHERE TRIM(s.spt_eid) = TRIM(?)
 		LIMIT 1
-	`, spID).Scan(&header)
+	`, spID).Scan(&header).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat header SP: " + err.Error()})
+		return
+	}
 
-	details := make([]map[string]interface{}, 0)
-	database.Raw(`
+	type SPDetailRowDTO struct {
+		BttID       string  `gorm:"column:btt_id" json:"btt_id"`
+		NoSJ        string  `gorm:"column:no_sj" json:"no_sj"`
+		Pembayaran  string  `gorm:"column:pembayaran" json:"pembayaran"`
+		ServiceNama string  `gorm:"column:service_nama" json:"service_nama"`
+		TglBTT      string  `gorm:"column:tgl_btt" json:"tgl_btt"`
+		Pengirim    string  `gorm:"column:pengirim" json:"pengirim"`
+		Penerima    string  `gorm:"column:penerima" json:"penerima"`
+		Kota        string  `gorm:"column:kota" json:"kota"`
+		Telp        string  `gorm:"column:telp" json:"telp"`
+		Jumlah      int     `gorm:"column:jumlah" json:"jumlah"`
+		Berat       float64 `gorm:"column:berat" json:"berat"`
+		BiayaKirim  float64 `gorm:"column:biaya_kirim" json:"biaya_kirim"`
+		Cod         float64 `gorm:"column:cod" json:"cod"`
+		SudahTurun  bool    `gorm:"column:sudah_turun" json:"sudah_turun"`
+	}
+
+	details := make([]SPDetailRowDTO, 0)
+	if err := database.Raw(`
 		SELECT 
 			TRIM(d.sptd_bttid) AS btt_id,
-			COALESCE(TRIM(e.bttt_nosuratjalan), '-') AS no_sj,
+			COALESCE(
+				NULLIF(TRIM(e.bttt_nosuratjalan), ''),
+				NULLIF(TRIM(e.bttt_ket), ''),
+				'-'
+			) AS no_sj,
+			CASE 
+				WHEN TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '1' THEN 'TUNAI'
+				WHEN TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '2' THEN 'KREDIT'
+				WHEN TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '3' THEN 'TAGIH TUJUAN'
+				WHEN TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '6' THEN 'TRANSFER'
+				ELSE '-'
+			END AS pembayaran,
+			CASE 
+				WHEN TRIM(COALESCE(e.bttt_servid::varchar, '')) = '1' THEN 'Darat'
+				WHEN TRIM(COALESCE(e.bttt_servid::varchar, '')) = '2' THEN 'Laut'
+				WHEN TRIM(COALESCE(e.bttt_servid::varchar, '')) = '3' THEN 'Udara'
+				ELSE 'Darat'
+			END AS service_nama,
 			COALESCE(TO_CHAR(e.bttt_tanggal, 'DD/MM/YYYY'), '-') AS tgl_btt,
 			COALESCE(TRIM(e.bttt_asalname), '-') AS pengirim,
-			COALESCE(TRIM(e.bttt_tujuannama), '-') AS penerima,
+			COALESCE(TRIM(e.bttt_tujuannama), '-') || ' - ' || COALESCE(TRIM(e.bttt_tujuankota), '') AS penerima,
 			COALESCE(TRIM(e.bttt_tujuankota), '-') AS kota,
 			COALESCE(TRIM(e.bttt_tujuantelp), '-') AS telp,
-			COALESCE(d.sptd_jml, e.bttt_jmlunit, 1) AS jumlah,
+			COALESCE(NULLIF(d.sptd_jml, 0), NULLIF(e.bttt_jmlunit, 0), 1)::int AS jumlah,
 			GREATEST(COALESCE(e.bttt_berat, 0), COALESCE(e.bttt_beratvol, 0)) AS berat,
+			(COALESCE(e.bttt_harga, 0) + COALESCE(e.bttt_biayapenerus, 0)) AS biaya_kirim,
 			COALESCE(e.bttt_tagihtujuan, 0) AS cod,
-			EXISTS(SELECT 1 FROM public.opr_t_esp_turun t WHERE TRIM(t.sp_eid) = TRIM(d.sptd_esptid) AND TRIM(t.sp_bttid) = TRIM(d.sptd_bttid)) AS sudah_turun
+			EXISTS(
+				SELECT 1 FROM public.opr_t_esp_turun t 
+				WHERE TRIM(t.sp_eid) = TRIM(d.sptd_esptid) 
+				  AND TRIM(t.sp_bttid) = TRIM(d.sptd_bttid)
+			) AS sudah_turun
 		FROM public.opr_t_esp_terimadetil d
-		LEFT JOIN public.mkt_t_econote e ON TRIM(d.sptd_bttid) = TRIM(e.bttt_id)
+		LEFT JOIN public.mkt_t_econote e ON LEFT(TRIM(d.sptd_bttid), 16) = LEFT(TRIM(e.bttt_id), 16)
 		WHERE TRIM(d.sptd_esptid) = TRIM(?)
 		ORDER BY d.sptd_bttid ASC
-	`, spID).Scan(&details)
+	`, spID).Scan(&details).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal memuat detail BTT SP: " + err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
