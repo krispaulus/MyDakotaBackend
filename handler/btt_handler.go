@@ -86,14 +86,24 @@ func UpdateBTT(c *gin.Context) {
 		switch val := v.(type) {
 		case float64:
 			return val
+		case float32:
+			return float64(val)
 		case int:
 			return float64(val)
 		case int64:
 			return float64(val)
 		case string:
-			clean := strings.ReplaceAll(strings.TrimSpace(val), ".", "")
-			clean = strings.ReplaceAll(clean, ",", ".")
-			f, _ := strconv.ParseFloat(clean, 64)
+			s := strings.TrimSpace(val)
+			if s == "" || s == "<nil>" {
+				return 0
+			}
+			if strings.Contains(s, ",") && strings.Contains(s, ".") {
+				s = strings.ReplaceAll(s, ".", "")
+				s = strings.ReplaceAll(s, ",", ".")
+			} else {
+				s = strings.ReplaceAll(s, ",", ".")
+			}
+			f, _ := strconv.ParseFloat(s, 64)
 			return f
 		default:
 			return 0
@@ -459,7 +469,12 @@ func GetBTT(c *gin.Context) {
 			COALESCE(e.bttt_charterjnskend, '') AS bttt_charterjnskend,
 
 			-- BARANG & TARIF (Murni dari kolom DB)
-			COALESCE(e.bttt_namabarang, '') AS nama_barang,
+			COALESCE(
+				NULLIF(TRIM(e.bttt_namabarang), ''),
+				NULLIF(TRIM(to_jsonb(e)->>'bttt_isikiriman'), ''),
+				NULLIF(TRIM(SUBSTRING(COALESCE(e.bttt_ket, '') FROM '^([^(]+)\(\d+\s*KOLI\)')), ''),
+				''
+			) AS nama_barang,
 			COALESCE(e.bttt_harga, 0) AS harga,
 			CASE 
 				WHEN e.bttt_updateid IS NOT NULL AND e.bttt_updateid <> '' AND e.bttt_updateid !~ '^[0-9]+$' THEN e.bttt_updateid
@@ -468,7 +483,12 @@ func GetBTT(c *gin.Context) {
 			END AS create_by,
 			COALESCE(e.bttt_nosuratjalan, '') AS no_surat_jalan,
 			COALESCE(e.bttt_ket, '') AS keterangan,
-			COALESCE(to_jsonb(e)->>'bttt_isikiriman', '') AS isi_kiriman,
+			COALESCE(
+				NULLIF(TRIM(to_jsonb(e)->>'bttt_isikiriman'), ''),
+				NULLIF(TRIM(e.bttt_namabarang), ''),
+				NULLIF(TRIM(SUBSTRING(COALESCE(e.bttt_ket, '') FROM '^([^(]+)\(\d+\s*KOLI\)')), ''),
+				''
+			) AS isi_kiriman,
 			COALESCE(e.bttt_jmlunit, 1) AS jumlah_koli,
 			COALESCE(e.bttt_berat, 0) AS berat,
 			COALESCE(e.bttt_beratvol, 0) AS berat_volume,
@@ -1065,6 +1085,39 @@ func CreateBTT(c *gin.Context) {
 	// =========================================================================
 	// 4. MAP INSERT KE DATABASE (bttt_updateid tersimpan di sini)
 	// =========================================================================
+
+	parseDecimal := func(v interface{}) float64 {
+		if v == nil {
+			return 0
+		}
+		switch val := v.(type) {
+		case float64:
+			return val
+		case float32:
+			return float64(val)
+		case int:
+			return float64(val)
+		case int64:
+			return float64(val)
+		case string:
+			s := strings.TrimSpace(val)
+			if s == "" || s == "<nil>" {
+				return 0
+			}
+			// Jika format Indonesia "1.250,50", hapus titik ribuan lalu ubah koma ke titik
+			if strings.Contains(s, ",") && strings.Contains(s, ".") {
+				s = strings.ReplaceAll(s, ".", "")
+				s = strings.ReplaceAll(s, ",", ".")
+			} else {
+				s = strings.ReplaceAll(s, ",", ".")
+			}
+			f, _ := strconv.ParseFloat(s, 64)
+			return f
+		default:
+			return 0
+		}
+	}
+
 	dbRow := map[string]interface{}{
 		"bttt_id":              cleanStringVal(bttIDStr),
 		"bttt_tanggal":         now,
@@ -1091,11 +1144,12 @@ func CreateBTT(c *gin.Context) {
 		"bttt_paketyn":         cleanStringVal(rawPayload["bttt_paketyn"]),
 		"bttt_pembayaran":      cleanStringVal(rawPayload["bttt_jenisharga"]),
 		"bttt_jenisharga":      cleanStringVal(rawPayload["bttt_jenisharga"]),
+		"bttt_namabarang":      cleanStringVal(strings.ToUpper(isiKirimanRaw)),
 		"bttt_jmlunit":         jmlKoliInt,
-		"bttt_berat":           rawPayload["bttt_berat"],
-		"bttt_beratvol":        rawPayload["bttt_beratvol"],
-		"bttt_ukuran":          cleanStringVal(rawPayload["bttt_ukuran"]),
-		"bttt_harga":           rawPayload["bttt_harga"],
+		"bttt_berat":           parseDecimal(rawPayload["bttt_berat"]),
+		"bttt_beratvol":        parseDecimal(rawPayload["bttt_beratvol"]),
+		"bttt_ukuran":          fmt.Sprintf("%.3f", parseDecimal(rawPayload["bttt_ukuran"])),
+		"bttt_harga":           parseDecimal(rawPayload["bttt_harga"]),
 		"bttt_spyn":            "Y",
 		"bttt_aktifyn":         "Y",
 		"bttt_servid":          cleanStringVal(servIDFinal),
