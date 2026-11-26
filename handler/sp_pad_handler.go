@@ -397,7 +397,7 @@ func GetDetailSPPAD(c *gin.Context) {
 			COALESCE(TRIM(a1.agen_nama), '-') AS asal_agen,
 			COALESCE(TRIM(a1.agen_kota), '-') AS asal_kota,
 			COALESCE(TRIM(a1.agen_alamat), '-') AS asal_alamat,
-			COALESCE(TRIM(a1.agen_phone1), '-') AS asal_telp,
+			'-' AS asal_telp,
 			COALESCE(TRIM(h.spp_expedisilain), '-') AS expedisi_lain,
 			COALESCE(TRIM(h.spp_surattugas), '-') AS surat_tugas,
 			COALESCE(TRIM(h.spp_loadhid), '-') AS loadh_id,

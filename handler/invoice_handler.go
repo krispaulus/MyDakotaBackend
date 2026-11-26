@@ -338,14 +338,22 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 		return
 	}
 
-	// 3. Query Kepala Akunting dari Parameter glb_m_param
+	// 3. Query Kepala Akunting dari Parameter glb_m_param (Hanya untuk DLI PUSAT / cabang 001)
 	var accHead string
-	database.Table("public.glb_m_param").
-		Select("COALESCE(set_varvalue, '')").
-		Where("TRIM(LOWER(set_varname)) = 'acc_head'").
-		Order("set_updatetime DESC NULLS LAST, set_cabid ASC").
-		Limit(1).
-		Scan(&accHead)
+	realArtihID := strings.TrimSpace(fmt.Sprintf("%v", header["artih_id"]))
+	cabangInvoice := "001"
+	if len(realArtihID) >= 3 {
+		cabangInvoice = realArtihID[:3]
+	}
+
+	if cabangInvoice == "001" {
+		database.Table("public.glb_m_param").
+			Select("COALESCE(set_varvalue, '')").
+			Where("TRIM(LOWER(set_varname)) = 'acc_head' AND (TRIM(COALESCE(set_cabid, '')) IN ('001', '1', '') )").
+			Order("set_updatetime DESC NULLS LAST, set_cabid ASC").
+			Limit(1).
+			Scan(&accHead)
+	}
 
 	// Kirim response
 	c.JSON(http.StatusOK, gin.H{
