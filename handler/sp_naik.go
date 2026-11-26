@@ -280,6 +280,7 @@ func CreateSPNaikHandler(c *gin.Context) {
 	}
 
 	// Looping insert detail manifest BTT (dengan deduplikasi & ON CONFLICT DO NOTHING)
+	// Looping insert detail manifest BTT (bersihkan entri lama untuk BTT yang sama lalu insert baru)
 	seenBTT := make(map[string]bool)
 	for _, rawBTT := range input.DaftarBTT {
 		cleanBTT := strings.ToUpper(strings.TrimSpace(rawBTT))
@@ -291,10 +292,19 @@ func CreateSPNaikHandler(c *gin.Context) {
 		}
 		seenBTT[cleanBTT] = true
 
+		// Hapus jika BTT ini pernah terdaftar di SP sebelumnya agar tidak melanggar Primary Key
+		if err := tx.Exec(`
+			DELETE FROM public.opr_t_esp_terimadetil
+			WHERE TRIM(sptd_bttid) = TRIM(?)
+		`, cleanBTT).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membersihkan duplikat BTT: " + err.Error()})
+			return
+		}
+
 		if err := tx.Exec(`
 			INSERT INTO public.opr_t_esp_terimadetil (sptd_esptid, sptd_bttid)
 			VALUES (?, ?)
-			ON CONFLICT DO NOTHING
 		`, finalSPID, cleanBTT).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan rincian manifes BTT: " + err.Error()})
