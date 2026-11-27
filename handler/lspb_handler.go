@@ -128,10 +128,10 @@ func GetLSPBReportList(c *gin.Context) {
 				COALESCE(NULLIF(TRIM(e.bttt_tujuannama), ''), '-') AS bttt_tujuannama,
 				COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '-') AS bttt_tujuan_kota,
 				UPPER(COALESCE(NULLIF(TRIM(s.serv_name), ''), NULLIF(TRIM(v."Serv_Name"), ''), 'DARAT')) AS serv_name,
-
-				COALESCE(v."Darat", 0)::int AS darat,
-				COALESCE(v."Laut", 0)::int AS laut,
-				COALESCE(v."Udara", 0)::int AS udara,
+				
+				COALESCE(NULLIF(lt.darat, 0), v."Darat", 0)::int AS darat,
+				COALESCE(NULLIF(lt.laut, 0), v."Laut", 0)::int AS laut,
+				COALESCE(NULLIF(lt.udara, 0), v."Udara", 0)::int AS udara,
 				COALESCE(NULLIF(regexp_replace(COALESCE(t.harilibur::text, ''), '[^0-9-]', '', 'g'), '')::int, 0) AS hari_libur_manual,
 
 				CASE 
@@ -173,6 +173,7 @@ func GetLSPBReportList(c *gin.Context) {
 				COALESCE(NULLIF(e.bttt_ukuran::text, ''), v."BTTT_Ukuran", '0') AS bttt_ukuran,
 				COALESCE(e.bttt_berat, v."BTTT_Berat", 1) AS bttt_berat,
 				COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '') AS bttt_servid
+
 			FROM public.opr_t_transportlspb t
 			LEFT JOIN vw_transport_lspb v
 				ON TRIM(v."DN_OD_SJ"::text) = TRIM(t.dn_od_sj::text)
@@ -182,10 +183,24 @@ func GetLSPBReportList(c *gin.Context) {
 				ON TRIM(s.serv_id::text) = TRIM(COALESCE(e.bttt_servid::text, v."bttt_servid"::text, ''))
 			LEFT JOIN public.mkt_m_customer m 
 				ON TRIM(m.cust_id::text) = COALESCE(NULLIF(TRIM(e.bttt_asalcustid::text), ''), TRIM(t.customerid::text))
+			LEFT JOIN LATERAL (
+				SELECT l.darat, l.laut, l.udara
+				FROM public.opr_t_transportplanningleadtime l
+				WHERE TRIM(UPPER(l.customer_id)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_asalcustid::text), ''), TRIM(t.customerid::text), '')))
+				  AND (
+					  TRIM(UPPER(l.kota_tujuan)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '')))
+					  OR TRIM(UPPER(l.kabupaten)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '')))
+					  OR REGEXP_REPLACE(TRIM(UPPER(l.kota_tujuan)), '^(KAB\.|KABUPATEN|KOTA)\s+', '') = REGEXP_REPLACE(TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), ''))), '^(KAB\.|KABUPATEN|KOTA)\s+', '')
+				  )
+				ORDER BY 
+					-- Prioritaskan yang kota_asal-nya cocok dengan asal BTT (default BEKASI jika kosong)
+					CASE WHEN TRIM(UPPER(l.kota_asal)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_asalkota), ''), 'BEKASI'))) THEN 0 ELSE 1 END ASC
+				LIMIT 1
+			) lt ON TRUE
 			LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
 				ON TRIM(t.dn_od_sj::text) = TRIM(c.nodo::text)
 			WHERE t.dn_od_sj IS NOT NULL AND TRIM(t.dn_od_sj) <> ''
-			%s
+			
 			
 		),
 		calc_lspb AS (
