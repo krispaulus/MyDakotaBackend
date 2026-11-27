@@ -58,6 +58,17 @@ func GetLSPBReportList(c *gin.Context) {
 		database = db.DB
 	}
 
+	database.Exec(`
+		CREATE TABLE IF NOT EXISTS public.opr_m_harilibur (
+			id SERIAL PRIMARY KEY,
+			tanggal DATE UNIQUE NOT NULL,
+			keterangan VARCHAR(150) NOT NULL,
+			created_by VARCHAR(50),
+			created_at TIMESTAMP DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_harilibur_tanggal ON public.opr_m_harilibur (tanggal);
+	`)
+
 	tglAwal := strings.TrimSpace(c.Query("tgla"))
 	tglAkhir := strings.TrimSpace(c.Query("tgle"))
 	customer := strings.TrimSpace(c.Query("customer"))
@@ -90,8 +101,13 @@ func GetLSPBReportList(c *gin.Context) {
 		args = append(args, tglAwal, tglAkhir)
 	}
 	// Pindahkan filter customer ke sini agar data customer lain tidak ikut di-join & dihitung!
+	// if customer != "" {
+	// 	baseConditions = append(baseConditions, `(e.bttt_asalname ILIKE ? OR m.cust_name ILIKE ?)`)
+	// 	args = append(args, "%"+customer+"%", "%"+customer+"%")
+	// }
+
 	if customer != "" {
-		baseConditions = append(baseConditions, `(e.bttt_asalname ILIKE ? OR m.cust_name ILIKE ?)`)
+		baseConditions = append(baseConditions, `(m.cust_name ILIKE ? OR e.bttt_asalname ILIKE ?)`)
 		args = append(args, "%"+customer+"%", "%"+customer+"%")
 	}
 	if nobtt != "" {
@@ -124,7 +140,7 @@ func GetLSPBReportList(c *gin.Context) {
 		WITH base_lspb AS (
 			SELECT 
 				TRIM(t.dn_od_sj) AS dn_od_sj,
-				COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), NULLIF(TRIM(m.cust_name), ''), v."Cust_Name", '-') AS cust_name,
+				COALESCE(NULLIF(TRIM(m.cust_name), ''), NULLIF(TRIM(e.bttt_asalname), ''), v."Cust_Name", '-') AS cust_name,
 				COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(t.customerid), '') AS customer_id,
 				COALESCE(
 					e.bttt_tanggal::date,
