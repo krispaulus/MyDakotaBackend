@@ -119,13 +119,16 @@ func GetLSPBReportList(c *gin.Context) {
 				TRIM(t.dn_od_sj) AS dn_od_sj,
 				COALESCE(NULLIF(TRIM(e.bttt_asalname), ''), NULLIF(TRIM(m.cust_name), ''), v."Cust_Name", '-') AS cust_name,
 				COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(t.customerid), '') AS customer_id,
-				CASE 
-					WHEN COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text) LIKE '%%/%%/%%' 
-						THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1), 'MM/DD/YYYY')
-					WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL 
-						THEN SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1)::date
-					ELSE NULL
-				END AS dt_handover,
+				COALESCE(
+					e.bttt_tanggal::date,
+					CASE 
+						WHEN COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text) LIKE '%%/%%/%%' 
+							THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1), 'MM/DD/YYYY')
+						WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL 
+							THEN SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1)::date
+						ELSE NULL
+					END
+				) AS dt_handover,
 				COALESCE(NULLIF(TRIM(t.nomorbtt), ''), TRIM(v."nomorbtt"), '') AS nomorbtt,
 				COALESCE(NULLIF(TRIM(t.pickupfrom), ''), NULLIF(TRIM(v."PickupFrom"), ''), '') AS pickup_from,
 				COALESCE(NULLIF(TRIM(e.bttt_tujuannama), ''), '-') AS bttt_tujuannama,
