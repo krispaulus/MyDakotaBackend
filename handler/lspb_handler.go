@@ -200,7 +200,7 @@ func GetLSPBReportList(c *gin.Context) {
 			LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
 				ON TRIM(t.dn_od_sj::text) = TRIM(c.nodo::text)
 			WHERE t.dn_od_sj IS NOT NULL AND TRIM(t.dn_od_sj) <> ''
-			
+			%s
 			
 		),
 		calc_lspb AS (
