@@ -77,13 +77,16 @@ func GetLSPBReportList(c *gin.Context) {
 	if tglAwal != "" && tglAkhir != "" {
 		baseConditions = append(baseConditions, `
 			(
-				CASE 
-					WHEN COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text) LIKE '%/%/%' 
-						THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1), 'MM/DD/YYYY')
-					WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL 
-						THEN SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1)::date
-					ELSE NULL
-				END BETWEEN ?::date AND ?::date
+				COALESCE(
+					e.bttt_tanggal::date,
+					CASE 
+						WHEN COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text) LIKE '%/%/%' 
+							THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1), 'MM/DD/YYYY')
+						WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL 
+							THEN SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1)::date
+						ELSE NULL
+					END
+				) BETWEEN ?::date AND ?::date
 			)
 		`)
 		args = append(args, tglAwal, tglAkhir)
