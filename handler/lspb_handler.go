@@ -395,6 +395,18 @@ func SaveLSPB(c *gin.Context) {
 		database = db.DB
 	}
 
+	// Pastikan tabel hari libur otomatis dibuat jika belum ada di DB production/cabang
+	database.Exec(`
+		CREATE TABLE IF NOT EXISTS public.opr_m_harilibur (
+			id SERIAL PRIMARY KEY,
+			tanggal DATE UNIQUE NOT NULL,
+			keterangan VARCHAR(150) NOT NULL,
+			created_by VARCHAR(50),
+			created_at TIMESTAMP DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_harilibur_tanggal ON public.opr_m_harilibur (tanggal);
+	`)
+
 	userID, _ := c.Get("username")
 	if userID == nil || fmt.Sprintf("%v", userID) == "" {
 		userID = "SYSTEM"
