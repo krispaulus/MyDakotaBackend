@@ -222,19 +222,49 @@ func GetLSPBReportList(c *gin.Context) {
 					WHEN b.serv_name = 'UDARA' AND b.udara > 0 THEN b.udara
 					WHEN b.darat > 0 THEN b.darat
 					ELSE GREATEST(b.darat, b.laut, b.udara, 1)
-				END AS leadtime_aktif,
-				-- Hitung jumlah Sabtu & Minggu tanpa generate_series (O(1) instan)
-				CASE 
-					WHEN b.hari_libur_manual > 0 THEN b.hari_libur_manual
-					WHEN b.dt_handover IS NOT NULL THEN (
-						((GREATEST(b.darat, b.laut, b.udara, 1) + EXTRACT(ISODOW FROM b.dt_handover)::int) / 7) * 2
-						- CASE WHEN EXTRACT(ISODOW FROM b.dt_handover)::int = 7 THEN 1 ELSE 0 END
-						+ CASE WHEN ((b.dt_handover + GREATEST(b.darat, b.laut, b.udara, 1)) - b.dt_handover) > 0 
-						       AND EXTRACT(ISODOW FROM (b.dt_handover + GREATEST(b.darat, b.laut, b.udara, 1)))::int = 6 THEN 1 ELSE 0 END
-					)::int
-					ELSE 0
-				END AS hari_libur_calc
+				END AS leadtime_aktif
 			FROM base_lspb b
+		),
+		estimasi_lspb AS (
+			SELECT
+				c.*,
+				CASE 
+					WHEN c.dt_handover IS NULL THEN NULL
+					ELSE COALESCE((
+						SELECT gs::date
+						FROM generate_series(
+							c.dt_handover + 1,
+							c.dt_handover + (c.leadtime_aktif * 3) + 15,
+							'1 day'::interval
+						) gs
+						WHERE EXTRACT(ISODOW FROM gs) NOT IN (6, 7)
+						  AND NOT EXISTS (
+							  SELECT 1 FROM public.opr_m_harilibur hl WHERE hl.tanggal = gs::date
+						  )
+						ORDER BY gs ASC
+						OFFSET (c.leadtime_aktif - 1)
+						LIMIT 1
+					), c.dt_handover + c.leadtime_aktif)
+				END AS dt_estimasi_tiba,
+				CASE 
+					WHEN c.dt_handover IS NULL THEN NULL
+					ELSE COALESCE((
+						SELECT gs::date
+						FROM generate_series(
+							c.dt_handover + 1,
+							c.dt_handover + (c.leadtime_aktif * 6) + 20,
+							'1 day'::interval
+						) gs
+						WHERE EXTRACT(ISODOW FROM gs) NOT IN (6, 7)
+						  AND NOT EXISTS (
+							  SELECT 1 FROM public.opr_m_harilibur hl WHERE hl.tanggal = gs::date
+						  )
+						ORDER BY gs ASC
+						OFFSET (2 * c.leadtime_aktif)
+						LIMIT 1
+					), c.dt_handover + (2 * c.leadtime_aktif) + 1)
+				END AS dt_wajib_kembali
+			FROM calc_lspb c
 		)
 		SELECT
 			dn_od_sj,
@@ -249,21 +279,25 @@ func GetLSPBReportList(c *gin.Context) {
 			darat,
 			laut,
 			udara,
-			hari_libur_calc AS hari_libur,
+			CASE 
+				WHEN dt_handover IS NOT NULL AND dt_estimasi_tiba IS NOT NULL 
+					THEN GREATEST((dt_estimasi_tiba - dt_handover) - leadtime_aktif, 0)
+				ELSE 0
+			END AS hari_libur,
 			COALESCE(TO_CHAR(dt_diterima, 'YYYY-MM-DD'), '') AS tanggal_diterima,
-			COALESCE(TO_CHAR(dt_handover + (leadtime_aktif + hari_libur_calc), 'YYYY-MM-DD'), '') AS tanggal_sampai_harusnya,
+			COALESCE(TO_CHAR(dt_estimasi_tiba, 'YYYY-MM-DD'), '') AS tanggal_sampai_harusnya,
 			CASE 
 				WHEN dt_diterima IS NOT NULL AND dt_handover IS NOT NULL THEN (dt_diterima - dt_handover)
-				ELSE 0
+				ELSE NULL
 			END AS realisasi_hari,
 			CASE 
-				WHEN is_gagal = 0 AND dt_diterima IS NOT NULL AND dt_handover IS NOT NULL 
-				     AND dt_diterima <= (dt_handover + (leadtime_aktif + hari_libur_calc)) THEN 1
+				WHEN is_gagal = 0 AND dt_diterima IS NOT NULL AND dt_estimasi_tiba IS NOT NULL 
+				     AND dt_diterima <= dt_estimasi_tiba THEN 1
 				ELSE 0
 			END AS on_time,
 			CASE 
-				WHEN is_gagal = 0 AND dt_diterima IS NOT NULL AND dt_handover IS NOT NULL 
-				     AND dt_diterima > (dt_handover + (leadtime_aktif + hari_libur_calc)) THEN 1
+				WHEN is_gagal = 0 AND dt_diterima IS NOT NULL AND dt_estimasi_tiba IS NOT NULL 
+				     AND dt_diterima > dt_estimasi_tiba THEN 1
 				ELSE 0
 			END AS miss_lead_time,
 			is_gagal AS gagal,
@@ -273,14 +307,15 @@ func GetLSPBReportList(c *gin.Context) {
 			END AS dalam_pengiriman,
 			nama_penerima,
 			keterangan,
-			COALESCE(TO_CHAR(dt_handover + ((2 * leadtime_aktif) + hari_libur_calc + 1), 'YYYY-MM-DD'), '') AS tgl_dokumen_wajib_kembali,
+			COALESCE(TO_CHAR(dt_wajib_kembali, 'YYYY-MM-DD'), '') AS tgl_dokumen_wajib_kembali,
 			COALESCE(TO_CHAR(dt_dokumen_kembali, 'YYYY-MM-DD'), '') AS tb_tglkembali,
 			CASE 
 				WHEN dt_diterima IS NOT NULL AND dt_dokumen_kembali IS NOT NULL AND dt_dokumen_kembali > dt_diterima THEN (
-					(((dt_dokumen_kembali - dt_diterima) + EXTRACT(ISODOW FROM dt_diterima)::int) / 7) * 2
-					- CASE WHEN EXTRACT(ISODOW FROM dt_diterima)::int = 7 THEN 1 ELSE 0 END
-					+ CASE WHEN EXTRACT(ISODOW FROM dt_dokumen_kembali)::int = 6 THEN 1 ELSE 0 END
-				)::int
+					SELECT COUNT(*)::int
+					FROM generate_series(dt_diterima + 1, dt_dokumen_kembali, '1 day'::interval) gs
+					WHERE EXTRACT(ISODOW FROM gs) IN (6, 7)
+					   OR EXISTS (SELECT 1 FROM public.opr_m_harilibur hl WHERE hl.tanggal = gs::date)
+				)
 				ELSE 0
 			END AS hari_libur_do,
 			spb_id,
@@ -298,7 +333,7 @@ func GetLSPBReportList(c *gin.Context) {
 			bttt_ukuran,
 			bttt_berat,
 			'' AS noskb
-		FROM calc_lspb
+		FROM estimasi_lspb
 		WHERE 1=1
 	`, baseWhereSQL)
 

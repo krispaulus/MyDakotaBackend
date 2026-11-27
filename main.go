@@ -864,6 +864,11 @@ func main() {
 			authorized.GET("/driver/loper-resi", handler.GetDriverLoperResiHandler)
 			authorized.POST("/driver/loper-resi/deliver", handler.DeliverLoperResiHandler)
 
+			authorized.GET("/master/hari-libur/list", handler.GetListHariLibur)
+			authorized.POST("/master/hari-libur/add", handler.CreateHariLibur)
+			authorized.PUT("/master/hari-libur/update", handler.UpdateHariLibur)
+			authorized.DELETE("/master/hari-libur/delete/:id", handler.DeleteHariLibur)
+
 		}
 	}
 
