@@ -388,6 +388,7 @@ func main() {
 			authorized.POST("/master/leadtime-customer/add", handler.CreateLeadTime)
 			authorized.PUT("/master/leadtime-customer/update", handler.UpdateLeadTime)
 			authorized.DELETE("/master/leadtime-customer/delete", handler.DeleteLeadTime)
+			authorized.DELETE("/master/leadtime-customer/wilayah-suggest", handler.GetWilayahSuggest)
 
 			// 5. MULTIDROP (EditMasterHargaMultidrop.jsx)
 			authorized.GET("/tarif-customer/multidrop/detail", handler.GetTarifMultidropDetail)

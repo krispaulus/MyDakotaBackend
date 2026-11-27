@@ -1,11 +1,11 @@
 package models
 
 type TransportPlanningLeadTime struct {
-	CustomerID string `gorm:"column:customer_id;primaryKey" json:"customer_id"`
-	CustName   string `gorm:"column:cust_name" json:"cust_name"`
-	KotaAsal   string `gorm:"column:kota_asal;primaryKey" json:"kota_asal"`
-	KotaTujuan string `gorm:"column:kota_tujuan;primaryKey" json:"kota_tujuan"`
-	Kabupaten  string `gorm:"column:kabupaten;primaryKey" json:"kabupaten"`
+	CustomerID string `gorm:"column:customer_id" json:"customer_id"`
+	CustName   string `gorm:"-" json:"cust_name"` // <-- Tambahkan gorm:"-"
+	KotaAsal   string `gorm:"column:kota_asal" json:"kota_asal"`
+	KotaTujuan string `gorm:"column:kota_tujuan" json:"kota_tujuan"`
+	Kabupaten  string `gorm:"column:kabupaten" json:"kabupaten"`
 	Darat      int    `gorm:"column:darat" json:"darat"`
 	Laut       int    `gorm:"column:laut" json:"laut"`
 	Udara      int    `gorm:"column:udara" json:"udara"`

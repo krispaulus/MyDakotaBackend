@@ -293,6 +293,31 @@ func GetHistorySPTurun(c *gin.Context) {
 		return
 	}
 
+	whereExtra := ""
+	args := []interface{}{tglAwal, tglAkhir}
+	argIdx := 3
+
+	if transit := strings.TrimSpace(c.Query("transit")); transit != "" {
+		whereExtra += fmt.Sprintf(" AND COALESCE(h.spt_transityn, 'N') = $%d", argIdx)
+		args = append(args, transit)
+		argIdx++
+	}
+	if asalID := strings.TrimSpace(c.Query("asal_id")); asalID != "" {
+		whereExtra += fmt.Sprintf(" AND TRIM(h.spt_asalagenid::text) = TRIM($%d)", argIdx)
+		args = append(args, asalID)
+		argIdx++
+	}
+	if noBtt := strings.TrimSpace(c.Query("no_btt")); noBtt != "" {
+		whereExtra += fmt.Sprintf(" AND t.sp_bttid ILIKE $%d", argIdx)
+		args = append(args, "%"+noBtt+"%")
+		argIdx++
+	}
+	if noSp := strings.TrimSpace(c.Query("no_sp")); noSp != "" {
+		whereExtra += fmt.Sprintf(" AND t.sp_eid ILIKE $%d", argIdx)
+		args = append(args, "%"+noSp+"%")
+		argIdx++
+	}
+
 	c.JSON(http.StatusOK, results)
 }
 
@@ -372,4 +397,194 @@ func GetPrintSPDetail(c *gin.Context) {
 		"header": header,
 		"items":  items,
 	})
+}
+
+// =========================================================================
+// 📋 5. ENDPOINT DETAIL EDIT SP TURUN (SESUAI FILE ASP LAWAS opr_t_sp_turun_e.asp)
+// GET /operasional/sp-turun/detail?sp_eid=SC0061120260002
+// =========================================================================
+func GetSPTurunDetailEdit(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	currentTenant := fmt.Sprintf("%v", ptID)
+	if currentTenant == "<nil>" || currentTenant == "" {
+		currentTenant = "C"
+	}
+	currentDatabase, _ := db.ResolveDB(currentTenant)
+
+	spID := strings.ToUpper(strings.TrimSpace(c.Query("sp_eid")))
+	if spID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Parameter sp_eid wajib diisi"})
+		return
+	}
+
+	// Deteksi cluster DB asal SP berdasarkan karakter ke-2 (A=DBS, B=DLB, C=DLI)
+	targetDB := currentTenant
+	if len(spID) >= 2 {
+		switch string(spID[1]) {
+		case "A":
+			targetDB = "A"
+		case "B":
+			targetDB = "B"
+		case "C":
+			targetDB = "C"
+		}
+	}
+	sourceDB, ok := db.ResolveDB(targetDB)
+	if !ok {
+		sourceDB = currentDatabase
+	}
+
+	// 1. Ambil Header SP dari DB Asal + Tanggal SP Turun dari lokal
+	var header map[string]interface{}
+	sourceDB.Raw(`
+		SELECT 
+			h.spt_eid AS no_sp,
+			COALESCE(a1.agen_nama, h.spt_asalagenid, '-') AS cabang_pengirim,
+			COALESCE(a2.agen_nama, h.spt_tujuanagenid, '-') AS tujuan_pengiriman,
+			TO_CHAR(h.spt_tanggal::timestamp, 'YYYY-MM-DD') AS tgl_berangkat,
+			COALESCE(h.spt_transityn, 'N') AS status_transit,
+			COALESCE(k.kry_nama, h.spt_namasopir, '-') AS sopir,
+			COALESCE(h.spt_boronganyn, 'N') AS borongan,
+			COALESCE(h.spt_nomobil, '-') AS no_kendaraan,
+			COALESCE(h.spt_surattugas, '-') AS surat_tugas
+		FROM public.opr_t_esp_terima h
+		LEFT JOIN public.glb_m_agen a1 ON TRIM(a1.agen_id::varchar) = TRIM(h.spt_asalagenid::varchar)
+		LEFT JOIN public.glb_m_agen a2 ON TRIM(a2.agen_id::varchar) = TRIM(h.spt_tujuanagenid::varchar)
+		LEFT JOIN public.hrd_m_karyawan k ON TRIM(k.kry_nip::varchar) = TRIM(h.spt_nipsopir::varchar)
+		WHERE TRIM(h.spt_eid) = TRIM(?)
+		LIMIT 1
+	`, spID).Scan(&header)
+
+	if len(header) == 0 {
+		header = map[string]interface{}{
+			"no_sp":             spID,
+			"cabang_pengirim":   "-",
+			"tujuan_pengiriman": "-",
+			"tgl_berangkat":     "-",
+			"status_transit":    "N",
+			"sopir":             "-",
+			"borongan":          "N",
+			"no_kendaraan":      "-",
+			"surat_tugas":       "-",
+		}
+	}
+
+	// Ambil tanggal SP Turun lokal
+	var tglSPTurun string
+	currentDatabase.Raw(`
+		SELECT TO_CHAR(sp_tanggal::timestamp, 'YYYY-MM-DD')
+		FROM public.opr_t_esp_turun
+		WHERE TRIM(sp_eid) = TRIM(?) AND sp_aktifyn = 'Y'
+		ORDER BY sp_tanggal DESC LIMIT 1
+	`, spID).Scan(&tglSPTurun)
+	header["tgl_sp_turun"] = tglSPTurun
+
+	// 2. Ambil daftar resi dari opr_t_esp_turun lokal
+	type TurunRow struct {
+		SpEID        string `gorm:"column:sp_eid" json:"sp_eid"`
+		SpBttID      string `gorm:"column:sp_bttid" json:"no_btt"`
+		SpJmlTerima  int    `gorm:"column:sp_jmlterima" json:"jml_diterima"`
+		SpKeterangan string `gorm:"column:sp_keterangan" json:"keterangan"`
+	}
+	var localRows []TurunRow
+	currentDatabase.Raw(`
+		SELECT DISTINCT
+			TRIM(sp_eid) AS sp_eid,
+			TRIM(sp_bttid) AS sp_bttid,
+			COALESCE(sp_jmlterima, 0) AS sp_jmlterima,
+			COALESCE(sp_keterangan, '') AS sp_keterangan
+		FROM public.opr_t_esp_turun
+		WHERE TRIM(sp_eid) = TRIM(?) AND sp_aktifyn = 'Y'
+		ORDER BY sp_bttid ASC
+	`, spID).Scan(&localRows)
+
+	// Lengkapi informasi BTT (Tanggal BTT, Pengirim, Penerima, Jml Asli, Jml Berangkat) dari DB Asal
+	var items []map[string]interface{}
+	for _, r := range localRows {
+		var bttMeta map[string]interface{}
+		sourceDB.Raw(`
+			SELECT 
+				TO_CHAR(e.bttt_tanggal::timestamp, 'YYYY-MM-DD') AS tgl_btt,
+				COALESCE(NULLIF(TRIM(c.cust_name), ''), NULLIF(TRIM(e.bttt_asalname), ''), 'UMUM') AS pengirim,
+				COALESCE(e.bttt_tujuannama, '-') AS penerima,
+				COALESCE(NULLIF(e.bttt_jmlunit, 0), 1) AS jml_asli,
+				COALESCE(d.sptd_jml, COALESCE(NULLIF(e.bttt_jmlunit, 0), 1)) AS jml_berangkat
+			FROM public.mkt_t_econote e
+			LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)
+			LEFT JOIN public.opr_t_esp_terimadetil d ON TRIM(d.sptd_esptid) = TRIM(?) AND TRIM(d.sptd_bttid) = TRIM(e.bttt_id)
+			WHERE TRIM(e.bttt_id) = TRIM(?)
+			LIMIT 1
+		`, spID, r.SpBttID).Scan(&bttMeta)
+
+		jmlAsli := 1
+		jmlBerangkat := 1
+		tglBtt := "-"
+		pengirim := "-"
+		penerima := "-"
+
+		if len(bttMeta) > 0 {
+			if v, ok := bttMeta["tgl_btt"]; ok && v != nil {
+				tglBtt = fmt.Sprintf("%v", v)
+			}
+			if v, ok := bttMeta["pengirim"]; ok && v != nil {
+				pengirim = fmt.Sprintf("%v", v)
+			}
+			if v, ok := bttMeta["penerima"]; ok && v != nil {
+				penerima = fmt.Sprintf("%v", v)
+			}
+			if v, ok := bttMeta["jml_asli"]; ok && v != nil {
+				fmt.Sscanf(fmt.Sprintf("%v", v), "%d", &jmlAsli)
+			}
+			if v, ok := bttMeta["jml_berangkat"]; ok && v != nil {
+				fmt.Sscanf(fmt.Sprintf("%v", v), "%d", &jmlBerangkat)
+			}
+		}
+
+		items = append(items, map[string]interface{}{
+			"no_btt":        r.SpBttID,
+			"tgl_btt":       tglBtt,
+			"pengirim":      pengirim,
+			"penerima":      penerima,
+			"jml_asli":      jmlAsli,
+			"jml_berangkat": jmlBerangkat,
+			"jml_diterima":  r.SpJmlTerima,
+			"keterangan":    r.SpKeterangan,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"header": header,
+		"items":  items,
+	})
+}
+
+// =========================================================================
+// 🗑️ 6. ENDPOINT HAPUS / NON-AKTIFKAN SP TURUN
+// DELETE /operasional/sp-turun/delete?sp_eid=SC0061120260002
+// =========================================================================
+func DeleteSPTurun(c *gin.Context) {
+	ptID, _ := c.Get("pt_id")
+	currentTenant := fmt.Sprintf("%v", ptID)
+	currentDatabase, _ := db.ResolveDB(currentTenant)
+
+	spID := strings.TrimSpace(c.Query("sp_eid"))
+	if spID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Parameter sp_eid wajib diisi"})
+		return
+	}
+
+	err := currentDatabase.Table("public.opr_t_esp_turun").
+		Where("TRIM(sp_eid) = TRIM(?)", spID).
+		Updates(map[string]interface{}{
+			"sp_aktifyn":    "N",
+			"sp_updatetime": time.Now(),
+		}).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus SP Turun: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": fmt.Sprintf("SP Turun %s berhasil dinonaktifkan!", spID)})
 }

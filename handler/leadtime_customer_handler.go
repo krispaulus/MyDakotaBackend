@@ -129,7 +129,8 @@ func CreateLeadTime(c *gin.Context) {
 	input.KotaTujuan = strings.TrimSpace(input.KotaTujuan)
 	input.Kabupaten = strings.TrimSpace(input.Kabupaten)
 
-	if err := database.Create(&input).Error; err != nil {
+	// Tambahkan .Omit("CustName", "cust_name") agar GORM tidak insert ke kolom cust_name
+	if err := database.Omit("CustName", "cust_name").Create(&input).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menyimpan data lead time: " + err.Error()})
 		return
 	}
@@ -213,4 +214,34 @@ func GetActiveCustomerList(c *gin.Context) {
 		"status": "success",
 		"data":   customers,
 	})
+}
+
+// GET /master/leadtime-customer/wilayah-suggest?q=...
+func GetWilayahSuggest(c *gin.Context) {
+	database := getDynamicDB(c)
+	q := strings.TrimSpace(c.Query("q"))
+
+	type WilayahRow struct {
+		Kota      string `gorm:"column:kota" json:"kota"`
+		Kabupaten string `gorm:"column:kabupaten" json:"kabupaten"`
+	}
+
+	var results []WilayahRow
+	// Sesuaikan nama tabel & kolom dengan master wilayah yang dipakai di BTT
+	sqlQuery := `
+		SELECT DISTINCT 
+			COALESCE(kota, '') AS kota,
+			COALESCE(kabupaten, '') AS kabupaten
+		FROM public.opr_m_wilayah 
+		WHERE UPPER(kota) LIKE UPPER(?) OR UPPER(kabupaten) LIKE UPPER(?)
+		ORDER BY kota ASC
+		LIMIT 20
+	`
+	keyword := "%" + q + "%"
+	if err := database.Raw(sqlQuery, keyword, keyword).Scan(&results).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": results})
 }
