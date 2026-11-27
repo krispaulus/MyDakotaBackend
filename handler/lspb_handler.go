@@ -73,35 +73,42 @@ func GetLSPBReportList(c *gin.Context) {
 	var baseConditions []string
 	var args []interface{}
 
-	// 1. Filter utama langsung ke tabel fisik opr_t_transportlspb (t)
+	// 1. Filter utama sedini mungkin di tabel fisik (t) & econote (e)
 	if tglAwal != "" && tglAkhir != "" {
 		baseConditions = append(baseConditions, `
-			(
-				COALESCE(
-					e.bttt_tanggal::date,
-					CASE 
-						WHEN COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text) LIKE '%/%/%' 
-							THEN TO_DATE(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1), 'MM/DD/YYYY')
-						WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text, ''), ' ', 1), '') IS NOT NULL 
-							THEN SPLIT_PART(COALESCE(t.tanggal_handover::text, v."Tanggal_HandOver"::text), ' ', 1)::date
-						ELSE NULL
-					END
-				) BETWEEN ?::date AND ?::date
-			)
+			COALESCE(
+				e.bttt_tanggal::date,
+				CASE 
+					WHEN t.tanggal_handover::text LIKE '%/%/%' 
+						THEN TO_DATE(SPLIT_PART(t.tanggal_handover::text, ' ', 1), 'MM/DD/YYYY')
+					WHEN NULLIF(SPLIT_PART(COALESCE(t.tanggal_handover::text, ''), ' ', 1), '') IS NOT NULL 
+						THEN SPLIT_PART(t.tanggal_handover::text, ' ', 1)::date
+					ELSE NULL
+				END
+			) BETWEEN ?::date AND ?::date
 		`)
 		args = append(args, tglAwal, tglAkhir)
 	}
+	// Pindahkan filter customer ke sini agar data customer lain tidak ikut di-join & dihitung!
+	if customer != "" {
+		baseConditions = append(baseConditions, `(e.bttt_asalname ILIKE ? OR m.cust_name ILIKE ?)`)
+		args = append(args, "%"+customer+"%", "%"+customer+"%")
+	}
 	if nobtt != "" {
-		baseConditions = append(baseConditions, `COALESCE(NULLIF(TRIM(t.nomorbtt), ''), v."nomorbtt", '') ILIKE ?`)
+		baseConditions = append(baseConditions, `t.nomorbtt ILIKE ?`)
 		args = append(args, "%"+nobtt+"%")
 	}
 	if spb != "" {
-		baseConditions = append(baseConditions, `COALESCE(NULLIF(TRIM(t.spb_id), ''), v.spb_id, '') ILIKE ?`)
+		baseConditions = append(baseConditions, `t.spb_id ILIKE ?`)
 		args = append(args, "%"+spb+"%")
 	}
 	if nosj != "" {
 		baseConditions = append(baseConditions, `t.dn_od_sj ILIKE ?`)
 		args = append(args, "%"+nosj+"%")
+	}
+	if tujuan != "" {
+		baseConditions = append(baseConditions, `(e.bttt_tujuankota ILIKE ? OR v."BTTT_TujuanKota" ILIKE ?)`)
+		args = append(args, "%"+tujuan+"%", "%"+tujuan+"%")
 	}
 	if service != "" {
 		baseConditions = append(baseConditions, `TRIM(COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '')) = ?`)
@@ -181,33 +188,31 @@ func GetLSPBReportList(c *gin.Context) {
 				COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '') AS bttt_servid
 
 			FROM public.opr_t_transportlspb t
-			LEFT JOIN vw_transport_lspb v
-				ON TRIM(v."DN_OD_SJ"::text) = TRIM(t.dn_od_sj::text)
 			LEFT JOIN public.mkt_t_econote e 
-				ON UPPER(TRIM(e.bttt_id::text)) = UPPER(TRIM(COALESCE(NULLIF(TRIM(t.nomorbtt::text), ''), v."nomorbtt"::text, '')))
+				ON e.bttt_id = t.nomorbtt
+			LEFT JOIN vw_transport_lspb v
+				ON v."DN_OD_SJ" = t.dn_od_sj
 			LEFT JOIN public.mkt_m_service s
-				ON TRIM(s.serv_id::text) = TRIM(COALESCE(e.bttt_servid::text, v."bttt_servid"::text, ''))
+				ON s.serv_id::text = COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '')
 			LEFT JOIN public.mkt_m_customer m 
-				ON TRIM(m.cust_id::text) = COALESCE(NULLIF(TRIM(e.bttt_asalcustid::text), ''), TRIM(t.customerid::text))
+				ON m.cust_id = COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(t.customerid))
 			LEFT JOIN LATERAL (
 				SELECT l.darat, l.laut, l.udara
 				FROM public.opr_t_transportplanningleadtime l
-				WHERE TRIM(UPPER(l.customer_id)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_asalcustid::text), ''), TRIM(t.customerid::text), '')))
+				WHERE l.customer_id = COALESCE(NULLIF(TRIM(e.bttt_asalcustid), ''), TRIM(t.customerid), '')
 				  AND (
-					  TRIM(UPPER(l.kota_tujuan)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '')))
-					  OR TRIM(UPPER(l.kabupaten)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '')))
-					  OR REGEXP_REPLACE(TRIM(UPPER(l.kota_tujuan)), '^(KAB\.|KABUPATEN|KOTA)\s+', '') = REGEXP_REPLACE(TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), ''))), '^(KAB\.|KABUPATEN|KOTA)\s+', '')
+					  UPPER(l.kota_tujuan) = UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), ''))
+					  OR UPPER(l.kabupaten) = UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), ''))
+					  OR REGEXP_REPLACE(UPPER(l.kota_tujuan), '^(KAB\.|KABUPATEN|KOTA)\s+', '') = REGEXP_REPLACE(UPPER(COALESCE(NULLIF(TRIM(e.bttt_tujuankota), ''), NULLIF(TRIM(v."BTTT_TujuanKota"), ''), '')), '^(KAB\.|KABUPATEN|KOTA)\s+', '')
 				  )
 				ORDER BY 
-					-- Prioritaskan yang kota_asal-nya cocok dengan asal BTT (default BEKASI jika kosong)
-					CASE WHEN TRIM(UPPER(l.kota_asal)) = TRIM(UPPER(COALESCE(NULLIF(TRIM(e.bttt_asalkota), ''), 'BEKASI'))) THEN 0 ELSE 1 END ASC
+					CASE WHEN UPPER(l.kota_asal) = UPPER(COALESCE(NULLIF(TRIM(e.bttt_asalkota), ''), 'BEKASI')) THEN 0 ELSE 1 END ASC
 				LIMIT 1
 			) lt ON TRUE
 			LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
-				ON TRIM(t.dn_od_sj::text) = TRIM(c.nodo::text)
-			WHERE t.dn_od_sj IS NOT NULL AND TRIM(t.dn_od_sj) <> ''
+				ON c.nodo = t.dn_od_sj
+			WHERE t.dn_od_sj IS NOT NULL AND t.dn_od_sj <> ''
 			%s
-			
 		),
 		calc_lspb AS (
 			SELECT
@@ -218,17 +223,15 @@ func GetLSPBReportList(c *gin.Context) {
 					WHEN b.darat > 0 THEN b.darat
 					ELSE GREATEST(b.darat, b.laut, b.udara, 1)
 				END AS leadtime_aktif,
+				-- Hitung jumlah Sabtu & Minggu tanpa generate_series (O(1) instan)
 				CASE 
 					WHEN b.hari_libur_manual > 0 THEN b.hari_libur_manual
 					WHEN b.dt_handover IS NOT NULL THEN (
-						SELECT COUNT(*)::int
-						FROM generate_series(
-							b.dt_handover + 1,
-							b.dt_handover + GREATEST(b.darat, b.laut, b.udara, 1),
-							'1 day'::interval
-						) gs
-						WHERE EXTRACT(ISODOW FROM gs) IN (6, 7)
-					)
+						((GREATEST(b.darat, b.laut, b.udara, 1) + EXTRACT(ISODOW FROM b.dt_handover)::int) / 7) * 2
+						- CASE WHEN EXTRACT(ISODOW FROM b.dt_handover)::int = 7 THEN 1 ELSE 0 END
+						+ CASE WHEN ((b.dt_handover + GREATEST(b.darat, b.laut, b.udara, 1)) - b.dt_handover) > 0 
+						       AND EXTRACT(ISODOW FROM (b.dt_handover + GREATEST(b.darat, b.laut, b.udara, 1)))::int = 6 THEN 1 ELSE 0 END
+					)::int
 					ELSE 0
 				END AS hari_libur_calc
 			FROM base_lspb b
@@ -274,10 +277,10 @@ func GetLSPBReportList(c *gin.Context) {
 			COALESCE(TO_CHAR(dt_dokumen_kembali, 'YYYY-MM-DD'), '') AS tb_tglkembali,
 			CASE 
 				WHEN dt_diterima IS NOT NULL AND dt_dokumen_kembali IS NOT NULL AND dt_dokumen_kembali > dt_diterima THEN (
-					SELECT COUNT(*)::int
-					FROM generate_series(dt_diterima + 1, dt_dokumen_kembali, '1 day'::interval) gs
-					WHERE EXTRACT(ISODOW FROM gs) IN (6, 7)
-				)
+					(((dt_dokumen_kembali - dt_diterima) + EXTRACT(ISODOW FROM dt_diterima)::int) / 7) * 2
+					- CASE WHEN EXTRACT(ISODOW FROM dt_diterima)::int = 7 THEN 1 ELSE 0 END
+					+ CASE WHEN EXTRACT(ISODOW FROM dt_dokumen_kembali)::int = 6 THEN 1 ELSE 0 END
+				)::int
 				ELSE 0
 			END AS hari_libur_do,
 			spb_id,
@@ -300,27 +303,24 @@ func GetLSPBReportList(c *gin.Context) {
 	`, baseWhereSQL)
 
 	var postConditions []string
-	if customer != "" {
-		postConditions = append(postConditions, `UPPER(cust_name) LIKE UPPER(?)`)
-		args = append(args, "%"+customer+"%")
-	}
-	if tujuan != "" {
-		postConditions = append(postConditions, `UPPER(bttt_tujuan_kota) LIKE UPPER(?)`)
-		args = append(args, "%"+tujuan+"%")
-	}
-	if status == "DELIVERED" {
+	switch status {
+	case "DELIVERED":
 		postConditions = append(postConditions, `dt_diterima IS NOT NULL`)
-	} else if status == "SHIPPED" {
+	case "SHIPPED":
 		postConditions = append(postConditions, `dt_diterima IS NULL`)
 	}
-	if kirim == "Y" {
+
+	switch kirim {
+	case "Y":
 		postConditions = append(postConditions, `dt_dokumen_kembali IS NOT NULL`)
-	} else if kirim == "N" {
+	case "N":
 		postConditions = append(postConditions, `dt_dokumen_kembali IS NULL`)
 	}
-	if bayar == "Y" {
+
+	switch bayar {
+	case "Y":
 		postConditions = append(postConditions, `TRIM(COALESCE(spb_id, '')) <> ''`)
-	} else if bayar == "N" {
+	case "N":
 		postConditions = append(postConditions, `TRIM(COALESCE(spb_id, '')) = ''`)
 	}
 
