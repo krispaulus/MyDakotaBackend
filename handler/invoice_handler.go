@@ -19,6 +19,7 @@ type InvoiceListRow struct {
 	ArtihCustID     string     `json:"artih_custid"`
 	CustName        string     `json:"cust_name"`
 	ArtihCustName   string     `json:"artih_custname"`
+	CustNPWPName    string     `json:"cust_npwp_name"`
 	CustAlamat      string     `json:"cust_alamat"`  // Alamat 1
 	CustAlamat2     string     `json:"cust_alamat2"` // 🌟 Tambahan Alamat 2
 	CustNPWP        string     `json:"cust_npwp"`
@@ -141,6 +142,16 @@ func GetInvoiceListHandler(c *gin.Context) {
 			h.artih_custid,
 			COALESCE(c.cust_name, h.artih_custname) AS cust_name,
 			COALESCE(h.artih_custname, c.cust_name) AS artih_custname,
+			COALESCE(
+				NULLIF(TRIM(COALESCE(
+					to_jsonb(c)->>'cust_npwpnama',
+					to_jsonb(c)->>'cust_namanpwp',
+					to_jsonb(c)->>'cust_npwp_name',
+					to_jsonb(c)->>'cust_namapt',
+					''
+				)), ''),
+				''
+			) AS cust_npwp_name,			
 			COALESCE(c.cust_alamat1, '') AS cust_alamat,
 			COALESCE(c.cust_alamat2, '') AS cust_alamat2,
 			COALESCE(c.cust_npwp, '') AS cust_npwp,
@@ -242,6 +253,16 @@ func GetInvoiceDetailHandler(c *gin.Context) {
 			h.artih_custid,
 			COALESCE(c.cust_name, h.artih_custname, '') AS cust_name,
 			COALESCE(h.artih_custname, c.cust_name, '') AS artih_custname,
+			COALESCE(
+				NULLIF(TRIM(COALESCE(
+					to_jsonb(c)->>'cust_npwpnama',
+					to_jsonb(c)->>'cust_namanpwp',
+					to_jsonb(c)->>'cust_npwp_name',
+					to_jsonb(c)->>'cust_namapt',
+					''
+				)), ''),
+				''
+			) AS cust_npwp_name,
 			COALESCE(c.cust_alamat1, '') AS cust_alamat,
 			COALESCE(c.cust_alamat1, '') AS cust_alamat1,
 			COALESCE(c.cust_alamat2, '') AS cust_alamat2,
