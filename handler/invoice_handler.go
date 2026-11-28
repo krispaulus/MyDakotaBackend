@@ -176,8 +176,7 @@ func GetInvoiceListHandler(c *gin.Context) {
 			FROM public.art_t_invoiced d
 			LEFT JOIN public.art_t_receiptdddd r ON TRIM(r.trectddd_nobtt) = TRIM(d.artid_bttid)
 			GROUP BY d.artid_artihid
-		) rp ON TRIM(rp.artid_artihid) = TRIM(h.artih_id)`).
-		Where("COALESCE(h.artih_delete, 'N') = 'N'")
+		) rp ON TRIM(rp.artid_artihid) = TRIM(h.artih_id)`)
 
 	if !bypassTanggal && startDate != "" && endDate != "" {
 		query = query.Where("h.artih_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
@@ -821,7 +820,7 @@ func UpdateTglACCInvoiceHandler(c *gin.Context) {
 	})
 }
 
-// 6. DELETE /api/piutang/invoice
+// 6. DELETE /api/piutang/invoice (Pembatalan Permanen dengan Histori)
 func DeleteInvoiceHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
@@ -833,32 +832,55 @@ func DeleteInvoiceHandler(c *gin.Context) {
 		invoiceID = strings.TrimSpace(c.Param("id"))
 	}
 	invoiceID = strings.TrimPrefix(invoiceID, "/")
+	alasan := strings.TrimSpace(c.Query("alasan"))
 	userID, _ := c.Get("username")
 
-	var postingYN string
+	var inv struct {
+		PostingYN  string `gorm:"column:artih_postingyn"`
+		DeleteYN   string `gorm:"column:artih_delete"`
+		Keterangan string `gorm:"column:artih_keterangan"`
+	}
 	database.Table("public.art_t_invoiceh").
-		Select("COALESCE(artih_postingyn, 'N')").
+		Select("COALESCE(artih_postingyn, 'N') AS artih_postingyn, COALESCE(artih_delete, 'N') AS artih_delete, COALESCE(artih_keterangan, '') AS artih_keterangan").
 		Where("TRIM(artih_id) = TRIM(?)", invoiceID).
-		Scan(&postingYN)
+		Scan(&inv)
 
-	if postingYN == "Y" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice sudah diposting dan tidak dapat dihapus."})
+	if inv.DeleteYN == "Y" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice ini sudah berstatus BATAL."})
 		return
 	}
 
-	// Soft delete header invoice (Otomatis membebaskan BTT kembali jadi unbilled)
+	if inv.PostingYN == "Y" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Invoice sudah diposting dan tidak dapat dibatalkan sebelum di-unposting."})
+		return
+	}
+
+	ketBatal := fmt.Sprintf("[BATAL oleh %v - %s]", userID, time.Now().Format("02/01/2006 15:04"))
+	if alasan != "" {
+		ketBatal = fmt.Sprintf("%s Alasan: %s", ketBatal, alasan)
+	}
+	if inv.Keterangan != "" && inv.Keterangan != "-" {
+		ketBatal = inv.Keterangan + " | " + ketBatal
+	}
+
+	// Tandai BATAL (artih_delete = 'Y'), nolkan tagihan, dan pertahankan nomor invoice agar tidak dipakai ulang
 	if err := database.Table("public.art_t_invoiceh").Where("TRIM(artih_id) = TRIM(?)", invoiceID).Updates(map[string]interface{}{
 		"artih_delete":     "Y",
+		"artih_total":      0,
+		"artih_dpp":        0,
+		"artih_ppn":        0,
+		"artih_fktpajak":   "",
+		"artih_keterangan": ketBatal,
 		"artih_updateid":   fmt.Sprintf("%v", userID),
 		"artih_updatetime": time.Now(),
 	}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal menghapus invoice: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal membatalkan invoice: " + err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
-		"message": fmt.Sprintf("Invoice %s berhasil dihapus.", invoiceID),
+		"message": fmt.Sprintf("Invoice %s berhasil dibatalkan. Nomor tercatat dengan status BATAL dan tidak dapat digunakan kembali.", invoiceID),
 	})
 }
 
