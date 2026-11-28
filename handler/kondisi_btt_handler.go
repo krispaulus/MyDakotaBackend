@@ -10,42 +10,44 @@ import (
 )
 
 type KondisiBTTItem struct {
-	TipeDokumen     string     `json:"tipe_dokumen" gorm:"column:tipe_dokumen"`
-	NoDokumen       string     `json:"no_dokumen" gorm:"column:no_dokumen"`
-	TglDokumen      time.Time  `json:"tgl_dokumen" gorm:"column:tgl_dokumen"`
-	CustID          string     `json:"cust_id" gorm:"column:cust_id"`
-	CustName        string     `json:"cust_name" gorm:"column:cust_name"`
-	Layanan         string     `json:"layanan" gorm:"column:layanan"`
-	MetodeBayar     string     `json:"metode_bayar" gorm:"column:metode_bayar"`
-	PackingID       string     `json:"packing_id" gorm:"column:packing_id"`
-	ByPacking       float64    `json:"by_packing" gorm:"column:by_packing"`
-	NoKwitansi      string     `json:"no_kwitansi" gorm:"column:no_kwitansi"`
-	TglKwitansi     *time.Time `json:"tgl_kwitansi" gorm:"column:tgl_kwitansi"`
-	NoTT            string     `json:"no_tt" gorm:"column:no_tt"`
-	TglTT           *time.Time `json:"tgl_tt" gorm:"column:tgl_tt"`
-	NoPembayaran    string     `json:"no_pembayaran" gorm:"column:no_pembayaran"`
-	TglBayar        *time.Time `json:"tgl_bayar" gorm:"column:tgl_bayar"`
-	ByKirim         float64    `json:"by_kirim" gorm:"column:by_kirim"`
-	UangMuka        float64    `json:"uang_muka" gorm:"column:uang_muka"`
-	TerbayarNominal float64    `json:"terbayar_nominal" gorm:"column:terbayar_nominal"`
-	Dikembalikan    float64    `json:"dikembalikan" gorm:"column:dikembalikan"`
-	TotalBiaya      float64    `json:"total_biaya" gorm:"column:total_biaya"`
-	Koli            float64    `json:"koli" gorm:"column:koli"`
-	Berat           float64    `json:"berat" gorm:"column:berat"`
-	KotaTujuan      string     `json:"kota_tujuan" gorm:"column:kota_tujuan"`
-	Penerima        string     `json:"penerima" gorm:"column:penerima"`
-	TglBTTKembali   *time.Time `json:"tgl_btt_kembali" gorm:"column:tgl_btt_kembali"`
-	NoSPB           string     `json:"no_spb" gorm:"column:no_spb"`
-	UmurBTT         int        `json:"umur_btt" gorm:"column:umur_btt"`
-	BTTDBS          string     `json:"btt_dbs" gorm:"column:btt_dbs"`
-	PIC             string     `json:"pic" gorm:"column:pic"`
-	CabangBerwenang string     `json:"cabang_berwenang" gorm:"column:cabang_berwenang"`
-	BTTKembaliYN    string     `json:"btt_kembali_yn" gorm:"column:btt_kembali_yn"`
-	SudahInvoiceYN  string     `json:"sudah_invoice_yn" gorm:"column:sudah_invoice_yn"`
-	NoInvoice       string     `json:"no_invoice" gorm:"column:no_invoice"`
-	TerbayarYN      string     `json:"terbayar_yn" gorm:"column:terbayar_yn"`
-	AgenAsalID      string     `json:"agen_asal_id" gorm:"column:agen_asal_id"`
-	AgenAsalNama    string     `json:"agen_asal_nama" gorm:"column:agen_asal_nama"`
+	TipeDokumen        string     `json:"tipe_dokumen" gorm:"column:tipe_dokumen"`
+	NoDokumen          string     `json:"no_dokumen" gorm:"column:no_dokumen"`
+	TglDokumen         time.Time  `json:"tgl_dokumen" gorm:"column:tgl_dokumen"`
+	CustID             string     `json:"cust_id" gorm:"column:cust_id"`
+	CustName           string     `json:"cust_name" gorm:"column:cust_name"`
+	Layanan            string     `json:"layanan" gorm:"column:layanan"`
+	MetodeBayar        string     `json:"metode_bayar" gorm:"column:metode_bayar"`
+	PackingID          string     `json:"packing_id" gorm:"column:packing_id"`
+	ByPacking          float64    `json:"by_packing" gorm:"column:by_packing"`
+	NoKwitansi         string     `json:"no_kwitansi" gorm:"column:no_kwitansi"`
+	TglKwitansi        *time.Time `json:"tgl_kwitansi" gorm:"column:tgl_kwitansi"`
+	NoTT               string     `json:"no_tt" gorm:"column:no_tt"`
+	TglTT              *time.Time `json:"tgl_tt" gorm:"column:tgl_tt"`
+	NoPembayaran       string     `json:"no_pembayaran" gorm:"column:no_pembayaran"`
+	TglBayar           *time.Time `json:"tgl_bayar" gorm:"column:tgl_bayar"`
+	NoJurnalPembayaran string     `json:"no_jurnal_pembayaran" gorm:"column:no_jurnal_pembayaran"`
+	ByKirim            float64    `json:"by_kirim" gorm:"column:by_kirim"`
+	UangMuka           float64    `json:"uang_muka" gorm:"column:uang_muka"`
+	TerbayarNominal    float64    `json:"terbayar_nominal" gorm:"column:terbayar_nominal"`
+	Dikembalikan       float64    `json:"dikembalikan" gorm:"column:dikembalikan"`
+	TotalBiaya         float64    `json:"total_biaya" gorm:"column:total_biaya"`
+	Koli               float64    `json:"koli" gorm:"column:koli"`
+	Berat              float64    `json:"berat" gorm:"column:berat"`
+	KotaTujuan         string     `json:"kota_tujuan" gorm:"column:kota_tujuan"`
+	Kecamatan          string     `json:"kecamatan" gorm:"column:kecamatan"`
+	Penerima           string     `json:"penerima" gorm:"column:penerima"`
+	TglBTTKembali      *time.Time `json:"tgl_btt_kembali" gorm:"column:tgl_btt_kembali"`
+	NoSPB              string     `json:"no_spb" gorm:"column:no_spb"`
+	UmurBTT            int        `json:"umur_btt" gorm:"column:umur_btt"`
+	BTTDBS             string     `json:"btt_dbs" gorm:"column:btt_dbs"`
+	PIC                string     `json:"pic" gorm:"column:pic"`
+	CabangBerwenang    string     `json:"cabang_berwenang" gorm:"column:cabang_berwenang"`
+	BTTKembaliYN       string     `json:"btt_kembali_yn" gorm:"column:btt_kembali_yn"`
+	SudahInvoiceYN     string     `json:"sudah_invoice_yn" gorm:"column:sudah_invoice_yn"`
+	NoInvoice          string     `json:"no_invoice" gorm:"column:no_invoice"`
+	TerbayarYN         string     `json:"terbayar_yn" gorm:"column:terbayar_yn"`
+	AgenAsalID         string     `json:"agen_asal_id" gorm:"column:agen_asal_id"`
+	AgenAsalNama       string     `json:"agen_asal_nama" gorm:"column:agen_asal_nama"`
 }
 
 func tableExists(db *gorm.DB, tableName string) bool {
@@ -75,7 +77,7 @@ func GetKondisiBTTOptionsHandler(c *gin.Context) {
 	})
 }
 
-// 2. GET /api/piutang/kondisi-btt (Fast Hash Join Version)
+// 2. GET /api/piutang/kondisi-btt (Fast Subquery + No Jurnal Pembayaran + Kecamatan)
 func GetKondisiBTTListHandler(c *gin.Context) {
 	database := getJurnalDB(c)
 	if database == nil {
@@ -106,123 +108,144 @@ func GetKondisiBTTListHandler(c *gin.Context) {
 	var allResults []KondisiBTTItem
 
 	if showBTT {
-		lspbJoin := `LEFT JOIN (SELECT ''::varchar AS btt_key, 'N'::varchar AS is_kembali, NULL::timestamp AS tgl_kembali, ''::varchar AS no_spb WHERE 1=0) lspb ON lspb.btt_key = TRIM(LOWER(e.bttt_id::varchar))`
+		baseQuery := database.Table("public.mkt_t_econote e").
+			Select(`
+				e.*,
+				COALESCE(c.cust_name, e.bttt_asalname, '') AS resolved_cust_name,
+				COALESCE(c.cust_pic, '') AS resolved_pic,
+				COALESCE(a.agen_nama, 'DLI PUSAT') AS resolved_agen_asal,
+				COALESCE(NULLIF(TRIM(ag_tujuan.agen_nama), ''), NULLIF(TRIM(e.bttt_tujuankota), ''), 'DLI PUSAT') AS resolved_cab_berwenang,
+				UPPER(TRIM(COALESCE(s.serv_name, ''))) AS resolved_serv_name,
+				COALESCE(p.pck_biaya::numeric, 0) AS resolved_pck_biaya
+			`).
+			Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id::varchar) = TRIM(e.bttt_asalcustid::varchar)").
+			Joins("LEFT JOIN public.glb_m_agen a ON LPAD(TRIM(a.agen_id::varchar), 3, '0') = LPAD(LEFT(TRIM(e.bttt_id::varchar), 3), 3, '0')").
+			Joins("LEFT JOIN public.glb_m_agen ag_tujuan ON LPAD(TRIM(ag_tujuan.agen_id::varchar), 3, '0') = LPAD(TRIM(COALESCE(e.bttt_tujuanagenid::varchar, '')), 3, '0')").
+			Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
+			Joins("LEFT JOIN public.pck_t_packing p ON TRIM(p.pck_id::varchar) = TRIM(COALESCE(e.bttt_packingid::varchar, ''))").
+			Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
+
+		if !bypassTanggal && startDate != "" && endDate != "" {
+			baseQuery = baseQuery.Where("e.bttt_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
+		}
+		if cabangAsal != "" && cabangAsal != "ALL" {
+			baseQuery = baseQuery.Where("LPAD(LEFT(TRIM(e.bttt_id::varchar), 3), 3, '0') = LPAD(?, 3, '0')", cabangAsal)
+		}
+		if cabangBerwenang != "" {
+			baseQuery = baseQuery.Where("(ag_tujuan.agen_nama ILIKE ? OR e.bttt_tujuankota ILIKE ?)", "%"+cabangBerwenang+"%", "%"+cabangBerwenang+"%")
+		}
+		if pic != "" {
+			baseQuery = baseQuery.Where("c.cust_pic ILIKE ?", "%"+pic+"%")
+		}
+		if customer != "" {
+			baseQuery = baseQuery.Where("(c.cust_name ILIKE ? OR e.bttt_asalname ILIKE ? OR e.bttt_asalcustid::varchar ILIKE ?)",
+				"%"+customer+"%", "%"+customer+"%", "%"+customer+"%")
+		}
+		if pembayaran == "TUNAI" {
+			baseQuery = baseQuery.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '1'")
+		} else if pembayaran == "KREDIT" {
+			baseQuery = baseQuery.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '2'")
+		} else if pembayaran == "TAGIH TURUN" {
+			baseQuery = baseQuery.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) NOT IN ('1', '2')")
+		}
+		if jenisNaikTurun == "N" {
+			baseQuery = baseQuery.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) <> '3'")
+		} else if jenisNaikTurun == "T" {
+			baseQuery = baseQuery.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '3'")
+		}
+
+		baseQuery = baseQuery.Order("e.bttt_tanggal ASC, e.bttt_id ASC").Limit(2500)
+
+		lspbJoin := `LEFT JOIN (SELECT ''::varchar AS btt_key, 'N'::varchar AS is_kembali, NULL::timestamp AS tgl_kembali, ''::varchar AS no_spb WHERE 1=0) lspb ON lspb.btt_key = TRIM(fb.bttt_id::varchar)`
 		if hasLSPB {
 			lspbJoin = `LEFT JOIN (
 				SELECT
-					TRIM(LOWER(nomorbtt::varchar)) AS btt_key,
+					TRIM(nomorbtt::varchar) AS btt_key,
 					MAX(CASE WHEN COALESCE(grn, 'N') = 'Y' OR tanggal_diterima IS NOT NULL THEN 'Y' ELSE 'N' END) AS is_kembali,
 					MAX(tanggal_diterima)::timestamp AS tgl_kembali,
 					MAX(COALESCE(NULLIF(TRIM(dn_od_sj), ''), '')) AS no_spb
 				FROM public.opr_t_transportlspb
 				WHERE nomorbtt IS NOT NULL AND TRIM(nomorbtt::varchar) <> ''
-				GROUP BY TRIM(LOWER(nomorbtt::varchar))
-			) lspb ON lspb.btt_key = TRIM(LOWER(e.bttt_id::varchar))`
+				GROUP BY TRIM(nomorbtt::varchar)
+			) lspb ON lspb.btt_key = TRIM(fb.bttt_id::varchar)`
 		}
 
-		spbJoin := `LEFT JOIN (SELECT ''::varchar AS btt_key, ''::varchar AS sp_id WHERE 1=0) spb ON spb.btt_key = TRIM(LOWER(e.bttt_id::varchar))`
+		spbJoin := `LEFT JOIN (SELECT ''::varchar AS btt_key, ''::varchar AS sp_id WHERE 1=0) spb ON spb.btt_key = TRIM(fb.bttt_id::varchar)`
 		if hasESPTurun {
 			spbJoin = `LEFT JOIN (
 				SELECT
-					TRIM(LOWER(COALESCE(to_jsonb(et)->>'sp_bttid', to_jsonb(et)->>'bttt_id', ''))) AS btt_key,
+					TRIM(COALESCE(to_jsonb(et)->>'sp_bttid', to_jsonb(et)->>'bttt_id', '')) AS btt_key,
 					MAX(COALESCE(
 						NULLIF(TRIM(COALESCE(to_jsonb(et)->>'sp_id', '')), ''),
 						NULLIF(TRIM(COALESCE(to_jsonb(et)->>'sp_no', '')), ''),
 						NULLIF(TRIM(COALESCE(to_jsonb(et)->>'sp_turunid', '')), ''),
-						NULLIF(TRIM(COALESCE(to_jsonb(et)->>'sp_spbid', '')), ''),
 						''
 					)) AS sp_id
 				FROM public.opr_t_esp_turun et
-				GROUP BY TRIM(LOWER(COALESCE(to_jsonb(et)->>'sp_bttid', to_jsonb(et)->>'bttt_id', '')))
-			) spb ON spb.btt_key = TRIM(LOWER(e.bttt_id::varchar))`
+				GROUP BY TRIM(COALESCE(to_jsonb(et)->>'sp_bttid', to_jsonb(et)->>'bttt_id', ''))
+			) spb ON spb.btt_key = TRIM(fb.bttt_id::varchar)`
 		}
 
-		query := database.Table("public.mkt_t_econote e").
+		finalQuery := database.Table("(?) AS fb", baseQuery).
 			Select(`
-				CASE WHEN TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '3' THEN 'BTT TURUN' ELSE 'BTT NAIK' END AS tipe_dokumen,
-				TRIM(e.bttt_id::varchar) AS no_dokumen,
-				e.bttt_tanggal AS tgl_dokumen,
-				COALESCE(TRIM(e.bttt_asalcustid::varchar), '') AS cust_id,
-				COALESCE(c.cust_name, e.bttt_asalname, '') AS cust_name,
+				CASE WHEN TRIM(COALESCE(fb.bttt_pembayaran::varchar, '')) = '3' THEN 'BTT TURUN' ELSE 'BTT NAIK' END AS tipe_dokumen,
+				TRIM(fb.bttt_id::varchar) AS no_dokumen,
+				fb.bttt_tanggal AS tgl_dokumen,
+				COALESCE(TRIM(fb.bttt_asalcustid::varchar), '') AS cust_id,
+				fb.resolved_cust_name AS cust_name,
 				CASE
-					WHEN UPPER(TRIM(COALESCE(s.serv_name, ''))) <> '' THEN UPPER(TRIM(s.serv_name))
-					WHEN TRIM(COALESCE(e.bttt_servid::varchar, '')) IN ('1', '01', 'D') THEN 'DARAT'
-					WHEN TRIM(COALESCE(e.bttt_servid::varchar, '')) IN ('2', '02', 'L') THEN 'LAUT'
-					WHEN TRIM(COALESCE(e.bttt_servid::varchar, '')) IN ('3', '03', 'U') THEN 'UDARA'
+					WHEN fb.resolved_serv_name <> '' THEN fb.resolved_serv_name
+					WHEN TRIM(COALESCE(fb.bttt_servid::varchar, '')) IN ('1', '01', 'D') THEN 'DARAT'
+					WHEN TRIM(COALESCE(fb.bttt_servid::varchar, '')) IN ('2', '02', 'L') THEN 'LAUT'
+					WHEN TRIM(COALESCE(fb.bttt_servid::varchar, '')) IN ('3', '03', 'U') THEN 'UDARA'
 					ELSE 'DARAT'
 				END AS layanan,
 				CASE 
-					WHEN TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '1' THEN 'TUNAI'
-					WHEN TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '2' THEN 'KREDIT'
+					WHEN TRIM(COALESCE(fb.bttt_pembayaran::varchar, '')) = '1' THEN 'TUNAI'
+					WHEN TRIM(COALESCE(fb.bttt_pembayaran::varchar, '')) = '2' THEN 'KREDIT'
 					ELSE 'TAGIH TURUN'
 				END AS metode_bayar,
-				COALESCE(NULLIF(TRIM(COALESCE(e.bttt_packingid::varchar, '')), ''), COALESCE(p2.pck_id, '')) AS packing_id,
-				COALESCE(
-					NULLIF(TRIM(COALESCE(to_jsonb(e)->>'bttt_biayapacking', '')), '')::numeric,
-					p.pck_biaya::numeric,
-					p2.pck_biaya::numeric,
-					0
-				) AS by_packing,
+				COALESCE(TRIM(fb.bttt_packingid::varchar), '') AS packing_id,
+				fb.resolved_pck_biaya AS by_packing,
 				COALESCE(inv.artih_nokw, '') AS no_kwitansi,
 				inv.artih_tanggal AS tgl_kwitansi,
 				'' AS no_tt,
 				NULL::timestamp AS tgl_tt,
 				COALESCE(rc.no_bayar, '') AS no_pembayaran,
 				rc.tgl_bayar AS tgl_bayar,
-				(COALESCE(e.bttt_harga::numeric, 0) + COALESCE(e.bttt_biayapenerus::numeric, 0)) AS by_kirim,
+				COALESCE(rc.no_jurnal, '') AS no_jurnal_pembayaran,
+				(COALESCE(fb.bttt_harga::numeric, 0) + COALESCE(fb.bttt_biayapenerus::numeric, 0)) AS by_kirim,
 				0::numeric AS uang_muka,
 				COALESCE(rc.total_bayar, 0) AS terbayar_nominal,
 				0::numeric AS dikembalikan,
-				(
-					COALESCE(e.bttt_harga::numeric, 0) +
-					COALESCE(e.bttt_biayapenerus::numeric, 0) +
-					COALESCE(NULLIF(TRIM(COALESCE(to_jsonb(e)->>'bttt_biayapacking', '')), '')::numeric, p.pck_biaya::numeric, p2.pck_biaya::numeric, 0)
-				) AS total_biaya,
-				COALESCE(e.bttt_jmlunit::numeric, 0) AS koli,
-				GREATEST(COALESCE(e.bttt_berat::numeric, 0), COALESCE(e.bttt_beratvol::numeric, 0)) AS berat,
-				COALESCE(e.bttt_tujuankota, '') AS kota_tujuan,
-				COALESCE(e.bttt_tujuannama, '') AS penerima,
+				(COALESCE(fb.bttt_harga::numeric, 0) + COALESCE(fb.bttt_biayapenerus::numeric, 0) + fb.resolved_pck_biaya) AS total_biaya,
+				COALESCE(fb.bttt_jmlunit::numeric, 0) AS koli,
+				GREATEST(COALESCE(fb.bttt_berat::numeric, 0), COALESCE(fb.bttt_beratvol::numeric, 0)) AS berat,
+				COALESCE(fb.bttt_tujuankota, '') AS kota_tujuan,
+				COALESCE(fb.bttt_tujuankecamatan, '') AS kecamatan,
+				COALESCE(fb.bttt_tujuannama, '') AS penerima,
 				lspb.tgl_kembali AS tgl_btt_kembali,
 				COALESCE(NULLIF(spb.sp_id, ''), lspb.no_spb, '') AS no_spb,
 				CASE
 					WHEN lspb.is_kembali = 'Y' THEN NULL
-					ELSE GREATEST(EXTRACT(DAY FROM (NOW() - e.bttt_tanggal))::int, 0)
+					ELSE GREATEST(EXTRACT(DAY FROM (NOW() - fb.bttt_tanggal))::int, 0)
 				END AS umur_btt,
-				COALESCE(e.bttt_nosuratjalan, '') AS btt_dbs,
-				COALESCE(c.cust_pic, '') AS pic,
-				COALESCE(
-					NULLIF(TRIM(ag_tujuan.agen_nama), ''),
-					NULLIF(TRIM(COALESCE(to_jsonb(e)->>'bttt_tujuanagennama', '')), ''),
-					NULLIF(TRIM(e.bttt_tujuankota), ''),
-					'DLI PUSAT'
-				) AS cabang_berwenang,
+				COALESCE(fb.bttt_nosuratjalan, '') AS btt_dbs,
+				fb.resolved_pic AS pic,
+				fb.resolved_cab_berwenang AS cabang_berwenang,
 				COALESCE(lspb.is_kembali, 'N') AS btt_kembali_yn,
 				CASE WHEN inv.artih_id IS NOT NULL THEN 'Y' ELSE 'N' END AS sudah_invoice_yn,
 				COALESCE(inv.artih_id, '-') AS no_invoice,
 				CASE
-					WHEN COALESCE(rc.total_bayar, 0) > 0 OR COALESCE(e.bttt_bayaryn, 'N') = 'Y'
+					WHEN COALESCE(rc.total_bayar, 0) > 0 OR COALESCE(fb.bttt_bayaryn, 'N') = 'Y'
 					THEN 'Y' ELSE 'N'
 				END AS terbayar_yn,
-				LPAD(LEFT(TRIM(e.bttt_id::varchar), 3), 3, '0') AS agen_asal_id,
-				COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_asal_nama
+				LPAD(LEFT(TRIM(fb.bttt_id::varchar), 3), 3, '0') AS agen_asal_id,
+				fb.resolved_agen_asal AS agen_asal_nama
 			`).
-			Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(LOWER(c.cust_id::varchar)) = TRIM(LOWER(e.bttt_asalcustid::varchar))").
-			Joins("LEFT JOIN public.glb_m_agen a ON LPAD(TRIM(a.agen_id::varchar), 3, '0') = LPAD(LEFT(TRIM(e.bttt_id::varchar), 3), 3, '0')").
-			Joins("LEFT JOIN public.glb_m_agen ag_tujuan ON LPAD(TRIM(ag_tujuan.agen_id::varchar), 3, '0') = LPAD(TRIM(COALESCE(e.bttt_tujuanagenid::varchar, '')), 3, '0')").
-			Joins("LEFT JOIN public.mkt_m_service s ON TRIM(s.serv_id::varchar) = TRIM(e.bttt_servid::varchar)").
-			Joins("LEFT JOIN public.pck_t_packing p ON TRIM(LOWER(p.pck_id::varchar)) = TRIM(LOWER(COALESCE(e.bttt_packingid::varchar, '')))").
 			Joins(`LEFT JOIN (
 				SELECT
-					TRIM(LOWER(COALESCE(to_jsonb(pk)->>'pck_bttid', ''))) AS btt_key,
-					MAX(TRIM(pk.pck_id::varchar)) AS pck_id,
-					MAX(COALESCE(pk.pck_biaya::numeric, 0)) AS pck_biaya
-				FROM public.pck_t_packing pk
-				WHERE COALESCE(to_jsonb(pk)->>'pck_bttid', '') <> ''
-				GROUP BY TRIM(LOWER(COALESCE(to_jsonb(pk)->>'pck_bttid', '')))
-			) p2 ON p2.btt_key = TRIM(LOWER(e.bttt_id::varchar))`).
-			Joins(`LEFT JOIN (
-				SELECT
-					TRIM(LOWER(d.artid_bttid::varchar)) AS btt_key,
+					TRIM(d.artid_bttid::varchar) AS btt_key,
 					MAX(h.artih_id) AS artih_id,
 					MAX(
 						CASE
@@ -232,74 +255,45 @@ func GetKondisiBTTListHandler(c *gin.Context) {
 					) AS artih_nokw,
 					MAX(h.artih_tanggal) AS artih_tanggal
 				FROM public.art_t_invoiced d
-				INNER JOIN public.art_t_invoiceh h ON TRIM(LOWER(h.artih_id)) = TRIM(LOWER(d.artid_artihid))
+				INNER JOIN public.art_t_invoiceh h ON TRIM(h.artih_id) = TRIM(d.artid_artihid)
 				WHERE COALESCE(h.artih_delete, 'N') <> 'Y'
-				GROUP BY TRIM(LOWER(d.artid_bttid::varchar))
-			) inv ON inv.btt_key = TRIM(LOWER(e.bttt_id::varchar))`).
+				GROUP BY TRIM(d.artid_bttid::varchar)
+			) inv ON inv.btt_key = TRIM(fb.bttt_id::varchar)`).
 			Joins(`LEFT JOIN (
 				SELECT
-					TRIM(LOWER(rd.trectddd_nobtt::varchar)) AS btt_key,
+					TRIM(rd.trectddd_nobtt::varchar) AS btt_key,
 					MAX(rh.trecth_no) AS no_bayar,
 					MAX(rh.trecth_tanggal) AS tgl_bayar,
+					MAX(REPLACE(TRIM(COALESCE(to_jsonb(rh)->>'trecth_journalid', to_jsonb(rh)->>'trecth_jurnalid', '')), 'OTA', '001')) AS no_jurnal,
 					SUM(COALESCE(rd.trectddd_bayar, 0)) AS total_bayar
 				FROM public.art_t_receiptdddd rd
-				INNER JOIN public.art_t_receipth rh ON TRIM(LOWER(rh.trecth_no)) = TRIM(LOWER(rd.trectddd_trecthno))
-				GROUP BY TRIM(LOWER(rd.trectddd_nobtt::varchar))
-			) rc ON rc.btt_key = TRIM(LOWER(e.bttt_id::varchar))`).
+				INNER JOIN public.art_t_receipth rh ON TRIM(rh.trecth_no) = TRIM(rd.trectddd_trecthno)
+				GROUP BY TRIM(rd.trectddd_nobtt::varchar)
+			) rc ON rc.btt_key = TRIM(fb.bttt_id::varchar)`).
 			Joins(lspbJoin).
-			Joins(spbJoin).
-			Where("COALESCE(e.bttt_aktifyn, 'Y') = 'Y'")
+			Joins(spbJoin)
 
-		if !bypassTanggal && startDate != "" && endDate != "" {
-			query = query.Where("e.bttt_tanggal BETWEEN ? AND ?", startDate+" 00:00:00", endDate+" 23:59:59")
-		}
-		if cabangAsal != "" && cabangAsal != "ALL" {
-			query = query.Where("LPAD(LEFT(TRIM(e.bttt_id::varchar), 3), 3, '0') = LPAD(?, 3, '0')", cabangAsal)
-		}
-		if cabangBerwenang != "" {
-			query = query.Where("(ag_tujuan.agen_nama ILIKE ? OR e.bttt_tujuankota ILIKE ? OR LPAD(TRIM(COALESCE(e.bttt_tujuanagenid::varchar, '')), 3, '0') = LPAD(?, 3, '0'))",
-				"%"+cabangBerwenang+"%", "%"+cabangBerwenang+"%", cabangBerwenang)
-		}
-		if pic != "" {
-			query = query.Where("c.cust_pic ILIKE ?", "%"+pic+"%")
-		}
-		if customer != "" {
-			query = query.Where("(c.cust_name ILIKE ? OR e.bttt_asalname ILIKE ? OR e.bttt_asalcustid::varchar ILIKE ?)",
-				"%"+customer+"%", "%"+customer+"%", "%"+customer+"%")
-		}
 		if bttKembali == "Y" {
-			query = query.Where("COALESCE(lspb.is_kembali, 'N') = 'Y'")
+			finalQuery = finalQuery.Where("COALESCE(lspb.is_kembali, 'N') = 'Y'")
 		} else if bttKembali == "N" {
-			query = query.Where("COALESCE(lspb.is_kembali, 'N') <> 'Y'")
+			finalQuery = finalQuery.Where("COALESCE(lspb.is_kembali, 'N') <> 'Y'")
 		}
 		if sudahInvoice == "Y" {
-			query = query.Where("inv.artih_id IS NOT NULL")
+			finalQuery = finalQuery.Where("inv.artih_id IS NOT NULL")
 		} else if sudahInvoice == "N" {
-			query = query.Where("inv.artih_id IS NULL")
+			finalQuery = finalQuery.Where("inv.artih_id IS NULL")
 		}
 		if bayar == "Y" {
-			query = query.Where("(COALESCE(rc.total_bayar, 0) > 0 OR COALESCE(e.bttt_bayaryn, 'N') = 'Y')")
+			finalQuery = finalQuery.Where("(COALESCE(rc.total_bayar, 0) > 0 OR COALESCE(fb.bttt_bayaryn, 'N') = 'Y')")
 		} else if bayar == "N" {
-			query = query.Where("(COALESCE(rc.total_bayar, 0) = 0 AND COALESCE(e.bttt_bayaryn, 'N') <> 'Y')")
+			finalQuery = finalQuery.Where("(COALESCE(rc.total_bayar, 0) = 0 AND COALESCE(fb.bttt_bayaryn, 'N') <> 'Y')")
 		}
 		if tglPelunasan != "" {
-			query = query.Where("rc.tgl_bayar <= ?", tglPelunasan+" 23:59:59")
-		}
-		if pembayaran == "TUNAI" {
-			query = query.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '1'")
-		} else if pembayaran == "KREDIT" {
-			query = query.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '2'")
-		} else if pembayaran == "TAGIH TURUN" {
-			query = query.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) NOT IN ('1', '2')")
-		}
-		if jenisNaikTurun == "N" {
-			query = query.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) <> '3'")
-		} else if jenisNaikTurun == "T" {
-			query = query.Where("TRIM(COALESCE(e.bttt_pembayaran::varchar, '')) = '3'")
+			finalQuery = finalQuery.Where("rc.tgl_bayar <= ?", tglPelunasan+" 23:59:59")
 		}
 
 		var bttItems []KondisiBTTItem
-		if err := query.Order("e.bttt_tanggal ASC, e.bttt_id ASC").Limit(5000).Scan(&bttItems).Error; err != nil {
+		if err := finalQuery.Order("fb.bttt_tanggal ASC, fb.bttt_id ASC").Scan(&bttItems).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Gagal query kondisi BTT: " + err.Error()})
 			return
 		}
@@ -325,6 +319,7 @@ func GetKondisiBTTListHandler(c *gin.Context) {
 				NULL::timestamp AS tgl_tt,
 				'' AS no_pembayaran,
 				NULL::timestamp AS tgl_bayar,
+				'' AS no_jurnal_pembayaran,
 				COALESCE(o.order_amount::numeric, 0) AS by_kirim,
 				0::numeric AS uang_muka,
 				0::numeric AS terbayar_nominal,
@@ -333,6 +328,7 @@ func GetKondisiBTTListHandler(c *gin.Context) {
 				COALESCE(o.order_koli::numeric, 0) AS koli,
 				GREATEST(COALESCE(o.order_berat::numeric, 0), COALESCE(o.order_volume::numeric, 0)) AS berat,
 				'' AS kota_tujuan,
+				'' AS kecamatan,
 				'' AS penerima,
 				NULL::timestamp AS tgl_btt_kembali,
 				'' AS no_spb,
@@ -364,7 +360,7 @@ func GetKondisiBTTListHandler(c *gin.Context) {
 			ojQuery = ojQuery.Where("c.cust_pic ILIKE ?", "%"+pic+"%")
 		}
 
-		if err := ojQuery.Order("o.order_date DESC, o.order_id DESC").Limit(500).Scan(&ojItems).Error; err == nil {
+		if err := ojQuery.Order("o.order_date ASC, o.order_id ASC").Limit(500).Scan(&ojItems).Error; err == nil {
 			allResults = append(allResults, ojItems...)
 		}
 	}
