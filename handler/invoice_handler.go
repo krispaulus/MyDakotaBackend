@@ -14,28 +14,29 @@ import (
 )
 
 type InvoiceListRow struct {
-	ArtihID         string     `json:"artih_id"`
-	ArtihTanggal    time.Time  `json:"artih_tanggal"`
-	ArtihCustID     string     `json:"artih_custid"`
-	CustName        string     `json:"cust_name"`
-	ArtihCustName   string     `json:"artih_custname"`
-	CustNPWPName    string     `json:"cust_npwp_name"`
-	CustAlamat      string     `json:"cust_alamat"`  // Alamat 1
-	CustAlamat2     string     `json:"cust_alamat2"` // 🌟 Tambahan Alamat 2
-	CustNPWP        string     `json:"cust_npwp"`
-	NoPO            string     `json:"nopo"`
-	ArtihKeterangan string     `json:"artih_keterangan"`
-	ArtihDelete     string     `json:"artih_delete"`
-	ArtihNoKW       string     `json:"artih_nokw"`
-	ArtihFktPajak   string     `json:"artih_fktpajak"`
-	ArtihTotal      float64    `json:"artih_total"`
-	ArtihDPP        float64    `json:"artih_dpp"`
-	ArtihPPN        float64    `json:"artih_ppn"`
-	ArtihJenis      string     `json:"artih_jenis"`
-	ArtihPostingYN  string     `json:"artih_postingyn"`
-	ArtihJournalID  string     `json:"artih_journalid"`
-	ArtihTglAcc     *time.Time `json:"artih_tglacc"`
-	AgenNama        string     `json:"agen_nama"`
+	ArtihID         string     `json:"artih_id" gorm:"column:artih_id"`
+	ArtihTanggal    time.Time  `json:"artih_tanggal" gorm:"column:artih_tanggal"`
+	ArtihCustID     string     `json:"artih_custid" gorm:"column:artih_custid"`
+	CustName        string     `json:"cust_name" gorm:"column:cust_name"`
+	ArtihCustName   string     `json:"artih_custname" gorm:"column:artih_custname"`
+	CustNPWPName    string     `json:"cust_npwp_name" gorm:"column:cust_npwp_name"`
+	CustAlamat      string     `json:"cust_alamat" gorm:"column:cust_alamat"`
+	CustAlamat2     string     `json:"cust_alamat2" gorm:"column:cust_alamat2"`
+	CustNPWP        string     `json:"cust_npwp" gorm:"column:cust_npwp"`
+	NoPO            string     `json:"nopo" gorm:"column:nopo"`
+	ArtihKeterangan string     `json:"artih_keterangan" gorm:"column:artih_keterangan"`
+	ArtihDelete     string     `json:"artih_delete" gorm:"column:artih_delete"`
+	ArtihNoKW       string     `json:"artih_nokw" gorm:"column:artih_nokw"`
+	ArtihFktPajak   string     `json:"artih_fktpajak" gorm:"column:artih_fktpajak"`
+	ArtihTotal      float64    `json:"artih_total" gorm:"column:artih_total"`
+	ArtihDPP        float64    `json:"artih_dpp" gorm:"column:artih_dpp"`
+	ArtihPPN        float64    `json:"artih_ppn" gorm:"column:artih_ppn"`
+	Terbayar        float64    `json:"terbayar" gorm:"column:terbayar"`
+	ArtihJenis      string     `json:"artih_jenis" gorm:"column:artih_jenis"`
+	ArtihPostingYN  string     `json:"artih_postingyn" gorm:"column:artih_postingyn"`
+	ArtihJournalID  string     `json:"artih_journalid" gorm:"column:artih_journalid"`
+	ArtihTglAcc     *time.Time `json:"artih_tglacc" gorm:"column:artih_tglacc"`
+	AgenNama        string     `json:"agen_nama" gorm:"column:agen_nama"`
 }
 
 type InvoiceBTTDetailRow struct {
@@ -139,7 +140,7 @@ func GetInvoiceListHandler(c *gin.Context) {
 		Select(`
 			h.artih_id,
 			h.artih_tanggal,
-			h.artih_custid,
+			COALESCE(NULLIF(TRIM(h.artih_custid), ''), TRIM(c.cust_id), '') AS artih_custid,
 			COALESCE(c.cust_name, h.artih_custname) AS cust_name,
 			COALESCE(h.artih_custname, c.cust_name) AS artih_custname,
 			COALESCE(
@@ -155,10 +156,10 @@ func GetInvoiceListHandler(c *gin.Context) {
 			COALESCE(c.cust_alamat1, '') AS cust_alamat,
 			COALESCE(c.cust_alamat2, '') AS cust_alamat2,
 			COALESCE(c.cust_npwp, '') AS cust_npwp,
-			COALESCE(h.artih_keterangan, '') AS artih_keterangan,
+			COALESCE(NULLIF(TRIM(h.artih_keterangan), ''), '') AS artih_keterangan,
 			COALESCE(h.artih_delete, 'N') AS artih_delete,
 			COALESCE(h.artih_nokw, '') AS artih_nokw,
-			COALESCE(h.artih_fktpajak, '') AS artih_fktpajak,
+			COALESCE(NULLIF(TRIM(h.artih_fktpajak), ''), '') AS artih_fktpajak,
 			COALESCE(h.artih_total, 0) AS artih_total,
 			COALESCE(h.artih_dpp, 0) AS artih_dpp,
 			COALESCE(h.artih_ppn, 0) AS artih_ppn,
@@ -169,7 +170,7 @@ func GetInvoiceListHandler(c *gin.Context) {
 			h.artih_tglacc,
 			COALESCE(a.agen_nama, 'DLI PUSAT') AS agen_nama
 		`).
-		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(c.cust_id) = TRIM(h.artih_custid)").
+		Joins("LEFT JOIN public.mkt_m_customer c ON TRIM(LOWER(c.cust_id)) = TRIM(LOWER(h.artih_custid)) OR (TRIM(COALESCE(h.artih_custid, '')) = '' AND TRIM(LOWER(c.cust_name)) = TRIM(LOWER(h.artih_custname)))").
 		Joins("LEFT JOIN public.glb_m_agen a ON a.agen_id::varchar = LPAD(LEFT(h.artih_id, 3), 3, '0')").
 		Joins(`LEFT JOIN (
 			SELECT d.artid_artihid, SUM(r.trectddd_bayar) AS total_terbayar
