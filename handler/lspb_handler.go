@@ -201,7 +201,8 @@ func GetLSPBReportList(c *gin.Context) {
 				COALESCE(e.bttt_beratvol, v."BTTT_BeratVol", 0) AS bttt_beratvol,
 				COALESCE(NULLIF(e.bttt_ukuran::text, ''), v."BTTT_Ukuran", '0') AS bttt_ukuran,
 				COALESCE(e.bttt_berat, v."BTTT_Berat", 1) AS bttt_berat,
-				COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '') AS bttt_servid
+				COALESCE(e.bttt_servid::text, v."bttt_servid"::text, '') AS bttt_servid,
+				COALESCE(TO_CHAR(tb.tb_tglkembali, 'YYYY-MM-DD'), '') AS tgl_terima_btt_kembali
 
 			FROM public.opr_t_transportlspb t
 			LEFT JOIN public.mkt_t_econote e 
@@ -227,6 +228,14 @@ func GetLSPBReportList(c *gin.Context) {
 			) lt ON TRUE
 			LEFT JOIN public.opr_t_transportlspbwithcarinoutanddatetime c 
 				ON c.nodo = t.dn_od_sj
+			LEFT JOIN LATERAL (
+				SELECT tb.tb_tglkembali
+				FROM public.mkt_t_eterimabtt tb
+				WHERE TRIM(tb.tb_bttid) = TRIM(t.nomorbtt)
+				AND COALESCE(tb.tb_aktifyn, 'Y') = 'Y'
+				ORDER BY tb.tb_tglkembali DESC
+				LIMIT 1
+			) tb ON TRUE
 			WHERE t.dn_od_sj IS NOT NULL AND t.dn_od_sj <> ''
 			%s
 		),
@@ -348,7 +357,7 @@ func GetLSPBReportList(c *gin.Context) {
 			bttt_beratvol,
 			bttt_ukuran,
 			bttt_berat,
-			'' AS noskb
+			tgl_terima_btt_kembali
 		FROM estimasi_lspb
 		WHERE 1=1
 	`, baseWhereSQL)

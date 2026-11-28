@@ -61,6 +61,8 @@ func GetLaporanPenjualan(c *gin.Context) {
 	tglAkhir := strings.TrimSpace(c.Query("end_date"))
 	cabang := strings.TrimSpace(c.Query("cabang"))
 	penjualan := strings.TrimSpace(c.DefaultQuery("penjualan", "0"))
+	custID := strings.TrimSpace(c.Query("cust_id"))
+	custName := strings.TrimSpace(c.Query("cust_name"))
 	tujuanKota := strings.TrimSpace(c.Query("tujuan_kota"))
 	urut := strings.TrimSpace(c.DefaultQuery("urut", "1"))
 
@@ -72,17 +74,17 @@ func GetLaporanPenjualan(c *gin.Context) {
 			SELECT 
 				COALESCE(ag.agen_id::text, ec.bttt_asalagenid::text, '-') AS agen_id,
 				COALESCE(ag.agen_nama, 'CABANG ' || ec.bttt_asalagenid::text) AS agen_nama,
-				COALESCE(SUM(CASE WHEN TRIM(ec.bttt_pembayaran::text) = '1' THEN NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS harga_tunai,
-				COALESCE(SUM(CASE WHEN TRIM(ec.bttt_pembayaran::text) = '1' THEN NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS penerus_tunai,
-				COALESCE(SUM(CASE WHEN TRIM(ec.bttt_pembayaran::text) = '2' THEN NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS harga_kredit,
-				COALESCE(SUM(CASE WHEN TRIM(ec.bttt_pembayaran::text) = '2' THEN NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS penerus_kredit,
-				COALESCE(SUM(CASE WHEN TRIM(ec.bttt_pembayaran::text) NOT IN ('1', '2') THEN NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS harga_tagih,
-				COALESCE(SUM(CASE WHEN TRIM(ec.bttt_pembayaran::text) NOT IN ('1', '2') THEN NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS penerus_tagih,
-				COALESCE(SUM(NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric), 0) AS packing,
+				COALESCE(SUM(CASE WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) IN ('0', '1') THEN NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS harga_tunai,
+				COALESCE(SUM(CASE WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) IN ('0', '1') THEN NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS penerus_tunai,
+				COALESCE(SUM(CASE WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) = '2' THEN NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS harga_kredit,
+				COALESCE(SUM(CASE WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) = '2' THEN NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS penerus_kredit,
+				COALESCE(SUM(CASE WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) NOT IN ('0', '1', '2') THEN NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS harga_tagih,
+				COALESCE(SUM(CASE WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) NOT IN ('0', '1', '2') THEN NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric ELSE 0 END), 0) AS penerus_tagih,
+				COALESCE(SUM(COALESCE(NULLIF(ec.bttt_biayapacking, 0), NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric, 0)), 0) AS packing,
 				COALESCE(SUM(
 					COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric, 0) + 
 					COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric, 0) + 
-					COALESCE(NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric, 0)
+					COALESCE(NULLIF(ec.bttt_biayapacking, 0), NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric, 0)
 				), 0) AS total_omset,
 				COALESCE(SUM(NULLIF(REGEXP_REPLACE(ec.bttt_berat::text, '[^0-9.]', '', 'g'), '')::numeric), 0) AS berat,
 				COUNT(ec.bttt_id) AS jumlah_btt
@@ -97,10 +99,10 @@ func GetLaporanPenjualan(c *gin.Context) {
 			args = append(args, tglAwal+" 00:00:00", tglAkhir+" 23:59:59")
 		}
 		if cabang != "" && !strings.Contains(strings.ToUpper(cabang), "SEMUA") {
-			query += " AND (ag.agen_nama = ? OR ec.bttt_asalagenid::text = ?)"
+			query += " AND (UPPER(TRIM(ag.agen_nama)) = UPPER(TRIM(?)) OR TRIM(ec.bttt_asalagenid::text) = TRIM(?))"
 			args = append(args, cabang, cabang)
 		}
-		query += " GROUP BY ag.agen_id, ag.agen_nama, ec.bttt_asalagenid ORDER BY total_omset DESC LIMIT 300"
+		query += " GROUP BY ag.agen_id, ag.agen_nama, ec.bttt_asalagenid ORDER BY total_omset DESC"
 
 		var results []PenjualanOmsetItem
 		database.Raw(query, args...).Scan(&results)
@@ -121,33 +123,30 @@ func GetLaporanPenjualan(c *gin.Context) {
 
 	query := `
 		SELECT 
-			ec.bttt_id,
-			COALESCE(ec.bttt_asalcustid::text, '-') AS bttt_asalcustid,
+			TRIM(ec.bttt_id) AS bttt_id,
+			COALESCE(TRIM(ec.bttt_asalcustid::text), '-') AS bttt_asalcustid,
 			COALESCE(NULLIF(TRIM(cust.cust_name), ''), NULLIF(TRIM(ec.bttt_asalname), ''), '-') AS cust_name,
 			COALESCE(NULLIF(TRIM(ec.bttt_tujuannama), ''), '-') AS bttt_tujuannama,
 			CASE 
-				WHEN TRIM(ec.bttt_pembayaran::text) = '1' THEN 'Tunai'
-				WHEN TRIM(ec.bttt_pembayaran::text) = '2' THEN 'Kredit'
-				WHEN TRIM(ec.bttt_pembayaran::text) = '3' THEN 'Tagih Naik'
-				WHEN TRIM(ec.bttt_pembayaran::text) = '4' THEN 'Order Jemput'
-				WHEN TRIM(ec.bttt_pembayaran::text) = '5' THEN 'Tagih Turun'
-				WHEN UPPER(TRIM(ec.bttt_pembayaran::text)) LIKE '%TUNAI%' THEN 'Tunai'
-				WHEN UPPER(TRIM(ec.bttt_pembayaran::text)) LIKE '%KREDIT%' THEN 'Kredit'
-				ELSE 'Tunai'
+				WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) IN ('0', '1') THEN 'Tunai'
+				WHEN TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) = '2' THEN 'Kredit'
+				WHEN UPPER(TRIM(COALESCE(ec.bttt_pembayaran::text, ''))) LIKE '%TUNAI%' THEN 'Tunai'
+				WHEN UPPER(TRIM(COALESCE(ec.bttt_pembayaran::text, ''))) LIKE '%KREDIT%' THEN 'Kredit'
+				ELSE 'Tagih Tujuan'
 			END AS jnbayar,
 			COALESCE(NULLIF(TRIM(ec.bttt_tujuankota), ''), '-') AS bttt_tujuankota,
 			COALESCE(TO_CHAR(ec.bttt_tanggal, 'YYYY-MM-DD'), '') AS bttt_tanggal,
-			COALESCE(ec.bttt_updateid, '-') AS bttt_updateid,
+			COALESCE(NULLIF(TRIM(ec.bttt_updateid), ''), '-') AS bttt_updateid,
 			COALESCE(TO_CHAR(ec.bttt_updatetime, 'YYYY-MM-DD HH24:MI'), '-') AS bttt_updatetime,
 			COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_berat::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS berat,
 			COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_ukuran::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS volume,
 			COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_jmlunit::text, '[^0-9]', '', 'g'), '')::integer, 1) AS colly,
 			COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS biaya_kirim,
 			COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS biaya_penerus,
-			COALESCE(NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS packing,
+			COALESCE(NULLIF(ec.bttt_biayapacking, 0), NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS packing,
 			COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_harga::text, '[^0-9.]', '', 'g'), '')::numeric, 0) + 
 			COALESCE(NULLIF(REGEXP_REPLACE(ec.bttt_biayapenerus::text, '[^0-9.]', '', 'g'), '')::numeric, 0) + 
-			COALESCE(NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS total
+			COALESCE(NULLIF(ec.bttt_biayapacking, 0), NULLIF(REGEXP_REPLACE(pck.pck_biaya::text, '[^0-9.]', '', 'g'), '')::numeric, 0) AS total
 		FROM public.mkt_t_econote ec
 		LEFT JOIN public.mkt_m_customer cust ON TRIM(ec.bttt_asalcustid::text) = TRIM(cust.cust_id::text)
 		LEFT JOIN public.glb_m_agen ag ON TRIM(ec.bttt_asalagenid::text) = TRIM(ag.agen_id::text)
@@ -161,22 +160,34 @@ func GetLaporanPenjualan(c *gin.Context) {
 		args = append(args, tglAwal+" 00:00:00", tglAkhir+" 23:59:59")
 	}
 	if cabang != "" && !strings.Contains(strings.ToUpper(cabang), "SEMUA") {
-		query += " AND (ag.agen_nama = ? OR ec.bttt_asalagenid::text = ?)"
+		query += " AND (UPPER(TRIM(ag.agen_nama)) = UPPER(TRIM(?)) OR TRIM(ec.bttt_asalagenid::text) = TRIM(?))"
 		args = append(args, cabang, cabang)
 	}
 	if penjualan != "" && penjualan != "0" {
-		query += " AND TRIM(ec.bttt_pembayaran::text) = ?"
-		args = append(args, penjualan)
+		if penjualan == "1" {
+			query += " AND TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) IN ('0', '1')"
+		} else if penjualan == "2" {
+			query += " AND TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) = '2'"
+		} else if penjualan == "3" {
+			query += " AND TRIM(COALESCE(ec.bttt_pembayaran::text, ec.bttt_jenisharga::text)) NOT IN ('0', '1', '2')"
+		}
+	}
+	if custID != "" {
+		query += " AND TRIM(ec.bttt_asalcustid::text) = TRIM(?)"
+		args = append(args, custID)
+	} else if custName != "" {
+		query += " AND (UPPER(COALESCE(cust.cust_name, '')) LIKE UPPER(?) OR UPPER(COALESCE(ec.bttt_asalname, '')) LIKE UPPER(?))"
+		args = append(args, "%"+custName+"%", "%"+custName+"%")
 	}
 	if tujuanKota != "" && tujuanKota != "Semua Kota Tujuan" {
-		query += " AND ec.bttt_tujuankota = ?"
+		query += " AND UPPER(TRIM(ec.bttt_tujuankota)) = UPPER(TRIM(?))"
 		args = append(args, tujuanKota)
 	}
 
 	if urut == "2" {
-		query += " ORDER BY biaya_kirim DESC LIMIT 300"
+		query += " ORDER BY total DESC, ec.bttt_tanggal DESC"
 	} else {
-		query += " ORDER BY ec.bttt_tanggal DESC, ec.bttt_id DESC LIMIT 300"
+		query += " ORDER BY cust_name ASC, ec.bttt_tanggal DESC, ec.bttt_id DESC"
 	}
 
 	var results []PenjualanDetailItem
@@ -205,7 +216,6 @@ func GetComboKotaPenjualan(c *gin.Context) {
 		  AND TRIM(bttt_tujuankota) <> ''
 		  AND TRIM(bttt_tujuankota) <> '-'
 		ORDER BY kota ASC 
-		LIMIT 200
 	`
 	database.Raw(query).Scan(&kotas)
 	if kotas == nil {
